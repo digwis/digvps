@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  --background: 0 0% 100%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --card-border: 214 32% 91%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+  --primary: 199 89% 48%;
+  --primary-foreground: 210 40% 98%;
+  --primary-border: 199 89% 48%;
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 222 47% 11%;
+  --secondary-border: 214 32% 91%;
+  --muted: 210 40% 96%;
+  --muted-foreground: 215 16% 47%;
+  --accent: 210 40% 96%;
+  --accent-foreground: 222 47% 11%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 210 40% 98%;
+  --destructive-border: 0 84% 60%;
+  --border: 214 32% 91%;
+  --input: 214 32% 91%;
+  --ring: 199 89% 48%;
+  --radius: 1rem;
+  --button-outline: rgba(0, 0, 0, 0.1);
+  --badge-outline: rgba(0, 0, 0, 0.1);
+  --sidebar: 220 14% 97%;
+  --sidebar-foreground: 222 47% 11%;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: 225 24% 7%;
+  --foreground: 210 24% 96%;
+  --card: 222 22% 10%;
+  --card-foreground: 210 20% 96%;
+  --card-border: 214 21% 19%;
+  --popover: 222 22% 10%;
+  --popover-foreground: 210 20% 96%;
+  --primary: 199 100% 63%;
+  --primary-foreground: 223 30% 8%;
+  --primary-border: 197 77% 40%;
+  --secondary: 220 16% 17%;
+  --secondary-foreground: 210 20% 94%;
+  --secondary-border: 215 16% 24%;
+  --muted: 223 18% 14%;
+  --muted-foreground: 215 11% 65%;
+  --accent: 221 17% 18%;
+  --accent-foreground: 210 20% 96%;
+  --destructive: 0 72% 54%;
+  --destructive-foreground: 210 20% 96%;
+  --destructive-border: 0 63% 38%;
+  --border: 216 18% 18%;
+  --input: 216 17% 18%;
+  --ring: 199 100% 63%;
+  --button-outline: rgba(255, 255, 255, 0.1);
+  --badge-outline: rgba(255, 255, 255, 0.1);
+  --sidebar: 224 16% 11%;
+  --sidebar-foreground: 210 20% 96%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: hsl(var(--foreground));
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.dark body {
+  background: radial-gradient(circle at top left, rgba(125, 211, 252, 0.08), transparent 24%), linear-gradient(180deg, #090b10 0%, #0d1016 100%);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+}
+
+@layer utilities {
+  .hover-elevate {
+    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  }
+
+  .hover-elevate:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+  }
+
+  .dark .hover-elevate:hover {
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+  }
+
+  .active-elevate-2:active {
+    transform: translateY(1px);
+  }
+
+  .shadow-xs {
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  }
+}

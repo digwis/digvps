@@ -1,0 +1,341 @@
+import { Client, type ClientChannel, type ConnectConfig } from "ssh2"
+import type { VpsInspection, VpsConnectionInput } from "../../shared/vps"
+import { attachKeyboardInteractiveFallback, resolveSshConnectConfig } from "./ssh-auth"
+
+async function runRemoteCommand(
+  payload: VpsConnectionInput,
+  config: ConnectConfig,
+  command: string,
+  options?: { timeoutMs?: number },
+) {
+  const connection = attachKeyboardInteractiveFallback(new Client(), payload)
+  const timeoutMs = options?.timeoutMs ?? 15_000
+
+  return new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      connection.end()
+      reject(new Error("环境检测超时，请检查 SSH 连通性或认证配置"))
+    }, timeoutMs)
+
+    const finish = (callback: () => void) => {
+      clearTimeout(timeout)
+      callback()
+    }
+
+    connection
+      .on("ready", () => {
+        connection.exec(command, (error: Error | undefined, stream: ClientChannel) => {
+          if (error) {
+            connection.end()
+            finish(() => reject(error))
+            return
+          }
+
+          let stdout = ""
+          let stderr = ""
+
+          stream
+            .on("close", (code: number | undefined) => {
+              connection.end()
+              if (code !== 0 && stderr.trim()) {
+                finish(() => reject(new Error(stderr.trim())))
+                return
+              }
+              finish(() => resolve(stdout))
+            })
+            .on("data", (chunk: Buffer | string) => {
+              stdout += chunk.toString()
+            })
+
+          stream.stderr.on("data", (chunk: Buffer | string) => {
+            stderr += chunk.toString()
+          })
+        })
+      })
+      .on("error", (error) => {
+        finish(() => reject(error))
+      })
+      .connect({
+        ...config,
+        readyTimeout: 10_000,
+        keepaliveInterval: 5_000,
+      })
+  })
+}
+
+const inspectionCommand = `
+set -e
+line() { printf '%s=%s\n' "$1" "$2"; }
+package_line() { printf 'PKG|%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5"; }
+hostname_value=$(hostname 2>/dev/null || echo unknown)
+os_value=$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"' || uname -s)
+kernel_value=$(uname -r 2>/dev/null || echo unknown)
+uptime_value=$(uptime -p 2>/dev/null || echo unknown)
+pwd_value=$(pwd 2>/dev/null || echo ~)
+package_manager=unknown
+for pm in apt yum dnf apk pacman; do
+  if command -v "$pm" >/dev/null 2>&1; then
+    package_manager="$pm"
+    break
+  fi
+done
+cpu_model=$(sh -lc "command -v lscpu >/dev/null 2>&1 && lscpu | awk -F: '/Model name/ {gsub(/^ +/, \\\"\\\", \\$2); print \\$2; exit}' || echo unknown")
+cpu_cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo unknown)
+memory_value=$(free -h 2>/dev/null | awk '/Mem:/ {print $3 \" / \" $2}' || echo unknown)
+disk_value=$(df -h / 2>/dev/null | awk 'NR==2 {print $3 \" / \" $2 \" (\" $5 \")"}' || echo unknown)
+mem_pct=$(free 2>/dev/null | awk '/Mem:/ {if ($2+0>0) printf "%.1f", 100*$3/$2; else print "0"}' || echo 0)
+disk_pct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5+0}' || echo 0)
+cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)
+load1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
+load_pct=$(awk -v L="$load1" -v C="$cores" 'BEGIN {c=C+0; if(c<1)c=1; l=L+0; p=100*l/c; if(p>100)p=100; printf "%.1f", p}')
+cpu_pct=0
+cpu_idle_line=$(LANG=C top -bn1 2>/dev/null | grep -E '^%Cpu|^Cpu' | head -1 || true)
+if echo "$cpu_idle_line" | grep -q id; then
+  cpu_idle=$(echo "$cpu_idle_line" | sed -n 's/.*, *\\([0-9.]*\\) *id.*/\\1/p' | head -1)
+  if [ -n "$cpu_idle" ]; then
+    cpu_pct=$(awk -v id="$cpu_idle" 'BEGIN {i=id+0; if(i>100)i=100; if(i<0)i=0; printf "%.1f", 100-i}')
+  fi
+fi
+if awk -v p="$cpu_pct" 'BEGIN{exit !(p+0<=0)}'; then
+  cpu_idle2=$(vmstat 1 2 2>/dev/null | tail -1 | awk '{print $15}' || echo "")
+  if [ -n "$cpu_idle2" ]; then
+    cpu_pct=$(awk -v id="$cpu_idle2" 'BEGIN {i=id+0; if(i>100)i=100; if(i<0)i=0; printf "%.1f", 100-i}')
+  fi
+fi
+iface=$(awk -F':' '/^[[:space:]]*(eth|en|wl|wlan|bond|venet|veth)/ {gsub(/^[[:space:]]+/, "", $1); print $1; exit}' /proc/net/dev)
+if [ -z "$iface" ]; then iface=$(ip -o route get 1.1.1.1 2>/dev/null | sed -n 's/.*dev \\([^ ]*\\).*/\\1/p'); fi
+net_rx_bps=0
+net_tx_bps=0
+if [ -n "$iface" ]; then
+  read_rx_tx() { awk -v d="$iface" '$1 == d":" {print ($2+0), ($10+0)}' /proc/net/dev || echo "0 0"; }
+  line1=$(read_rx_tx)
+  rx1=$(echo "$line1" | awk '{print $1+0}')
+  tx1=$(echo "$line1" | awk '{print $2+0}')
+  sleep 1
+  line2=$(read_rx_tx)
+  rx2=$(echo "$line2" | awk '{print $1+0}')
+  tx2=$(echo "$line2" | awk '{print $2+0}')
+  net_rx_bps=$((rx2-rx1))
+  net_tx_bps=$((tx2-tx1))
+  if [ "$net_rx_bps" -lt 0 ] 2>/dev/null; then net_rx_bps=0; fi
+  if [ "$net_tx_bps" -lt 0 ] 2>/dev/null; then net_tx_bps=0; fi
+fi
+docker_version=$(docker --version 2>/dev/null || true)
+node_version=$(node --version 2>/dev/null || true)
+if command -v nginx >/dev/null 2>&1; then
+  nginx_version=$(nginx -v 2>&1)
+else
+  nginx_version=""
+fi
+pm2_version=$(pm2 --version 2>/dev/null || true)
+python_version=$(python3 --version 2>/dev/null || true)
+pg_version=$(psql --version 2>/dev/null || true)
+line hostname "$hostname_value"
+line os "$os_value"
+line kernel "$kernel_value"
+line uptime "$uptime_value"
+line workingDirectory "$pwd_value"
+line packageManager "$package_manager"
+line metric_cpu "$cpu_model"
+line metric_cores "$cpu_cores"
+line metric_memory "$memory_value"
+line metric_disk "$disk_value"
+line metric_cpu_pct "$cpu_pct"
+line metric_mem_pct "$mem_pct"
+line metric_disk_pct "$disk_pct"
+line metric_load_pct "$load_pct"
+line metric_net_rx_bps "$net_rx_bps"
+line metric_net_tx_bps "$net_tx_bps"
+package_line Docker docker "$(command -v docker >/dev/null 2>&1 && echo true || echo false)" "\${docker_version:-未安装}" "docker --version"
+package_line Node.js nodejs "$(command -v node >/dev/null 2>&1 && echo true || echo false)" "\${node_version:-未安装}" "node --version"
+package_line Nginx nginx "$(command -v nginx >/dev/null 2>&1 && echo true || echo false)" "\${nginx_version:-未安装}" "nginx -v"
+package_line PM2 pm2 "$(command -v pm2 >/dev/null 2>&1 && echo true || echo false)" "\${pm2_version:-未安装}" "pm2 --version"
+package_line Python 3 python3 "$(command -v python3 >/dev/null 2>&1 && echo true || echo false)" "\${python_version:-未安装}" "python3 --version"
+package_line PostgreSQL postgresql "$(command -v psql >/dev/null 2>&1 && echo true || echo false)" "\${pg_version:-未安装}" "psql --version"
+
+ext_line() { printf 'EXT|%s|%s|%s\n' "$1" "$2" "$3"; }
+
+docker_running=false
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl is-active --quiet docker 2>/dev/null; then docker_running=true; fi
+fi
+if [ "$docker_running" = "false" ] && pgrep -x dockerd >/dev/null 2>&1; then docker_running=true; fi
+ext_line docker running "$docker_running"
+dock_detail="—"
+if command -v docker >/dev/null 2>&1; then
+  dc=0
+  if command -v timeout >/dev/null 2>&1; then
+    dc=$(timeout 4 docker ps -q 2>/dev/null | wc -l | tr -d ' ')
+  else
+    dc=$(docker ps -q 2>/dev/null | wc -l | tr -d ' ')
+  fi
+  case "$dc" in ''|*[!0-9]*) dc=0 ;; esac
+  dock_detail="运行中容器 \${dc} 个"
+fi
+ext_line docker detail "$dock_detail"
+ext_line docker port "—"
+
+ngx_run=false
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl is-active --quiet nginx 2>/dev/null; then ngx_run=true; fi
+fi
+ext_line nginx running "$ngx_run"
+ext_line nginx port "80 / 443"
+
+pg_unit=""
+for u in postgresql postgresql@16-main postgresql@15-main postgresql@14-main postgresql@17-main postgresql-16 postgresql-15; do
+  if systemctl is-active --quiet "$u" 2>/dev/null; then pg_unit="$u"; break; fi
+done
+pg_run=false
+[ -n "$pg_unit" ] && pg_run=true
+ext_line postgresql running "$pg_run"
+ext_line postgresql port "5432"
+[ -n "$pg_unit" ] && ext_line postgresql unit "$pg_unit"
+
+pm2_run=false
+pm2_detail="—"
+if command -v pm2 >/dev/null 2>&1; then
+  if pm2 ping >/dev/null 2>&1; then pm2_run=true; fi
+  pc=0
+  if command -v timeout >/dev/null 2>&1; then
+    pc=$(timeout 4 pm2 jlist 2>/dev/null | grep -c '"pm_id"' || echo 0)
+  else
+    pc=$(pm2 jlist 2>/dev/null | grep -c '"pm_id"' || echo 0)
+  fi
+  case "$pc" in ''|*[!0-9]*) pc=0 ;; esac
+  pm2_detail="托管应用 \${pc} 个"
+fi
+ext_line pm2 running "$pm2_run"
+ext_line pm2 port "—"
+ext_line pm2 detail "$pm2_detail"
+
+node_r=$(command -v node >/dev/null 2>&1 && echo true || echo false)
+ext_line nodejs running "$node_r"
+ext_line nodejs port "—"
+
+py_r=$(command -v python3 >/dev/null 2>&1 && echo true || echo false)
+ext_line python3 running "$py_r"
+ext_line python3 port "—"
+`
+
+function parseInspectionTelemetry(map: Map<string, string>): VpsInspection["telemetry"] | undefined {
+  const read = (key: string) => Number.parseFloat(map.get(key) ?? "")
+  const cpuPercent = read("metric_cpu_pct")
+  if (!Number.isFinite(cpuPercent)) {
+    return undefined
+  }
+  const clamp = (n: number) => Math.min(100, Math.max(0, n))
+  const memoryPercent = read("metric_mem_pct")
+  const diskPercent = read("metric_disk_pct")
+  const loadPercent = read("metric_load_pct")
+  const netDownBps = read("metric_net_rx_bps")
+  const netUpBps = read("metric_net_tx_bps")
+  return {
+    cpuPercent: clamp(cpuPercent),
+    memoryPercent: clamp(Number.isFinite(memoryPercent) ? memoryPercent : 0),
+    diskPercent: clamp(Number.isFinite(diskPercent) ? diskPercent : 0),
+    loadPercent: clamp(Number.isFinite(loadPercent) ? loadPercent : 0),
+    netDownBps: Number.isFinite(netDownBps) && netDownBps >= 0 ? netDownBps : 0,
+    netUpBps: Number.isFinite(netUpBps) && netUpBps >= 0 ? netUpBps : 0,
+  }
+}
+
+function mergeExtIntoPackages(
+  packages: VpsInspection["packages"],
+  extById: Map<string, Record<string, string>>,
+): VpsInspection["packages"] {
+  return packages.map((pkg) => {
+    const ext = extById.get(pkg.id)
+    if (!ext) {
+      return pkg
+    }
+    let running: boolean | undefined
+    if (ext.running === "true") {
+      running = true
+    } else if (ext.running === "false") {
+      running = false
+    }
+    return {
+      ...pkg,
+      running,
+      portHint: ext.port ?? pkg.portHint,
+      detail: ext.detail ?? pkg.detail,
+      systemdUnit: ext.unit ?? pkg.systemdUnit,
+    }
+  })
+}
+
+export async function inspectConnection(payload: VpsConnectionInput): Promise<VpsInspection> {
+  const raw = await runRemoteCommand(payload, resolveSshConnectConfig(payload), inspectionCommand, {
+    timeoutMs: 45_000,
+  })
+  const lines = raw
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean)
+
+  const map = new Map<string, string>()
+  const extById = new Map<string, Record<string, string>>()
+  const packages: VpsInspection["packages"] = []
+
+  for (const line of lines) {
+    if (line.startsWith("PKG|")) {
+      const parts = line.split("|")
+      if (parts.length >= 6) {
+        const [, name, id, installed, version, command] = parts
+        packages.push({
+          name,
+          id,
+          installed: installed === "true",
+          version,
+          command,
+        })
+      } else {
+        const [, name, installed, version, command] = parts
+        packages.push({
+          name,
+          id: name.toLowerCase().replace(/\s+/g, "").replace(/[^a-z0-9]/g, "") || "unknown",
+          installed: installed === "true",
+          version,
+          command,
+        })
+      }
+      continue
+    }
+
+    if (line.startsWith("EXT|")) {
+      const parts = line.split("|")
+      if (parts.length >= 4) {
+        const id = parts[1]
+        const key = parts[2]
+        const value = parts.slice(3).join("|")
+        const bag = extById.get(id) ?? {}
+        bag[key] = value
+        extById.set(id, bag)
+      }
+      continue
+    }
+
+    const [key, ...rest] = line.split("=")
+    map.set(key, rest.join("="))
+  }
+
+  return {
+    connectionId: payload.id ?? "",
+    checkedAt: new Date().toISOString(),
+    hostname: map.get("hostname") ?? "unknown",
+    os: map.get("os") ?? "unknown",
+    kernel: map.get("kernel") ?? "unknown",
+    uptime: map.get("uptime") ?? "unknown",
+    workingDirectory: map.get("workingDirectory") ?? "~",
+    packageManager: map.get("packageManager") ?? "unknown",
+    metrics: [
+      { label: "CPU", value: map.get("metric_cpu") ?? "unknown" },
+      { label: "逻辑核心", value: map.get("metric_cores") ?? "unknown" },
+      { label: "内存占用", value: map.get("metric_memory") ?? "unknown" },
+      { label: "系统盘", value: map.get("metric_disk") ?? "unknown" },
+    ],
+    telemetry: parseInspectionTelemetry(map),
+    packages: mergeExtIntoPackages(packages, extById),
+  }
+}

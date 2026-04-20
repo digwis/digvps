@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+out/
+dist/
+
+# Environment files
+.env
+.env.local
+
+# AI assistant directories
+.claw/
+.omx/
+.claude/
+.sandbox-home/
+.sandbox-tmp/
+.playwright-cli/
+
+# Editor directories
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

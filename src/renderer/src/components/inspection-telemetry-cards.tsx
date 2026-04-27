@@ -29,6 +29,17 @@ function networkActivityPercent(down: number, up: number): number {
   return Math.min(100, (sum / (1024 * 1024)) * 100)
 }
 
+function bandwidthUsagePercent(down: number, up: number, bandwidthMbps?: number): number | undefined {
+  if (!Number.isFinite(bandwidthMbps) || (bandwidthMbps ?? 0) <= 0) {
+    return undefined
+  }
+  const capBytesPerSecond = ((bandwidthMbps ?? 0) * 1_000_000) / 8
+  if (capBytesPerSecond <= 0) {
+    return undefined
+  }
+  return Math.min(100, ((down + up) / capBytesPerSecond) * 100)
+}
+
 function RingGauge({ percent, className }: { percent: number; className?: string }) {
   const p = Math.min(100, Math.max(0, percent))
   const r = 34
@@ -59,7 +70,7 @@ type CardTone = {
   surface: string
 }
 
-const tones: Record<"cpu" | "mem" | "disk" | "net" | "load", CardTone> = {
+const tones: Record<"cpu" | "mem" | "disk" | "net" | "load" | "inode", CardTone> = {
   cpu: {
     ring: "text-sky-600 dark:text-sky-400",
     surface: "from-sky-500/[0.10] via-background to-background dark:from-sky-400/[0.12]",
@@ -80,15 +91,27 @@ const tones: Record<"cpu" | "mem" | "disk" | "net" | "load", CardTone> = {
     ring: "text-orange-600 dark:text-orange-400",
     surface: "from-orange-500/[0.10] via-background to-background dark:from-orange-400/[0.12]",
   },
+  inode: {
+    ring: "text-slate-600 dark:text-slate-400",
+    surface: "from-slate-500/[0.10] via-background to-background dark:from-slate-400/[0.12]",
+  },
 }
 
 type Props = {
   telemetry: InspectionTelemetry
   metrics: SystemMetric[]
+  checkedAt: string
 }
 
-export function InspectionTelemetryCards({ telemetry, metrics }: Props) {
+export function InspectionTelemetryCards({ telemetry, metrics, checkedAt }: Props) {
   const netPct = networkActivityPercent(telemetry.netDownBps, telemetry.netUpBps)
+  const sampledAtText = new Date(checkedAt).toLocaleTimeString()
+  const cpuExtras = [
+    telemetry.cpuStealPercent >= 0.1 ? `steal ${telemetry.cpuStealPercent.toFixed(1)}%` : "",
+    telemetry.cpuIowaitPercent >= 0.1 ? `iowait ${telemetry.cpuIowaitPercent.toFixed(1)}%` : "",
+  ]
+    .filter(Boolean)
+    .join("  ")
 
   const cards: Array<{
     key: string
@@ -103,6 +126,7 @@ export function InspectionTelemetryCards({ telemetry, metrics }: Props) {
       title: "CPU 使用率",
       percent: telemetry.cpuPercent,
       tone: "cpu",
+      extra: cpuExtras || undefined,
       footer: metricValue(metrics, "CPU"),
     },
     {
@@ -127,6 +151,13 @@ export function InspectionTelemetryCards({ telemetry, metrics }: Props) {
       extra: `↑ ${formatBps(telemetry.netUpBps)}  ↓ ${formatBps(telemetry.netDownBps)}`,
     },
     {
+      key: "inode",
+      title: "inode 使用率",
+      percent: telemetry.inodePercent,
+      tone: "inode",
+      footer: metricValue(metrics, "inode"),
+    },
+    {
       key: "load",
       title: "系统负载",
       percent: telemetry.loadPercent,
@@ -136,7 +167,7 @@ export function InspectionTelemetryCards({ telemetry, metrics }: Props) {
   ]
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
       {cards.map((item) => {
         const t = tones[item.tone]
         return (
@@ -162,7 +193,7 @@ export function InspectionTelemetryCards({ telemetry, metrics }: Props) {
             ) : (
               <div className="min-h-[2rem]" />
             )}
-            <p className="text-[11px] font-medium text-muted-foreground/90">实时</p>
+            <p className="text-[11px] font-medium text-muted-foreground/90">采样 {sampledAtText}</p>
           </div>
         )
       })}

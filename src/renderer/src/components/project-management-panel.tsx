@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react"
 import {
   ExternalLink,
-  FilePenLine,
+  FileText,
   FolderInput,
   FolderOpen,
   Globe,
+  HelpCircle,
   LoaderCircle,
   RefreshCw,
   Rocket,
@@ -15,7 +16,7 @@ import {
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,15 +38,20 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { useProjectStore } from "@/store/project-store"
-import { Textarea } from "@/components/ui/textarea"
 import { toast } from "@/hooks/use-toast"
 import type {
   LocalProjectRecord,
+  ProjectActionKind,
+  ProjectActionHint,
+  ProjectBackupSchedule,
+  ProjectBackupScheduleState,
   ProjectDeployProfile,
   ProjectDeployStrategy,
+  ProjectOperationLogEntry,
   ProjectRemoteDetails,
   ProjectRemoteState,
 } from "../../../shared/projects"
@@ -54,12 +60,16 @@ import type { VpsConnectionRecord } from "../../../shared/vps"
 export type ProjectManagementPanelProps = {
   connections: VpsConnectionRecord[]
   selectedConnectionId?: string
+  highlightedProjectId?: string
 }
 
 type DeployScriptOption = {
   value: string
   label: string
+  action?: "code" | "data" | "uploads" | "backup"
 }
+
+type ProjectLogFilter = "all" | "init" | "deploy" | "backup" | "error"
 
 function formatFileSize(size: number) {
   if (size < 1024) {
@@ -78,22 +88,23 @@ function connectionLabel(connections: VpsConnectionRecord[], id?: string | null)
   if (!id) {
     return ""
   }
-  return connections.find((c) => c.id === id)?.name ?? id
+  return connections.find((c) => c.id === id)?.name ?? ""
 }
 
 function buildDeployScriptOptions(scripts: string[]): DeployScriptOption[] {
   const has = new Set(scripts)
   const options: DeployScriptOption[] = []
-  const add = (names: string[], label: string) => {
+  const add = (names: string[], label: string, action?: DeployScriptOption["action"]) => {
     const match = names.find((name) => has.has(name))
     if (match && !options.some((item) => item.value === match)) {
-      options.push({ value: match, label })
+      options.push({ value: match, label, action })
     }
   }
 
-  add(["sync:vps:admin-data", "sync:vps"], "完整部署")
-  add(["deploy:panel", "deploy:vps:code"], "部署代码")
-  add(["backup:vps", "backup"], "备份远程数据")
+  add(["deploy:panel", "deploy:vps:code"], "部署代码", "code")
+  add(["sync:vps:admin-data", "sync:vps:data", "sync:vps"], "部署数据", "data")
+  add(["sync:vps:uploads", "sync:uploads:vps"], "同步文件", "uploads")
+  add(["backup:vps", "backup"], "备份数据", "backup")
 
   if (options.length === 0) {
     const fallback = scripts.slice(0, 4)
@@ -106,10 +117,195 @@ function buildDeployScriptOptions(scripts: string[]): DeployScriptOption[] {
   return options.slice(0, 4)
 }
 
+function formatActionSummary(hint?: ProjectActionHint) {
+  if (!hint) {
+    return "可直接执行"
+  }
+  if (hint.needsAttention) {
+    return hint.lastRunAt ? "检测到新变化" : "尚未执行过"
+  }
+  return "已是最新"
+}
+
+function recommendedAction(project: LocalProjectRecord, args: {
+  selectedConnectionId?: string
+  remoteDetails: ProjectRemoteDetails | null
+  remoteState: ProjectRemoteState | null
+  actionHints?: ProjectActionHint[]
+}) {
+  const { selectedConnectionId, remoteDetails, remoteState, actionHints } = args
+  const hintMap = new Map((actionHints ?? []).map((item) => [item.action, item]))
+
+  if (!project.lastConnectionId && !selectedConnectionId) {
+    return {
+      label: "先关联服务器",
+      detail: "当前项目还没有绑定目标 VPS",
+      tone: "bg-amber-500/10 text-amber-700 dark:text-amber-200",
+    }
+  }
+  if (project.lastDeployStatus === "failed") {
+    return {
+      label: "重新部署代码",
+      detail: project.lastDeployMessage ?? "上次部署失败，建议先恢复主链路",
+      tone: "bg-destructive/10 text-destructive",
+    }
+  }
+  if (remoteState?.runtimeIssues.length) {
+    return {
+      label: "检查远端运行状态",
+      detail: remoteState.runtimeIssues[0] ?? "远端存在运行异常",
+      tone: "bg-amber-500/10 text-amber-700 dark:text-amber-200",
+    }
+  }
+  if (remoteDetails?.service.configured && !remoteDetails.service.active) {
+    return {
+      label: "重启远端服务",
+      detail: remoteDetails.service.statusText || "服务已配置但当前未运行",
+      tone: "bg-amber-500/10 text-amber-700 dark:text-amber-200",
+    }
+  }
+
+  const actionPriority: Array<{ action: ProjectActionKind; label: string }> = [
+    { action: "code", label: "部署代码" },
+    { action: "data", label: "部署数据" },
+    { action: "uploads", label: "同步文件" },
+    { action: "backup", label: "执行备份" },
+  ]
+
+  const pending = actionPriority.find((item) => hintMap.get(item.action)?.needsAttention)
+  if (pending) {
+    return {
+      label: pending.label,
+      detail: hintMap.get(pending.action)?.reason ?? "检测到有待处理的变更",
+      tone: "bg-sky-500/10 text-sky-700 dark:text-sky-200",
+    }
+  }
+
+  return {
+    label: "当前无需额外操作",
+    detail: "部署与同步状态都处于最新",
+    tone: "bg-muted text-muted-foreground",
+  }
+}
+
+function summarizeProjectLog(entry: ProjectOperationLogEntry) {
+  const text = entry.chunk.replace(/\s+/g, " ").trim()
+  if (!text) {
+    return null
+  }
+  if (text.includes("[finish]")) {
+    const failed = text.includes("failed")
+    return {
+      title: failed ? "最近执行失败" : "最近执行完成",
+      detail: text.replace("[finish]", "").trim(),
+      tone: failed ? "text-destructive" : "text-foreground",
+    }
+  }
+  if (text.includes("[start]")) {
+    return {
+      title: "正在执行",
+      detail: text.replace("[start]", "").trim(),
+      tone: "text-muted-foreground",
+    }
+  }
+  if (text.includes("[backup-schedule]")) {
+    return {
+      title: "备份计划已更新",
+      detail: text.replace("[backup-schedule]", "").trim(),
+      tone: "text-foreground",
+    }
+  }
+  return {
+    title: entry.stream === "stderr" ? "最近输出" : "最近记录",
+    detail: text,
+    tone: entry.stream === "stderr" ? "text-destructive" : "text-muted-foreground",
+  }
+}
+
+function isInitLog(entry: ProjectOperationLogEntry) {
+  return entry.chunk.includes("initialize remote project") || entry.chunk.includes("initialize success") || entry.chunk.includes("initialize failed")
+}
+
+function isConfigLog(entry: ProjectOperationLogEntry) {
+  return entry.chunk.includes("[backup-schedule]")
+}
+
+function isBackupLog(entry: ProjectOperationLogEntry) {
+  const text = entry.chunk.toLowerCase()
+  return text.includes("backup") || text.includes("[backup-schedule]")
+}
+
+function isErrorLog(entry: ProjectOperationLogEntry) {
+  const text = entry.chunk.toLowerCase()
+  return entry.stream === "stderr" || text.includes("failed") || text.includes("error")
+}
+
+function isDeployLog(entry: ProjectOperationLogEntry) {
+  return !isInitLog(entry) && !isBackupLog(entry)
+}
+
+function matchesLogFilter(entry: ProjectOperationLogEntry, filter: ProjectLogFilter) {
+  if (filter === "all") {
+    return true
+  }
+  if (filter === "init") {
+    return isInitLog(entry)
+  }
+  if (filter === "deploy") {
+    return isDeployLog(entry)
+  }
+  if (filter === "backup") {
+    return isBackupLog(entry)
+  }
+  if (filter === "error") {
+    return isErrorLog(entry)
+  }
+  return true
+}
+
+function latestMatchingLog(entries: ProjectOperationLogEntry[] | undefined, predicate: (entry: ProjectOperationLogEntry) => boolean) {
+  if (!entries?.length) {
+    return undefined
+  }
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index]
+    if (predicate(entry)) {
+      return entry
+    }
+  }
+  return undefined
+}
+
+function deployStatusMeta(project: LocalProjectRecord) {
+  if (project.lastDeployStatus === "success") {
+    return {
+      label: "部署正常",
+      className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+    }
+  }
+  if (project.lastDeployStatus === "running") {
+    return {
+      label: "执行中",
+      className: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200",
+    }
+  }
+  if (project.lastDeployStatus === "failed") {
+    return {
+      label: "部署失败",
+      className: "border-destructive/30 bg-destructive/10 text-destructive",
+    }
+  }
+  return {
+    label: "未部署",
+    className: "border-border/70 bg-muted/70 text-muted-foreground",
+  }
+}
+
 function ProjectDeployCard({
   project,
   connections,
   selectedConnectionId,
+  highlighted,
   isDeploying,
   deployingProjectId,
   isInitializing,
@@ -117,10 +313,16 @@ function ProjectDeployCard({
   onInitialize,
   onDeploy,
   onDelete,
+  actionHints,
+  backupSchedule,
+  recentLogs,
+  fullLogs,
+  onBackupScheduleChange,
 }: {
   project: LocalProjectRecord
   connections: VpsConnectionRecord[]
   selectedConnectionId?: string
+  highlighted?: boolean
   isDeploying: boolean
   deployingProjectId?: string
   isInitializing: boolean
@@ -133,6 +335,11 @@ function ProjectDeployCard({
     npmScript?: string
   }) => void
   onDelete: () => void
+  actionHints?: ProjectActionHint[]
+  backupSchedule?: ProjectBackupScheduleState
+  recentLogs?: ProjectOperationLogEntry[]
+  fullLogs?: ProjectOperationLogEntry[]
+  onBackupScheduleChange: (schedule: ProjectBackupSchedule) => void
 }) {
   const [connectionId, setConnectionId] = useState<string>(project.lastConnectionId ?? selectedConnectionId ?? "")
   const [remoteParent, setRemoteParent] = useState("")
@@ -142,11 +349,6 @@ function ProjectDeployCard({
   const [npmScripts, setNpmScripts] = useState<DeployScriptOption[]>([])
   const [npmScript, setNpmScript] = useState("")
   const [deployProfile, setDeployProfile] = useState<ProjectDeployProfile | null>(null)
-  const [envOpen, setEnvOpen] = useState(false)
-  const [envText, setEnvText] = useState("")
-  const [envLoading, setEnvLoading] = useState(false)
-  const [envSaving, setEnvSaving] = useState(false)
-  const [envError, setEnvError] = useState<string>()
   const [remoteState, setRemoteState] = useState<ProjectRemoteState | null>(null)
   const [remoteStateLoading, setRemoteStateLoading] = useState(false)
   const [initDialogOpen, setInitDialogOpen] = useState(false)
@@ -163,7 +365,27 @@ function ProjectDeployCard({
   const [siteSaving, setSiteSaving] = useState(false)
   const [siteError, setSiteError] = useState<string>()
   const [siteSettingsOpen, setSiteSettingsOpen] = useState(false)
+  const [remoteInfoOpen, setRemoteInfoOpen] = useState(false)
+  const [logsOpen, setLogsOpen] = useState(false)
+  const [logFilter, setLogFilter] = useState<ProjectLogFilter>("all")
+  const [logQuery, setLogQuery] = useState("")
   const [deleteConfirmText, setDeleteConfirmText] = useState("")
+  const hintByAction = useMemo(() => {
+    const map = new Map<string, ProjectActionHint>()
+    for (const item of actionHints ?? []) {
+      map.set(item.action, item)
+    }
+    return map
+  }, [actionHints])
+
+  const executeScriptAction = (item: DeployScriptOption) => {
+    setNpmScript(item.value)
+    onDeploy({
+      connectionId,
+      strategy,
+      npmScript: item.value,
+    })
+  }
 
   useEffect(() => {
     setConnectionId((current) => {
@@ -268,7 +490,7 @@ function ProjectDeployCard({
     [deployProfile?.defaultRemoteAppDir, project.lastRemotePath],
   )
 
-  const loadRemoteDetails = async (browseTarget?: string) => {
+  const loadRemoteDetails = async (browseTarget?: string, options?: { forceRefresh?: boolean }) => {
     if (!connectionId || !effectiveRemoteAppDir) {
       return null
     }
@@ -276,6 +498,7 @@ function ProjectDeployCard({
       projectId: project.id,
       connectionId,
       browsePath: browseTarget,
+      forceRefresh: options?.forceRefresh,
     })
   }
 
@@ -321,10 +544,6 @@ function ProjectDeployCard({
   const success = project.lastDeployStatus === "success"
   const failed = project.lastDeployStatus === "failed"
   const hasScriptActions = strategy === "local-npm-script" && npmScripts.length > 0
-  const selectedActionLabel =
-    hasScriptActions
-      ? npmScripts.find((item) => item.value === npmScript)?.label ?? "开始执行"
-      : "部署代码"
   const initHint =
     remoteStateLoading
       ? "正在检查远端环境…"
@@ -344,6 +563,65 @@ function ProjectDeployCard({
       ? "服务运行中"
       : "服务未启动"
     : "未配置远端服务"
+  const deployBadge = deployStatusMeta(project)
+  const needsAttention =
+    failed ||
+    Boolean(remoteState?.runtimeIssues.length) ||
+    Boolean(actionHints?.some((item) => item.needsAttention))
+  const nextAction = recommendedAction(project, {
+    selectedConnectionId,
+    remoteDetails,
+    remoteState,
+    actionHints,
+  })
+  const latestInitLog = latestMatchingLog(fullLogs, isInitLog)
+  const latestActionLog = latestMatchingLog(fullLogs, (entry) => !isInitLog(entry) && !isConfigLog(entry))
+  const initSummary = latestInitLog ? summarizeProjectLog(latestInitLog) : null
+  const actionSummary = latestActionLog ? summarizeProjectLog(latestActionLog) : null
+  const filteredLogs = useMemo(
+    () =>
+      (fullLogs ?? []).filter((entry) => {
+        if (!matchesLogFilter(entry, logFilter)) {
+          return false
+        }
+        const query = logQuery.trim().toLowerCase()
+        if (!query) {
+          return true
+        }
+        return `${entry.chunk}\n${entry.stream}\n${entry.at}`.toLowerCase().includes(query)
+      }),
+    [fullLogs, logFilter, logQuery],
+  )
+  const logFilterCounts = useMemo(
+    () => ({
+      all: fullLogs?.length ?? 0,
+      init: (fullLogs ?? []).filter(isInitLog).length,
+      deploy: (fullLogs ?? []).filter(isDeployLog).length,
+      backup: (fullLogs ?? []).filter(isBackupLog).length,
+      error: (fullLogs ?? []).filter(isErrorLog).length,
+    }),
+    [fullLogs],
+  )
+  const overviewBadges = [
+    {
+      label: deployBadge.label,
+      className: deployBadge.className,
+    },
+    remoteDetails?.service.configured
+      ? {
+          label: remoteDetails.service.active ? "服务运行中" : "服务未启动",
+          className: remoteDetails.service.active
+            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+            : "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+        }
+      : null,
+    remoteDetails?.publicUrl
+      ? {
+          label: remoteDetails.site.mode === "domain" ? "域名入口" : "端口预览",
+          className: "border-border/70 bg-muted/70 text-foreground",
+        }
+      : null,
+  ].filter(Boolean) as Array<{ label: string; className: string }>
 
   const refreshRemoteDetails = async () => {
     if (!effectiveRemoteAppDir || !connectionId) {
@@ -352,7 +630,7 @@ function ProjectDeployCard({
     setRemoteDetailsLoading(true)
     setSiteError(undefined)
     try {
-      const details = await loadRemoteDetails()
+      const details = await loadRemoteDetails(undefined, { forceRefresh: true })
       setRemoteDetails(details)
       if (details) {
         setSiteDomain(details.site.domain ?? "")
@@ -461,7 +739,7 @@ function ProjectDeployCard({
       let details = remoteDetails
       if (!details && connectionId && effectiveRemoteAppDir) {
         try {
-          details = await loadRemoteDetails()
+          details = await loadRemoteDetails(undefined, { forceRefresh: true })
           setRemoteDetails(details)
         } catch (error) {
           setSiteError(error instanceof Error ? error.message : "无法读取当前站点设置")
@@ -489,133 +767,54 @@ function ProjectDeployCard({
     await openRemoteBrowser(parentPath || browserDetails.remoteAppDir)
   }
 
-  const openEnvEditor = async () => {
-    if (!connectionId) {
-      setEnvError("请先选择目标 VPS")
-      setEnvOpen(true)
-      return
-    }
-    setEnvOpen(true)
-    setEnvLoading(true)
-    setEnvError(undefined)
-    try {
-      const result = await getDesktopApi().projects.getProjectEnv({
-        projectId: project.id,
-        connectionId,
-      })
-      if (!result.ok) {
-        setEnvError(result.message)
-        return
-      }
-      setEnvText(result.content ?? "")
-    } catch (error) {
-      setEnvError(error instanceof Error ? error.message : "读取远端 .env 失败")
-    } finally {
-      setEnvLoading(false)
-    }
-  }
-
-  const saveEnv = async () => {
-    await persistEnv(false)
-  }
-
-  const saveAndRestartEnv = async () => {
-    await persistEnv(true)
-  }
-
-  const persistEnv = async (restartAfterSave: boolean) => {
-    if (!connectionId) {
-      setEnvError("请先选择目标 VPS")
-      return
-    }
-    setEnvSaving(true)
-    setEnvError(undefined)
-    try {
-      const result = await getDesktopApi().projects.saveProjectEnv({
-        projectId: project.id,
-        connectionId,
-        content: envText,
-      })
-      if (!result.ok) {
-        setEnvError(result.message)
-        return
-      }
-      setEnvText(result.content ?? envText)
-      if (restartAfterSave) {
-        const restarted = await getDesktopApi().projects.restartProjectService({
-          projectId: project.id,
-          connectionId,
-        })
-        if (!restarted.ok) {
-          setEnvError(restarted.message)
-          return
-        }
-      }
-      setEnvOpen(false)
-    } catch (error) {
-      setEnvError(error instanceof Error ? error.message : "保存远端 .env 失败")
-    } finally {
-      setEnvSaving(false)
-    }
-  }
-
-  const rotateSecret = async () => {
-    if (!connectionId) {
-      setEnvError("请先选择目标 VPS")
-      return
-    }
-    setEnvSaving(true)
-    setEnvError(undefined)
-    try {
-      const rotated = await getDesktopApi().projects.rotateProjectSecret({
-        projectId: project.id,
-        connectionId,
-      })
-      if (!rotated.ok) {
-        setEnvError(rotated.message)
-        return
-      }
-      setEnvText(rotated.content ?? envText)
-    } catch (error) {
-      setEnvError(error instanceof Error ? error.message : "重置 SESSION_SECRET 失败")
-    } finally {
-      setEnvSaving(false)
-    }
-  }
-
   return (
     <>
       <Card
+        id={`project-card-${project.id}`}
         className={cn(
-          "overflow-visible border-border/80 shadow-sm transition",
-          success && "border-emerald-500/35 bg-gradient-to-br from-emerald-500/[0.06] to-card",
-          failed && !success && "border-destructive/25 bg-destructive/[0.03]",
+          "overflow-visible rounded-2xl border border-border/70 bg-card shadow-sm transition",
+          success && "border-emerald-500/30",
+          highlighted && "border-primary/40 bg-primary/[0.04] ring-2 ring-primary/20",
         )}
       >
-        <CardHeader className="space-y-2 pb-3">
+        <CardHeader className="space-y-2 px-5 py-5 pb-3">
           <div className="flex flex-wrap items-start justify-between gap-2">
-            <div className="min-w-0 space-y-1">
-              <div className="flex flex-wrap items-center gap-2">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <CardTitle className="truncate text-base font-semibold">{project.displayName}</CardTitle>
-                <Badge variant="secondary" className="shrink-0 font-normal">
-                  本地开发
-                </Badge>
-                {success ? (
-                  <Badge className="shrink-0 border-emerald-500/40 bg-emerald-500/15 font-normal text-emerald-800 dark:text-emerald-200">
-                    已部署
+                {effectiveRemoteAppDir ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="size-7 rounded-md text-muted-foreground"
+                    disabled={!connectionId}
+                    onClick={() => setRemoteInfoOpen(true)}
+                  >
+                    <HelpCircle className="size-4" />
+                  </Button>
+                ) : null}
+              </div>
+              <p className="mt-1 truncate text-[11px] text-muted-foreground">{project.localPath}</p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {overviewBadges.map((item) => (
+                  <Badge key={item.label} variant="outline" className={cn("h-5 rounded-md px-2 font-normal shadow-none", item.className)}>
+                    {item.label}
+                  </Badge>
+                ))}
+                {needsAttention ? (
+                  <Badge variant="outline" className="h-5 rounded-md border-amber-500/30 bg-amber-500/10 px-2 font-normal text-amber-700 shadow-none dark:text-amber-200">
+                    需要关注
                   </Badge>
                 ) : null}
               </div>
-              <CardDescription className="break-all font-mono text-[11px] leading-snug">
-                {project.localPath}
-              </CardDescription>
             </div>
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
                   type="button"
                   variant="outline"
-                  className="h-8 shrink-0 rounded-lg border-destructive/25 px-2.5 text-destructive hover:bg-destructive/5 hover:text-destructive"
+                  className="h-8 shrink-0 rounded-lg border-destructive/20 px-2.5 text-xs text-destructive shadow-none hover:bg-destructive/5 hover:text-destructive"
                   disabled={busy}
                 >
                   <Trash2 className="size-4" />
@@ -651,43 +850,78 @@ function ProjectDeployCard({
             </AlertDialog>
           </div>
         </CardHeader>
-        <CardContent className="space-y-4 pt-0">
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">目标服务器</Label>
-            <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-sm">
-              {connectionId ? connectionLabel(connections, connectionId) : "请先在上方选择服务器"}
-            </div>
+        <CardContent className="space-y-4 px-5 pb-5 pt-0">
+          <div className="grid gap-2 rounded-xl border border-border/60 bg-muted/[0.06] px-3 py-3 text-[11px] text-muted-foreground sm:grid-cols-2">
+            <p className="truncate">
+              最近部署
+              <span className="ml-1 text-foreground">
+                {project.lastDeployAt ? new Date(project.lastDeployAt).toLocaleString() : "尚无记录"}
+              </span>
+            </p>
+            <p className="truncate">
+              远端目录
+              <span className="ml-1 text-foreground">{effectiveRemoteAppDir ?? "未配置"}</span>
+            </p>
+            <p className="truncate">
+              代码状态
+              <span className="ml-1 text-foreground">{formatActionSummary(hintByAction.get("code"))}</span>
+            </p>
+            <p className="truncate">
+              备份计划
+              <span className="ml-1 text-foreground">{backupSchedule?.schedule ?? "off"}</span>
+            </p>
           </div>
-
-          {hasScriptActions ? (
-            <div className="space-y-2">
-              <Label className="text-xs text-muted-foreground">项目动作</Label>
-              <select
-                className={cn(
-                  "h-9 w-full rounded-lg border border-input bg-background px-3 font-mono text-xs shadow-sm",
-                  "ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  "disabled:cursor-not-allowed disabled:opacity-50",
-                )}
-                value={npmScripts.length ? npmScript : ""}
-                onChange={(event) => setNpmScript(event.target.value)}
-                disabled={busy || bootstrapping || npmScripts.length === 0}
-              >
-                {npmScripts.length === 0 ? (
-                  <option value="">未找到可用动作</option>
-                ) : (
-                  npmScripts.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))
-                )}
-              </select>
+          <div className="flex items-start gap-2 rounded-xl border border-border/60 bg-background px-3 py-2.5">
+            <span className={cn("mt-0.5 rounded-full px-2 py-0.5 text-[11px] font-medium", nextAction.tone)}>
+              {nextAction.label}
+            </span>
+            <p className="min-w-0 flex-1 text-[11px] leading-5 text-muted-foreground">
+              {nextAction.detail}
+            </p>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+            <div className="rounded-xl border border-border/60 bg-muted/[0.05] px-3 py-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <p className={cn("text-[11px] font-medium", initSummary?.tone ?? "text-muted-foreground")}>
+                  {initSummary?.title ?? "最近初始化"}
+                </p>
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  {latestInitLog ? new Date(latestInitLog.at).toLocaleTimeString() : "暂无"}
+                </span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">
+                {initSummary?.detail ?? "尚未执行初始化或没有记录。"}
+              </p>
             </div>
-          ) : (
-            <div className="space-y-2">
+            <div className="rounded-xl border border-border/60 bg-muted/[0.05] px-3 py-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <p className={cn("text-[11px] font-medium", actionSummary?.tone ?? "text-muted-foreground")}>
+                  {actionSummary?.title ?? "最近部署/操作"}
+                </p>
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  {latestActionLog ? new Date(latestActionLog.at).toLocaleTimeString() : "暂无"}
+                </span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">
+                {actionSummary?.detail ?? "尚未记录部署、同步或备份结果。"}
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-full min-h-16 rounded-xl px-3 text-xs shadow-none"
+              disabled={!fullLogs?.length}
+              onClick={() => setLogsOpen(true)}
+            >
+              <FileText className="size-4" />
+              查看日志
+            </Button>
+          </div>
+          {hasScriptActions ? null : (
+            <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">远端父目录（可选）</Label>
               <Input
-                className="h-9 rounded-lg font-mono text-xs"
+                className="h-9 rounded-xl font-mono text-xs"
                 placeholder="例如 /var/www 或 ~/sites（可选）"
                 value={remoteParent}
                 onChange={(e) => setRemoteParent(e.target.value)}
@@ -695,115 +929,14 @@ function ProjectDeployCard({
               />
             </div>
           )}
-
-          {effectiveRemoteAppDir ? (
-            <div className="space-y-3 rounded-xl border border-border/70 bg-muted/[0.08] p-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="space-y-1">
-                  <p className="text-sm font-medium">远端项目</p>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={remoteDetails?.service.active ? "default" : "secondary"} className="font-normal">
-                      <Server className="mr-1 size-3.5" />
-                      {remoteRuntimeHint}
-                    </Badge>
-                    {remoteDetails?.site.mode === "domain" ? (
-                      <Badge variant="secondary" className="font-normal">
-                        <Globe className="mr-1 size-3.5" />
-                        域名访问
-                      </Badge>
-                    ) : remoteDetails?.site.mode === "port" ? (
-                      <Badge variant="secondary" className="font-normal">
-                        <ExternalLink className="mr-1 size-3.5" />
-                        端口预览
-                      </Badge>
-                    ) : null}
-                    {remoteDetails?.site.sslEnabled ? (
-                      <Badge className="border-emerald-500/40 bg-emerald-500/15 font-normal text-emerald-800 dark:text-emerald-200">
-                        <ShieldCheck className="mr-1 size-3.5" />
-                        HTTPS
-                      </Badge>
-                    ) : null}
-                  </div>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="rounded-lg"
-                  disabled={remoteDetailsLoading || !connectionId}
-                  onClick={() => void refreshRemoteDetails()}
-                >
-                  {remoteDetailsLoading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  刷新状态
-                </Button>
-              </div>
-
-              <div className={cn("grid gap-3", remoteDetails?.publicUrl ? "md:grid-cols-2" : "md:grid-cols-1")}>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-muted-foreground">部署位置</Label>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="h-auto w-full justify-start rounded-lg border border-border/70 px-3 py-2 font-mono text-xs"
-                    disabled={!effectiveRemoteAppDir || !connectionId}
-                    onClick={() => void openRemoteBrowser(effectiveRemoteAppDir)}
-                  >
-                    <FolderOpen className="size-4 shrink-0" />
-                    <span className="truncate text-left">{effectiveRemoteAppDir}</span>
-                  </Button>
-                </div>
-
-                {remoteDetails?.publicUrl ? (
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">访问入口</Label>
-                    <div className="rounded-lg border border-border/70 bg-background px-3 py-2 text-xs">
-                      <button type="button" className="break-all text-left text-sky-600 hover:underline" onClick={() => window.open(remoteDetails.publicUrl!, "_blank")}>
-                        {remoteDetails.publicUrl}
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="rounded-lg"
-                  disabled={!connectionId}
-                  onClick={() => setSiteSettingsOpen(true)}
-                >
-                  <Settings2 className="size-4" />
-                  设置站点
-                </Button>
-                <Button type="button" variant="outline" className="rounded-lg" disabled={!remoteDetails?.service.configured || !connectionId} onClick={() => void restartRemoteService()}>
-                  <Server className="size-4" />
-                  重启服务
-                </Button>
-              </div>
-
-              {remoteDetails ? (
-                <div className="grid gap-2 text-[11px] text-muted-foreground md:grid-cols-2">
-                  <p>服务单元：{remoteDetails.service.unit ?? "未配置"}</p>
-                  <p>应用端口：{remoteDetails.appPort ?? "未知"}</p>
-                  <p>nginx：{remoteDetails.site.nginxInstalled ? "已安装" : "未安装"}</p>
-                  <p>certbot：{remoteDetails.site.certbotInstalled ? "已安装" : "未安装"}</p>
-                  <p>域名：{remoteDetails.site.domain ?? "未配置"}</p>
-                  <p>SSL：{remoteDetails.site.sslEnabled ? "已启用" : "未启用"}</p>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          {initHint ? <p className="text-[11px] leading-relaxed text-muted-foreground">{initHint}</p> : null}
-
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className={cn("grid gap-2", hasScriptActions ? "grid-cols-2" : "sm:grid-cols-3")}>
             {shouldShowInitializeButton ? (
               <AlertDialog open={initDialogOpen} onOpenChange={setInitDialogOpen}>
                 <AlertDialogTrigger asChild>
                   <Button
                     type="button"
-                    variant="secondary"
-                    className="w-full rounded-lg"
+                    variant="outline"
+                    className="h-9 w-full rounded-xl text-xs shadow-none"
                     disabled={bootstrapping || busy || !connectionId}
                   >
                     {bootstrapping ? (
@@ -840,93 +973,65 @@ function ProjectDeployCard({
                 </AlertDialogContent>
               </AlertDialog>
             ) : (
-              <div className="hidden sm:block" />
+              hasScriptActions ? null : <div className="hidden sm:block" />
             )}
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full rounded-lg"
-              disabled={busy || bootstrapping || !connectionId}
-              onClick={() => void openEnvEditor()}
-            >
-              <FilePenLine className="size-4" />
-              编辑 .env
-            </Button>
-            <Button
-              type="button"
-              className="w-full rounded-lg"
-              disabled={
-                busy ||
-                bootstrapping ||
-                !connectionId ||
-                (strategy === "local-npm-script" && (!npmScript || npmScripts.length === 0))
-              }
-              onClick={() =>
-                onDeploy({
-                  connectionId,
-                  strategy,
-                  remoteParentPath: strategy === "sftp" ? remoteParent.trim() || undefined : undefined,
-                  npmScript: hasScriptActions ? npmScript : undefined,
-                })
-              }
-            >
-              {busy ? (
-                <>
-                  <LoaderCircle className="size-4 animate-spin" />
-                  正在{selectedActionLabel}…
-                </>
-              ) : (
-                <>
-                  <Rocket className="size-4" />
-                  {selectedActionLabel}
-                </>
-              )}
-            </Button>
+            {hasScriptActions ? (
+              <>
+                {npmScripts.map((item) => {
+                  const running = busy && npmScript === item.value
+                  return (
+                    <Button
+                      key={item.value}
+                      type="button"
+                      variant={item.value === npmScript && running ? "default" : "outline"}
+                      className="h-10 w-full rounded-xl text-sm shadow-none"
+                      disabled={busy || bootstrapping || !connectionId}
+                      onClick={() => executeScriptAction(item)}
+                    >
+                      {running ? (
+                        <>
+                          <LoaderCircle className="size-4 animate-spin" />
+                          正在执行…
+                        </>
+                      ) : (
+                        <>
+                          <Rocket className="size-4" />
+                          {item.label}
+                        </>
+                      )}
+                    </Button>
+                  )
+                })}
+              </>
+            ) : (
+              <Button
+                type="button"
+                className="h-9 w-full rounded-xl text-xs"
+                disabled={busy || bootstrapping || !connectionId}
+                onClick={() =>
+                  onDeploy({
+                    connectionId,
+                    strategy,
+                    remoteParentPath: remoteParent.trim() || undefined,
+                  })
+                }
+              >
+                {busy ? (
+                  <>
+                    <LoaderCircle className="size-4 animate-spin" />
+                    正在部署代码…
+                  </>
+                ) : (
+                  <>
+                    <Rocket className="size-4" />
+                    部署代码
+                  </>
+                )}
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>
-
-      <Dialog open={envOpen} onOpenChange={setEnvOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>编辑远端 .env</DialogTitle>
-            <DialogDescription>{project.displayName}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            {envError ? <p className="text-sm text-destructive">{envError}</p> : null}
-            <Textarea
-              value={envText}
-              onChange={(e) => setEnvText(e.target.value)}
-              className="min-h-[360px] font-mono text-xs"
-              disabled={envLoading || envSaving}
-            />
-            <p className="text-[11px] text-muted-foreground">
-              保存后需要重新点击“一键部署”或手动重启服务才会完全生效。
-            </p>
-          </div>
-          <DialogFooter className="gap-2 sm:justify-between">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={() => void rotateSecret()}
-              disabled={envLoading || envSaving}
-            >
-              重置 SESSION_SECRET
-            </Button>
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" onClick={() => setEnvOpen(false)} disabled={envSaving}>
-                关闭
-              </Button>
-              <Button type="button" onClick={() => void saveEnv()} disabled={envLoading || envSaving}>
-                {envSaving ? "保存中…" : "保存 .env"}
-              </Button>
-              <Button type="button" onClick={() => void saveAndRestartEnv()} disabled={envLoading || envSaving}>
-                {envSaving ? "处理中…" : "保存并重启服务"}
-              </Button>
-            </div>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={browserOpen} onOpenChange={setBrowserOpen}>
         <DialogContent className="max-w-4xl">
@@ -999,6 +1104,181 @@ function ProjectDeployCard({
               关闭
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>项目操作日志</DialogTitle>
+            <DialogDescription>{project.displayName}</DialogDescription>
+          </DialogHeader>
+          <Input
+            className="h-9 rounded-lg text-sm"
+            placeholder="搜索日志内容，例如 failed、backup、nginx、端口号"
+            value={logQuery}
+            onChange={(event) => setLogQuery(event.target.value)}
+          />
+          <div className="flex flex-wrap gap-2">
+            {[
+              { key: "all", label: "全部" },
+              { key: "init", label: "初始化" },
+              { key: "deploy", label: "部署" },
+              { key: "backup", label: "备份" },
+              { key: "error", label: "错误" },
+            ].map((item) => (
+              <Button
+                key={item.key}
+                type="button"
+                variant="outline"
+                className={cn(
+                  "h-8 rounded-full px-3 text-[11px] shadow-none",
+                  logFilter === item.key && "border-primary/40 bg-primary/[0.06] text-foreground",
+                )}
+                onClick={() => setLogFilter(item.key as ProjectLogFilter)}
+              >
+                {item.label}
+                <span className="rounded-full bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  {logFilterCounts[item.key as ProjectLogFilter]}
+                </span>
+              </Button>
+            ))}
+          </div>
+          <div className="max-h-[60vh] overflow-auto rounded-xl border border-border/70 bg-muted/[0.04]">
+            {filteredLogs.length ? (
+              <div className="divide-y divide-border/60">
+                {filteredLogs.slice().reverse().map((entry) => {
+                  const summary = summarizeProjectLog(entry)
+                  const raw = entry.chunk.replace(/\r/g, "").trim()
+                  return (
+                    <div key={entry.id} className="px-4 py-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className={cn("text-xs font-medium", summary?.tone ?? "text-foreground")}>
+                          {summary?.title ?? (entry.stream === "stderr" ? "错误输出" : "日志")}
+                        </p>
+                        <span className="shrink-0 text-[11px] text-muted-foreground">
+                          {new Date(entry.at).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="mt-1 whitespace-pre-wrap break-all font-mono text-[11px] leading-5 text-muted-foreground">
+                        {raw || entry.chunk}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+                {fullLogs?.length ? "当前筛选条件下没有日志" : "暂无项目日志"}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setLogsOpen(false)}>
+              关闭
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={remoteInfoOpen} onOpenChange={setRemoteInfoOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>远端概览</DialogTitle>
+            <DialogDescription>{project.displayName}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant={remoteDetails?.service.active ? "default" : "secondary"} className="h-5 rounded-md px-2 font-normal shadow-none">
+                  <Server className="mr-1 size-3.5" />
+                  {remoteRuntimeHint}
+                </Badge>
+                {remoteDetails?.site.mode === "domain" ? (
+                  <Badge variant="secondary" className="h-5 rounded-md px-2 font-normal shadow-none">
+                    <Globe className="mr-1 size-3.5" />
+                    域名访问
+                  </Badge>
+                ) : remoteDetails?.site.mode === "port" ? (
+                  <Badge variant="secondary" className="h-5 rounded-md px-2 font-normal shadow-none">
+                    <ExternalLink className="mr-1 size-3.5" />
+                    端口预览
+                  </Badge>
+                ) : null}
+                {remoteDetails?.site.sslEnabled ? (
+                  <Badge className="h-5 rounded-md border-emerald-500/30 bg-emerald-500/10 px-2 font-normal text-emerald-700 shadow-none dark:text-emerald-200">
+                    <ShieldCheck className="mr-1 size-3.5" />
+                    HTTPS
+                  </Badge>
+                ) : null}
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-8 rounded-lg px-2.5 text-xs text-muted-foreground"
+                disabled={remoteDetailsLoading || !connectionId}
+                onClick={() => void refreshRemoteDetails()}
+              >
+                {remoteDetailsLoading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                刷新状态
+              </Button>
+            </div>
+
+            <div className={cn("grid gap-3", remoteDetails?.publicUrl ? "md:grid-cols-2" : "md:grid-cols-1")}>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">部署位置</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-auto w-full justify-start rounded-xl border border-border/60 bg-background px-3 py-2.5 font-mono text-[11px] shadow-none"
+                  disabled={!effectiveRemoteAppDir || !connectionId}
+                  onClick={() => void openRemoteBrowser(effectiveRemoteAppDir ?? undefined)}
+                >
+                  <FolderOpen className="size-4 shrink-0" />
+                  <span className="truncate text-left">{effectiveRemoteAppDir}</span>
+                </Button>
+              </div>
+
+              {remoteDetails?.publicUrl ? (
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">访问入口</Label>
+                  <div className="rounded-xl border border-border/60 bg-background px-3 py-2.5 text-[11px]">
+                    <button type="button" className="break-all text-left text-sky-600 hover:underline" onClick={() => window.open(remoteDetails.publicUrl!, "_blank")}>
+                      {remoteDetails.publicUrl}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-8 rounded-lg px-2.5 text-xs shadow-none"
+                disabled={!connectionId}
+                onClick={() => setSiteSettingsOpen(true)}
+              >
+                <Settings2 className="size-4" />
+                设置站点
+              </Button>
+              <Button type="button" variant="outline" className="h-8 rounded-lg px-2.5 text-xs shadow-none" disabled={!remoteDetails?.service.configured || !connectionId} onClick={() => void restartRemoteService()}>
+                <Server className="size-4" />
+                重启服务
+              </Button>
+            </div>
+
+            {remoteDetails ? (
+              <div className="grid gap-x-4 gap-y-2 border-t border-border/60 pt-3 text-[11px] md:grid-cols-3">
+                <p className="truncate text-muted-foreground">服务 <span className="ml-1 text-foreground">{remoteDetails.service.unit ?? "未配置"}</span></p>
+                <p className="text-muted-foreground">端口 <span className="ml-1 text-foreground">{remoteDetails.appPort ?? "未知"}</span></p>
+                <p className="text-muted-foreground">域名 <span className="ml-1 text-foreground">{remoteDetails.site.domain ?? "未配置"}</span></p>
+                <p className="text-muted-foreground">nginx <span className="ml-1 text-foreground">{remoteDetails.site.nginxInstalled ? "已安装" : "未安装"}</span></p>
+                <p className="text-muted-foreground">certbot <span className="ml-1 text-foreground">{remoteDetails.site.certbotInstalled ? "已安装" : "未安装"}</span></p>
+                <p className="text-muted-foreground">SSL <span className="ml-1 text-foreground">{remoteDetails.site.sslEnabled ? "已启用" : "未启用"}</span></p>
+              </div>
+            ) : null}
+          </div>
         </DialogContent>
       </Dialog>
 
@@ -1099,9 +1379,14 @@ function ProjectDeployCard({
   )
 }
 
-export function ProjectManagementPanel({ connections, selectedConnectionId }: ProjectManagementPanelProps) {
+export function ProjectManagementPanel({
+  connections,
+  selectedConnectionId,
+  highlightedProjectId,
+}: ProjectManagementPanelProps) {
   const {
     projects,
+    operationLogs,
     isLoading,
     isImporting,
     isDeploying,
@@ -1115,12 +1400,92 @@ export function ProjectManagementPanel({ connections, selectedConnectionId }: Pr
     deleteProject,
     initializeProject,
     deployProject,
+    appendDeployLog,
+    appendOperationLog,
+    loadOperationLogs,
     clearFeedback,
   } = useProjectStore()
+  const [actionHintsByProject, setActionHintsByProject] = useState<Record<string, ProjectActionHint[]>>({})
+  const [backupScheduleByProject, setBackupScheduleByProject] = useState<Record<string, ProjectBackupScheduleState>>({})
+  const [statusFilter, setStatusFilter] = useState<"all" | "attention" | "failed" | "linked">("all")
+  const fullLogsByProject = useMemo(() => {
+    const map: Record<string, ProjectOperationLogEntry[]> = {}
+    for (const entry of operationLogs) {
+      const current = map[entry.projectId] ?? []
+      current.push(entry)
+      map[entry.projectId] = current
+    }
+    return map
+  }, [operationLogs])
+  const recentLogsByProject = useMemo(() => {
+    const map: Record<string, ProjectOperationLogEntry[]> = {}
+    for (const entry of operationLogs) {
+      const current = map[entry.projectId] ?? []
+      current.push(entry)
+      map[entry.projectId] = current.slice(-8)
+    }
+    return map
+  }, [operationLogs])
 
   useEffect(() => {
     void loadProjects()
   }, [loadProjects])
+
+  useEffect(() => {
+    const unsubscribe = getDesktopApi().projects.onDeployLog((event) => {
+      appendDeployLog(event.projectId, event.chunk)
+      appendOperationLog({
+        id: `${event.projectId}-${event.at}-${Math.random().toString(36).slice(2, 7)}`,
+        projectId: event.projectId,
+        stream: event.stream,
+        chunk: event.chunk,
+        at: event.at,
+      })
+    })
+    return unsubscribe
+  }, [appendDeployLog, appendOperationLog])
+
+  useEffect(() => {
+    void loadOperationLogs(400)
+  }, [loadOperationLogs])
+
+  useEffect(() => {
+    if (projects.length === 0) {
+      setActionHintsByProject({})
+      setBackupScheduleByProject({})
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      const entries = await Promise.all(
+        projects.map(async (project) => {
+          const [hints, backup] = await Promise.all([
+            getDesktopApi().projects.getProjectActionHints(project.id),
+            getDesktopApi().projects.getProjectBackupSchedule(project.id),
+          ])
+          return {
+            id: project.id,
+            hints: hints.hints,
+            backup,
+          }
+        }),
+      ).catch(() => [])
+      if (cancelled) {
+        return
+      }
+      const nextHints: Record<string, ProjectActionHint[]> = {}
+      const nextBackup: Record<string, ProjectBackupScheduleState> = {}
+      for (const entry of entries) {
+        nextHints[entry.id] = entry.hints
+        nextBackup[entry.id] = entry.backup
+      }
+      setActionHintsByProject(nextHints)
+      setBackupScheduleByProject(nextBackup)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [projects, deployingProjectId])
 
   useEffect(() => {
     if (info) {
@@ -1142,6 +1507,17 @@ export function ProjectManagementPanel({ connections, selectedConnectionId }: Pr
     }
   }, [info, error, clearFeedback])
 
+  useEffect(() => {
+    if (!highlightedProjectId) {
+      return
+    }
+    const target = window.document.getElementById(`project-card-${highlightedProjectId}`)
+    if (!target) {
+      return
+    }
+    target.scrollIntoView({ behavior: "smooth", block: "center" })
+  }, [highlightedProjectId, projects])
+
   const sorted = useMemo(() => {
     const copy = [...projects]
     copy.sort((a, b) => {
@@ -1155,12 +1531,73 @@ export function ProjectManagementPanel({ connections, selectedConnectionId }: Pr
     })
     return copy
   }, [projects])
+  const filteredProjects = useMemo(() => {
+    return sorted.filter((project) => {
+      if (statusFilter === "failed") {
+        return project.lastDeployStatus === "failed"
+      }
+      if (statusFilter === "linked") {
+        return Boolean(selectedConnectionId && project.lastConnectionId === selectedConnectionId)
+      }
+      if (statusFilter === "attention") {
+        const hints = actionHintsByProject[project.id] ?? []
+        return (
+          project.lastDeployStatus === "failed" ||
+          hints.some((item) => item.needsAttention)
+        )
+      }
+      return true
+    })
+  }, [actionHintsByProject, selectedConnectionId, sorted, statusFilter])
+  const summary = useMemo(
+    () => ({
+      total: projects.length,
+      success: projects.filter((item) => item.lastDeployStatus === "success").length,
+      failed: projects.filter((item) => item.lastDeployStatus === "failed").length,
+      linked: projects.filter((item) => item.lastConnectionId === selectedConnectionId).length,
+      attention: projects.filter((project) => {
+        const hints = actionHintsByProject[project.id] ?? []
+        return project.lastDeployStatus === "failed" || hints.some((item) => item.needsAttention)
+      }).length,
+    }),
+    [actionHintsByProject, projects, selectedConnectionId],
+  )
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
           <h3 className="text-lg font-semibold tracking-tight text-foreground">项目管理</h3>
+          <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+            <span className="rounded-full bg-muted px-2 py-1">项目 {summary.total}</span>
+            <span className="rounded-full bg-muted px-2 py-1">部署正常 {summary.success}</span>
+            <span className="rounded-full bg-muted px-2 py-1">失败 {summary.failed}</span>
+            {selectedConnectionId ? <span className="rounded-full bg-muted px-2 py-1">当前服务器关联 {summary.linked}</span> : null}
+          </div>
+          <div className="flex flex-wrap gap-2 pt-1">
+            {[
+              { key: "all", label: "全部", count: summary.total },
+              { key: "attention", label: "需关注", count: summary.attention },
+              { key: "failed", label: "失败", count: summary.failed },
+              { key: "linked", label: "当前服务器", count: summary.linked },
+            ].map((item) => (
+              <Button
+                key={item.key}
+                type="button"
+                variant="outline"
+                className={cn(
+                  "h-7 rounded-full px-3 text-[11px] shadow-none",
+                  statusFilter === item.key && "border-primary/40 bg-primary/[0.06] text-foreground",
+                )}
+                onClick={() => setStatusFilter(item.key as typeof statusFilter)}
+              >
+                {item.label}
+                <span className="rounded-full bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  {item.count}
+                </span>
+              </Button>
+            ))}
+          </div>
         </div>
         <Button
           type="button"
@@ -1192,14 +1629,20 @@ export function ProjectManagementPanel({ connections, selectedConnectionId }: Pr
           <p className="text-base font-medium text-foreground">还没有登记任何本地项目</p>
           <p className="max-w-md text-sm text-muted-foreground">点击「导入本地项目」选择仓库根目录。</p>
         </div>
+      ) : filteredProjects.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/10 px-8 py-16 text-center">
+          <p className="text-base font-medium text-foreground">当前筛选下没有项目</p>
+          <p className="max-w-md text-sm text-muted-foreground">切换上方筛选即可查看其他项目。</p>
+        </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {sorted.map((project: LocalProjectRecord) => (
+          {filteredProjects.map((project: LocalProjectRecord) => (
             <ProjectDeployCard
               key={project.id}
               project={project}
               connections={connections}
               selectedConnectionId={selectedConnectionId}
+              highlighted={project.id === highlightedProjectId}
               isDeploying={isDeploying}
               deployingProjectId={deployingProjectId}
               isInitializing={isInitializing}
@@ -1220,6 +1663,31 @@ export function ProjectManagementPanel({ connections, selectedConnectionId }: Pr
                 })
               }}
               onDelete={() => void deleteProject(project.id)}
+              actionHints={actionHintsByProject[project.id]}
+              backupSchedule={backupScheduleByProject[project.id]}
+              recentLogs={recentLogsByProject[project.id]}
+              fullLogs={fullLogsByProject[project.id]}
+              onBackupScheduleChange={(schedule) => {
+                void getDesktopApi()
+                  .projects.setProjectBackupSchedule({ projectId: project.id, schedule })
+                  .then((next) => {
+                    setBackupScheduleByProject((current) => ({
+                      ...current,
+                      [project.id]: next,
+                    }))
+                    toast({
+                      title: "自动备份已更新",
+                      description: schedule === "off" ? "已关闭自动备份" : `已设置为${schedule === "daily" ? "每天" : "每周"}`,
+                    })
+                  })
+                  .catch((error) => {
+                    toast({
+                      variant: "destructive",
+                      title: "自动备份设置失败",
+                      description: error instanceof Error ? error.message : "无法更新自动备份设置",
+                    })
+                  })
+              }}
             />
           ))}
         </div>

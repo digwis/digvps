@@ -7,6 +7,10 @@ import type {
 import type { VpsConnectionInput } from "../../shared/vps"
 import { runRemoteShellCommand } from "./remote-exec"
 
+const PROJECT_REMOTE_DETAILS_CACHE_TTL_MS = 20_000
+const projectRemoteDetailsCache = new Map<string, { expiresAt: number; value: ProjectRemoteDetails }>()
+const projectRemoteDetailsInFlight = new Map<string, Promise<ProjectRemoteDetails>>()
+
 function shellSingleQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
@@ -78,6 +82,23 @@ function parseFiles(output: string): ProjectRemoteFileEntry[] {
     }
     return left.name.localeCompare(right.name)
   })
+}
+
+function projectRemoteDetailsCacheKey(options: {
+  projectId: string
+  connection: VpsConnectionInput
+  remoteAppDir: string
+  remoteService?: string
+  browsePath: string
+}) {
+  const connectionKey = options.connection.id ?? `${options.connection.username}@${options.connection.host}:${options.connection.port}`
+  return [
+    options.projectId,
+    connectionKey,
+    options.remoteAppDir,
+    options.remoteService ?? "",
+    options.browsePath,
+  ].join("::")
 }
 
 function buildRemoteDetailsScript(options: {
@@ -211,7 +232,7 @@ fi
 `
 }
 
-export async function getProjectRemoteDetails(options: {
+async function loadProjectRemoteDetails(options: {
   projectId: string
   connection: VpsConnectionInput
   remoteAppDir: string
@@ -272,6 +293,54 @@ export async function getProjectRemoteDetails(options: {
     },
     checkedAt: new Date().toISOString(),
   }
+}
+
+export async function getProjectRemoteDetails(
+  options: {
+    projectId: string
+    connection: VpsConnectionInput
+    remoteAppDir: string
+    remoteService?: string
+    browsePath?: string
+  },
+  runtimeOptions?: { forceRefresh?: boolean },
+): Promise<ProjectRemoteDetails> {
+  const browsePath = normalizeRemoteChildPath(options.remoteAppDir, options.browsePath)
+  const key = projectRemoteDetailsCacheKey({
+    ...options,
+    browsePath,
+  })
+
+  if (!runtimeOptions?.forceRefresh) {
+    const cached = projectRemoteDetailsCache.get(key)
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.value
+    }
+    const pending = projectRemoteDetailsInFlight.get(key)
+    if (pending) {
+      return await pending
+    }
+  }
+
+  const pending = loadProjectRemoteDetails({
+    ...options,
+    browsePath,
+  })
+    .then((details) => {
+      projectRemoteDetailsCache.set(key, {
+        value: details,
+        expiresAt: Date.now() + PROJECT_REMOTE_DETAILS_CACHE_TTL_MS,
+      })
+      projectRemoteDetailsInFlight.delete(key)
+      return details
+    })
+    .catch((error) => {
+      projectRemoteDetailsInFlight.delete(key)
+      throw error
+    })
+
+  projectRemoteDetailsInFlight.set(key, pending)
+  return await pending
 }
 
 function buildApplySiteSettingsScript(options: {

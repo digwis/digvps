@@ -1,8 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron"
-import type { DependencyServiceAction, DigwisApi, VpsConnectionInput } from "../shared/vps"
 import type {
+  DependencyServiceAction,
+  DigwisApi,
+  SshConfigMutationInput,
+  VpsConnectionInput,
+} from "../shared/vps"
+import type {
+  ProjectBackupSchedule,
   LocalProjectInput,
   ProjectDeployInput,
+  ProjectDeployLogEvent,
   ProjectEnvInput,
   ProjectRemoteDetailsInput,
   ProjectEnvUpdateInput,
@@ -29,6 +36,22 @@ const api: DigwisApi = {
     saveProjectSiteSettings: (payload: ProjectSiteSettingsInput) => ipcRenderer.invoke("projects:save-site-settings", payload),
     initializeProject: (payload: ProjectInitializeInput) => ipcRenderer.invoke("projects:initialize", payload),
     deployProject: (payload: ProjectDeployInput) => ipcRenderer.invoke("projects:deploy", payload),
+    getProjectActionHints: (projectId: string) => ipcRenderer.invoke("projects:get-action-hints", projectId),
+    getProjectBackupSchedule: (projectId: string) =>
+      ipcRenderer.invoke("projects:get-backup-schedule", projectId),
+    setProjectBackupSchedule: (payload: { projectId: string; schedule: ProjectBackupSchedule }) =>
+      ipcRenderer.invoke("projects:set-backup-schedule", payload),
+    listOperationLogs: (payload?: { limit?: number }) =>
+      ipcRenderer.invoke("projects:list-operation-logs", payload),
+    onDeployLog: (handler: (event: ProjectDeployLogEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ProjectDeployLogEvent) => {
+        handler(payload)
+      }
+      ipcRenderer.on("projects:deploy-log", listener)
+      return () => {
+        ipcRenderer.removeListener("projects:deploy-log", listener)
+      }
+    },
   },
   vps: {
     listConnections: () => ipcRenderer.invoke("vps:list"),
@@ -36,10 +59,14 @@ const api: DigwisApi = {
       ipcRenderer.invoke("vps:save", payload),
     testConnection: (payload: VpsConnectionInput) =>
       ipcRenderer.invoke("vps:test", payload),
-    inspectConnection: (payload: VpsConnectionInput) =>
-      ipcRenderer.invoke("vps:inspect", payload),
+    inspectConnection: (payload: VpsConnectionInput, options?: { forceRefresh?: boolean }) =>
+      ipcRenderer.invoke("vps:inspect", payload, options),
     installDependency: (payload: VpsConnectionInput, dependencyId: string) =>
       ipcRenderer.invoke("vps:install-dependency", payload, dependencyId),
+    inspectDependencyUsage: (payload: VpsConnectionInput, dependencyId: string) =>
+      ipcRenderer.invoke("vps:inspect-dependency-usage", payload, dependencyId),
+    uninstallDependency: (payload: VpsConnectionInput, dependencyId: string) =>
+      ipcRenderer.invoke("vps:uninstall-dependency", payload, dependencyId),
     dependencyServiceAction: (
       payload: VpsConnectionInput,
       options: { dependencyId: string; action: DependencyServiceAction; systemdUnit?: string },
@@ -50,8 +77,34 @@ const api: DigwisApi = {
       ipcRenderer.invoke("vps:upgrade-apply", payload, options),
     importLocalConnections: () => ipcRenderer.invoke("vps:import-local"),
     listSshConfigCandidates: () => ipcRenderer.invoke("vps:list-ssh-config-candidates"),
+    getRawSshConfig: () => ipcRenderer.invoke("vps:get-raw-ssh-config"),
+    saveRawSshConfig: (payload: { content: string }) => ipcRenderer.invoke("vps:save-raw-ssh-config", payload),
+    createSshConfigCandidate: (payload: SshConfigMutationInput) =>
+      ipcRenderer.invoke("vps:create-ssh-config-candidate", payload),
+    updateSshConfigCandidate: (payload: SshConfigMutationInput) =>
+      ipcRenderer.invoke("vps:update-ssh-config-candidate", payload),
+    deleteSshConfigCandidate: (payload: { configPath: string; originalName: string }) =>
+      ipcRenderer.invoke("vps:delete-ssh-config-candidate", payload),
     listDiscoveredHosts: () => ipcRenderer.invoke("vps:discover-hosts"),
     deleteConnection: (id: string) => ipcRenderer.invoke("vps:delete", id),
+    createAndInstallSshKey: (payload: VpsConnectionInput) =>
+      ipcRenderer.invoke("vps:create-and-install-ssh-key", payload),
+    browseRemoteFiles: (payload: { connectionId: string; path?: string; forceRefresh?: boolean }) =>
+      ipcRenderer.invoke("vps:files:browse", payload),
+    readRemoteTextFile: (payload: { connectionId: string; path: string }) =>
+      ipcRenderer.invoke("vps:files:read-text", payload),
+    writeRemoteTextFile: (payload: { connectionId: string; path: string; content: string }) =>
+      ipcRenderer.invoke("vps:files:write-text", payload),
+    createRemoteDirectory: (payload: { connectionId: string; parentPath: string; directoryName: string }) =>
+      ipcRenderer.invoke("vps:files:create-directory", payload),
+    renameRemoteEntry: (payload: { connectionId: string; path: string; nextName: string }) =>
+      ipcRenderer.invoke("vps:files:rename", payload),
+    deleteRemoteEntry: (payload: { connectionId: string; path: string }) =>
+      ipcRenderer.invoke("vps:files:delete", payload),
+    uploadRemoteEntries: (payload: { connectionId: string; remotePath: string }) =>
+      ipcRenderer.invoke("vps:files:upload", payload),
+    downloadRemoteEntry: (payload: { connectionId: string; path: string; name: string; type: "file" | "directory" | "symlink" }) =>
+      ipcRenderer.invoke("vps:files:download", payload),
   },
   bitcoin: {
     getPrice: () => ipcRenderer.invoke("bitcoin:get-price"),

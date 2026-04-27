@@ -45,6 +45,23 @@ export type SshConfigCandidate = {
   username: string
   authType: AuthType
   source: "ssh-config"
+  configPath: string
+  identityFilePath?: string
+}
+
+export type SshConfigMutationInput = {
+  configPath: string
+  originalName?: string
+  name: string
+  host: string
+  port: number
+  username: string
+  identityFilePath?: string
+}
+
+export type RawSshConfigFile = {
+  path: string
+  content: string
 }
 
 export type ConnectionTestResult = {
@@ -53,6 +70,62 @@ export type ConnectionTestResult = {
   latencyMs: number
   serverFingerprint?: string
   workingDirectory?: string
+}
+
+export type SshKeySetupResult = {
+  ok: true
+  keyPath: string
+  publicKeyPath: string
+  configPath: string
+  privateKey: string
+  publicKey: string
+  created: boolean
+  message: string
+}
+
+export type RemoteFileType = "file" | "directory" | "symlink"
+
+export type RemoteFileEntry = {
+  name: string
+  path: string
+  type: RemoteFileType
+  size: number
+  modifiedAt?: string
+}
+
+export type RemoteFileBrowseResult = {
+  currentPath: string
+  parentPath?: string | null
+  rootPath: string
+  focusedPath?: string | null
+  focusedType?: RemoteFileType | null
+  transport?: "helper" | "sftp"
+  entries: RemoteFileEntry[]
+}
+
+export type RemoteFileReadResult = {
+  path: string
+  content: string
+  size: number
+  modifiedAt?: string
+}
+
+export type RemoteFileMutationResult = {
+  ok: true
+  path: string
+  message: string
+}
+
+export type RemoteFileUploadResult = {
+  ok: true
+  uploadedCount: number
+  message: string
+}
+
+export type RemoteFileDownloadInput = {
+  path: string
+  name: string
+  type: RemoteFileType
 }
 
 export type RemotePackageStatus = {
@@ -78,6 +151,20 @@ export type DependencyInstallResult = {
   stdout: string
 }
 
+export type DependencyUsageProject = {
+  projectId: string
+  displayName: string
+  localPath: string
+  reasons: string[]
+}
+
+export type DependencyUsageReport = {
+  dependencyId: string
+  connectionId?: string
+  checkedAt: string
+  projects: DependencyUsageProject[]
+}
+
 export type DependencyServiceAction = "restart" | "stop" | "start"
 
 export type SystemMetric = {
@@ -88,11 +175,29 @@ export type SystemMetric = {
 /** 远程脚本采集的实时资源占用（百分比 0–100；网络为估算速率 B/s） */
 export type InspectionTelemetry = {
   cpuPercent: number
+  cpuIowaitPercent: number
+  cpuStealPercent: number
   memoryPercent: number
   diskPercent: number
+  inodePercent: number
   loadPercent: number
   netDownBps: number
   netUpBps: number
+}
+
+export type InspectionPortCheck = {
+  label: string
+  port: number
+  listening: boolean
+}
+
+export type InspectionReachabilityCheck = {
+  label: string
+  url: string
+  ok: boolean
+  statusCode?: number
+  responseTimeMs?: number
+  detail?: string
 }
 
 export type VpsInspection = {
@@ -106,6 +211,8 @@ export type VpsInspection = {
   metrics: SystemMetric[]
   /** 可选：旧版脚本无该段时前端降级为纯文本指标 */
   telemetry?: InspectionTelemetry
+  portChecks?: InspectionPortCheck[]
+  reachabilityChecks?: InspectionReachabilityCheck[]
   packages: RemotePackageStatus[]
   checkedAt: string
 }
@@ -141,8 +248,16 @@ export type DigwisApi = {
     listConnections: () => Promise<VpsConnectionRecord[]>
     saveConnection: (payload: VpsConnectionInput) => Promise<VpsConnectionRecord>
     testConnection: (payload: VpsConnectionInput) => Promise<ConnectionTestResult>
-    inspectConnection: (payload: VpsConnectionInput) => Promise<VpsInspection>
+    inspectConnection: (payload: VpsConnectionInput, options?: { forceRefresh?: boolean }) => Promise<VpsInspection>
     installDependency: (
+      payload: VpsConnectionInput,
+      dependencyId: string,
+    ) => Promise<DependencyInstallResult>
+    inspectDependencyUsage: (
+      payload: VpsConnectionInput,
+      dependencyId: string,
+    ) => Promise<DependencyUsageReport>
+    uninstallDependency: (
       payload: VpsConnectionInput,
       dependencyId: string,
     ) => Promise<DependencyInstallResult>
@@ -157,8 +272,24 @@ export type DigwisApi = {
     ) => Promise<SystemUpgradeApplyResult>
     importLocalConnections: () => Promise<VpsConnectionRecord[]>
     listSshConfigCandidates: () => Promise<SshConfigCandidate[]>
+    getRawSshConfig: () => Promise<RawSshConfigFile>
+    saveRawSshConfig: (payload: { content: string }) => Promise<RawSshConfigFile>
+    createSshConfigCandidate: (payload: SshConfigMutationInput) => Promise<SshConfigCandidate[]>
+    updateSshConfigCandidate: (payload: SshConfigMutationInput) => Promise<SshConfigCandidate[]>
+    deleteSshConfigCandidate: (payload: { configPath: string; originalName: string }) => Promise<SshConfigCandidate[]>
     listDiscoveredHosts: () => Promise<DiscoveredHostCandidate[]>
     deleteConnection: (id: string) => Promise<{ success: true }>
+    createAndInstallSshKey: (payload: VpsConnectionInput) => Promise<SshKeySetupResult>
+    browseRemoteFiles: (payload: { connectionId: string; path?: string; forceRefresh?: boolean }) => Promise<RemoteFileBrowseResult>
+    readRemoteTextFile: (payload: { connectionId: string; path: string }) => Promise<RemoteFileReadResult>
+    writeRemoteTextFile: (payload: { connectionId: string; path: string; content: string }) => Promise<RemoteFileMutationResult>
+    createRemoteDirectory: (
+      payload: { connectionId: string; parentPath: string; directoryName: string },
+    ) => Promise<RemoteFileMutationResult>
+    renameRemoteEntry: (payload: { connectionId: string; path: string; nextName: string }) => Promise<RemoteFileMutationResult>
+    deleteRemoteEntry: (payload: { connectionId: string; path: string }) => Promise<RemoteFileMutationResult>
+    uploadRemoteEntries: (payload: { connectionId: string; remotePath: string }) => Promise<RemoteFileUploadResult>
+    downloadRemoteEntry: (payload: { connectionId: string } & RemoteFileDownloadInput) => Promise<RemoteFileMutationResult>
   }
   bitcoin: {
     getPrice: () => Promise<BitcoinPrice>

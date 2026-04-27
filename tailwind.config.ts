@@ -40,6 +40,10 @@ const config: Config = {
           foreground: "hsl(var(--card-foreground))",
           border: "hsl(var(--card-border))",
         },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
         sidebar: {
           DEFAULT: "hsl(var(--sidebar))",
           foreground: "hsl(var(--sidebar-foreground))",

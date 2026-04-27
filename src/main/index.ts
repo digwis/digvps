@@ -17,15 +17,33 @@ import {
   updateLocalProjectDeployResult,
 } from "./services/db"
 import {
+  createSshConfigCandidate,
   discoverKnownHosts,
   discoverLocalConnections,
+  deleteSshConfigCandidate,
+  getRawSshConfig,
   listSshConfigCandidates,
+  saveRawSshConfig,
+  updateSshConfigCandidate,
 } from "./services/discovery"
-import { installRemoteDependency } from "./services/dependency-install"
+import { installRemoteDependency, uninstallRemoteDependency } from "./services/dependency-install"
+import { inspectDependencyUsage } from "./services/dependency-usage"
 import { inspectConnection } from "./services/inspection"
 import { runDependencyServiceAction } from "./services/service-control"
 import { applySystemUpgrade, checkSystemUpgrades } from "./services/system-upgrade"
 import { testConnection } from "./services/ssh"
+import { createAndInstallSshKey } from "./services/ssh-key-setup"
+import {
+  browseRemoteFiles,
+  createRemoteDirectory,
+  deleteRemoteEntry,
+  disposeAllRemoteFileSessions,
+  downloadRemoteEntry,
+  pickAndUploadRemoteEntries,
+  readRemoteTextFile,
+  renameRemoteEntry,
+  writeRemoteTextFile,
+} from "./services/remote-files"
 import { fetchBitcoinPrice } from "./services/bitcoin"
 import { deployLocalProjectToVps, resolveRemoteDeployPathForProject } from "./services/project-deploy"
 import { initializeProjectOnVps } from "./services/project-bootstrap"
@@ -39,15 +57,52 @@ import { inspectProjectRemoteState } from "./services/project-remote-state"
 import { applyProjectSiteSettings, getProjectRemoteDetails } from "./services/project-remote-management"
 import { readProjectDeployConfig, readProjectDeployProfile } from "./services/project-deploy-profile"
 import { readPackageJsonScriptNames, runLocalNpmScript } from "./services/project-local-npm"
+import { inspectProjectActionHints } from "./services/project-action-hints"
+import {
+  getProjectBackupSchedule,
+  initializeProjectActionState,
+  markProjectActionRun,
+  markProjectBackupRun,
+  setProjectBackupSchedule,
+} from "./services/project-action-state"
+import { readLocalPostgresLsn } from "./services/project-db-marker"
+import {
+  appendOperationLog,
+  initializeProjectOperationLog,
+  listOperationLogs,
+} from "./services/project-operation-log"
 import type {
   LocalProjectInput,
+  ProjectActionKind,
+  ProjectBackupSchedule,
   ProjectDeployInput,
   ProjectRemoteDetailsInput,
   ProjectSiteSettingsInput,
 } from "../shared/projects"
-import type { DependencyServiceAction, VpsConnectionInput } from "../shared/vps"
+import type { DependencyServiceAction, SshConfigMutationInput, VpsConnectionInput } from "../shared/vps"
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
+let backupScheduler: NodeJS.Timeout | null = null
+const runningBackupProjects = new Set<string>()
+
+function resolveActionKindFromScript(script?: string): ProjectActionKind | null {
+  if (!script) {
+    return null
+  }
+  if (script === "deploy:panel" || script === "deploy:vps:code") {
+    return "code"
+  }
+  if (script === "sync:vps:admin-data" || script === "sync:vps:data" || script === "sync:vps") {
+    return "data"
+  }
+  if (script === "sync:vps:uploads" || script === "sync:uploads:vps") {
+    return "uploads"
+  }
+  if (script === "backup:vps" || script === "backup") {
+    return "backup"
+  }
+  return null
+}
 
 function createWindow() {
   const workArea = screen.getPrimaryDisplay().workArea
@@ -92,9 +147,27 @@ function createWindow() {
 }
 
 function ensureSavedPayload(payload: VpsConnectionInput) {
+  const existingSecrets = payload.id ? getConnectionSecrets(payload.id) : null
+  const normalizedPassword = payload.password?.trim() ? payload.password : undefined
+  const normalizedPrivateKey = payload.privateKey?.trim() ? payload.privateKey : undefined
+  const normalizedPassphrase =
+    payload.passphrase && payload.passphrase.length > 0 ? payload.passphrase : undefined
+
   return {
     ...payload,
     id: payload.id ?? randomUUID(),
+    password:
+      payload.authType === "password"
+        ? normalizedPassword ?? existingSecrets?.password
+        : undefined,
+    privateKey:
+      payload.authType === "privateKey"
+        ? normalizedPrivateKey ?? existingSecrets?.privateKey
+        : undefined,
+    passphrase:
+      payload.authType === "privateKey"
+        ? normalizedPassphrase ?? existingSecrets?.passphrase
+        : undefined,
   }
 }
 
@@ -147,8 +220,74 @@ function buildProjectScriptEnv(args: {
   return base
 }
 
+function backupDue(schedule: ProjectBackupSchedule, nextRunAt?: string | null) {
+  if (schedule === "off" || !nextRunAt) {
+    return false
+  }
+  return new Date(nextRunAt).getTime() <= Date.now()
+}
+
+async function runDueBackupTasks() {
+  const projects = listLocalProjects()
+  for (const project of projects) {
+    const backup = getProjectBackupSchedule(project.id)
+    if (!backupDue(backup.schedule, backup.nextRunAt)) {
+      continue
+    }
+    if (runningBackupProjects.has(project.id)) {
+      continue
+    }
+    runningBackupProjects.add(project.id)
+    try {
+      if (!project.lastConnectionId) {
+        markProjectBackupRun(project.id)
+        continue
+      }
+      const connection = getVpsConnectionInput(project.lastConnectionId)
+      if (!connection) {
+        markProjectBackupRun(project.id)
+        continue
+      }
+      const config = readProjectDeployConfig(project.localPath)
+      const scripts = readPackageJsonScriptNames(project.localPath)
+      const backupScript = scripts.includes("backup:vps") ? "backup:vps" : scripts.includes("backup") ? "backup" : null
+      if (!backupScript) {
+        markProjectBackupRun(project.id)
+        continue
+      }
+      const result = await runLocalNpmScript(project.localPath, backupScript, {
+        timeoutMs: 2 * 60 * 60 * 1000,
+        env: buildProjectScriptEnv({
+          projectId: project.id,
+          projectPath: project.localPath,
+          connection: resolveStoredPayload(connection),
+          configRemoteAppDir: config?.deploy?.remoteAppDir?.trim() || undefined,
+          configRemoteService: config?.deploy?.remoteService?.trim() || undefined,
+          configPublicCheckUrl: config?.deploy?.publicCheckUrl?.trim() || undefined,
+          configEnv: config?.deploy?.env,
+        }),
+      })
+      if (result.ok) {
+        markProjectActionRun(project.id, "backup")
+      }
+      markProjectBackupRun(project.id)
+    } catch {
+      markProjectBackupRun(project.id)
+    } finally {
+      runningBackupProjects.delete(project.id)
+    }
+  }
+}
+
 app.whenReady().then(() => {
-  initializeDatabase(app.getPath("userData"))
+  const userDataPath = app.getPath("userData")
+  initializeDatabase(userDataPath)
+  initializeProjectActionState(userDataPath)
+  initializeProjectOperationLog(userDataPath)
+  void runDueBackupTasks()
+  backupScheduler = setInterval(() => {
+    void runDueBackupTasks()
+  }, 60_000)
 
   ipcMain.handle("projects:list", async () => {
     return listLocalProjects()
@@ -218,13 +357,16 @@ app.whenReady().then(() => {
     if (!remoteAppDir) {
       throw new Error("项目未配置 deploy.remoteAppDir，且还没有记录远端部署目录")
     }
-    return await getProjectRemoteDetails({
-      projectId: project.id,
-      connection: resolveStoredPayload(connection),
-      remoteAppDir,
-      remoteService: config?.deploy?.remoteService?.trim() || undefined,
-      browsePath: payload.browsePath,
-    })
+    return await getProjectRemoteDetails(
+      {
+        projectId: project.id,
+        connection: resolveStoredPayload(connection),
+        remoteAppDir,
+        remoteService: config?.deploy?.remoteService?.trim() || undefined,
+        browsePath: payload.browsePath,
+      },
+      { forceRefresh: payload.forceRefresh },
+    )
   })
 
   ipcMain.handle("projects:get-env", async (_event, payload: { projectId: string; connectionId: string }) => {
@@ -318,12 +460,15 @@ app.whenReady().then(() => {
     if (!remoteAppDir) {
       throw new Error("项目未配置 deploy.remoteAppDir，且还没有记录远端部署目录")
     }
-    const details = await getProjectRemoteDetails({
-      projectId: project.id,
-      connection: resolveStoredPayload(connection),
-      remoteAppDir,
-      remoteService: config?.deploy?.remoteService?.trim() || undefined,
-    })
+      const details = await getProjectRemoteDetails(
+        {
+          projectId: project.id,
+          connection: resolveStoredPayload(connection),
+          remoteAppDir,
+          remoteService: config?.deploy?.remoteService?.trim() || undefined,
+        },
+        { forceRefresh: true },
+      )
     return await applyProjectSiteSettings({
       projectId: project.id,
       connection: resolveStoredPayload(connection),
@@ -348,9 +493,19 @@ app.whenReady().then(() => {
       throw new Error("该项目未配置远端初始化模板（缺少 digwis-panel.deploy.json 中的 init 段）")
     }
 
+    appendOperationLog({
+      projectId: project.id,
+      stream: "system",
+      chunk: "[start] initialize remote project\n",
+    })
     const result = await initializeProjectOnVps({
       connection: resolveStoredPayload(connection),
       config,
+    })
+    appendOperationLog({
+      projectId: project.id,
+      stream: result.ok ? "system" : "stderr",
+      chunk: `[finish] initialize ${result.ok ? "success" : "failed"} (${Math.round(result.durationMs / 1000)}s)\n${result.message}\n`,
     })
     updateLocalProjectDeployResult(project.id, {
       connectionId: connection.id!,
@@ -377,7 +532,7 @@ app.whenReady().then(() => {
     return result.filePaths[0] ?? null
   })
 
-  ipcMain.handle("projects:deploy", async (_event, payload: ProjectDeployInput) => {
+  ipcMain.handle("projects:deploy", async (event, payload: ProjectDeployInput) => {
     const project = getLocalProject(payload.projectId)
     if (!project) {
       throw new Error("项目不存在或已被删除")
@@ -388,6 +543,22 @@ app.whenReady().then(() => {
     }
 
     const strategy = payload.strategy ?? "sftp"
+    const pushDeployLog = (entry: { script?: string; stream: "stdout" | "stderr" | "system"; chunk: string }) => {
+      const payload = {
+        projectId: project.id,
+        script: entry.script,
+        stream: entry.stream,
+        chunk: entry.chunk,
+        at: new Date().toISOString(),
+      }
+      appendOperationLog({
+        projectId: payload.projectId,
+        stream: payload.stream,
+        chunk: payload.chunk,
+        at: payload.at,
+      })
+      event.sender.send("projects:deploy-log", payload)
+    }
 
     if (strategy === "local-npm-script") {
       const profile = readProjectDeployProfile(project.localPath)
@@ -396,7 +567,16 @@ app.whenReady().then(() => {
       if (!script) {
         throw new Error("请选择要运行的 npm 脚本")
       }
+      pushDeployLog({
+        script,
+        stream: "system",
+        chunk: `[start] npm run ${script}\n`,
+      })
       const result = await runLocalNpmScript(project.localPath, script, {
+        timeoutMs: script === "sync:vps:uploads" || script === "sync:uploads:vps" ? 3 * 60 * 60 * 1000 : undefined,
+        onOutput: (chunk, stream) => {
+          pushDeployLog({ script, stream, chunk })
+        },
         env: buildProjectScriptEnv({
           projectId: project.id,
           projectPath: project.localPath,
@@ -407,6 +587,20 @@ app.whenReady().then(() => {
           configEnv: config?.deploy?.env,
         }),
       })
+      pushDeployLog({
+        script,
+        stream: "system",
+        chunk: `[finish] ${result.ok ? "success" : "failed"} (${Math.round(result.durationMs / 1000)}s)\n`,
+      })
+      if (result.ok) {
+        const action = resolveActionKindFromScript(script)
+        if (action === "data") {
+          const marker = await readLocalPostgresLsn(project.localPath)
+          markProjectActionRun(project.id, action, { marker: marker ?? undefined })
+        } else if (action) {
+          markProjectActionRun(project.id, action)
+        }
+      }
       updateLocalProjectDeployResult(project.id, {
         connectionId: connection.id!,
         remotePath: result.remotePath ?? (config?.deploy?.remoteAppDir?.trim() || undefined),
@@ -448,7 +642,47 @@ app.whenReady().then(() => {
       message: result.message,
       deployKind: "sftp",
     })
+    if (result.ok) {
+      markProjectActionRun(project.id, "code")
+    }
     return result
+  })
+
+  ipcMain.handle("projects:get-action-hints", async (_event, projectId: string) => {
+    const project = getLocalProject(projectId)
+    if (!project) {
+      throw new Error("项目不存在或已被删除")
+    }
+    return await inspectProjectActionHints(project)
+  })
+
+  ipcMain.handle("projects:get-backup-schedule", async (_event, projectId: string) => {
+    const project = getLocalProject(projectId)
+    if (!project) {
+      throw new Error("项目不存在或已被删除")
+    }
+    return getProjectBackupSchedule(project.id)
+  })
+
+  ipcMain.handle(
+    "projects:set-backup-schedule",
+    async (_event, payload: { projectId: string; schedule: ProjectBackupSchedule }) => {
+      const project = getLocalProject(payload.projectId)
+      if (!project) {
+        throw new Error("项目不存在或已被删除")
+      }
+      const next = setProjectBackupSchedule(project.id, payload.schedule)
+      appendOperationLog({
+        projectId: project.id,
+        stream: "system",
+        chunk: `[backup-schedule] ${payload.schedule}\n`,
+      })
+      return next
+    },
+  )
+
+  ipcMain.handle("projects:list-operation-logs", async (_event, payload?: { limit?: number }) => {
+    return listOperationLogs(payload?.limit)
   })
 
   ipcMain.handle("vps:list", async () => {
@@ -462,6 +696,29 @@ app.whenReady().then(() => {
   ipcMain.handle("vps:list-ssh-config-candidates", async () => {
     return listSshConfigCandidates()
   })
+
+  ipcMain.handle("vps:get-raw-ssh-config", async () => {
+    return getRawSshConfig()
+  })
+
+  ipcMain.handle("vps:save-raw-ssh-config", async (_event, payload: { content: string }) => {
+    return saveRawSshConfig(payload.content)
+  })
+
+  ipcMain.handle("vps:create-ssh-config-candidate", async (_event, payload: SshConfigMutationInput) => {
+    return createSshConfigCandidate(payload)
+  })
+
+  ipcMain.handle("vps:update-ssh-config-candidate", async (_event, payload: SshConfigMutationInput) => {
+    return updateSshConfigCandidate(payload)
+  })
+
+  ipcMain.handle(
+    "vps:delete-ssh-config-candidate",
+    async (_event, payload: { configPath: string; originalName: string }) => {
+      return deleteSshConfigCandidate(payload)
+    },
+  )
 
   ipcMain.handle("vps:discover-hosts", async () => {
     const connections = listConnections()
@@ -477,6 +734,100 @@ app.whenReady().then(() => {
     const record = saveConnection(ensureSavedPayload(payload))
     return record
   })
+
+  ipcMain.handle("vps:create-and-install-ssh-key", async (_event, payload: VpsConnectionInput) => {
+    return await createAndInstallSshKey(ensureSavedPayload(payload))
+  })
+
+  ipcMain.handle("vps:files:browse", async (_event, payload: { connectionId: string; path?: string; forceRefresh?: boolean }) => {
+    const connection = getVpsConnectionInput(payload.connectionId)
+    if (!connection) {
+      throw new Error("VPS 连接不存在")
+    }
+    return await browseRemoteFiles(resolveStoredPayload(connection), payload.path, {
+      forceRefresh: payload.forceRefresh,
+    })
+  })
+
+  ipcMain.handle("vps:files:read-text", async (_event, payload: { connectionId: string; path: string }) => {
+    const connection = getVpsConnectionInput(payload.connectionId)
+    if (!connection) {
+      throw new Error("VPS 连接不存在")
+    }
+    return await readRemoteTextFile(resolveStoredPayload(connection), payload.path)
+  })
+
+  ipcMain.handle(
+    "vps:files:write-text",
+    async (_event, payload: { connectionId: string; path: string; content: string }) => {
+      const connection = getVpsConnectionInput(payload.connectionId)
+      if (!connection) {
+        throw new Error("VPS 连接不存在")
+      }
+      return await writeRemoteTextFile(resolveStoredPayload(connection), payload.path, payload.content)
+    },
+  )
+
+  ipcMain.handle(
+    "vps:files:create-directory",
+    async (_event, payload: { connectionId: string; parentPath: string; directoryName: string }) => {
+      const connection = getVpsConnectionInput(payload.connectionId)
+      if (!connection) {
+        throw new Error("VPS 连接不存在")
+      }
+      return await createRemoteDirectory(
+        resolveStoredPayload(connection),
+        payload.parentPath,
+        payload.directoryName,
+      )
+    },
+  )
+
+  ipcMain.handle(
+    "vps:files:rename",
+    async (_event, payload: { connectionId: string; path: string; nextName: string }) => {
+      const connection = getVpsConnectionInput(payload.connectionId)
+      if (!connection) {
+        throw new Error("VPS 连接不存在")
+      }
+      return await renameRemoteEntry(resolveStoredPayload(connection), payload.path, payload.nextName)
+    },
+  )
+
+  ipcMain.handle("vps:files:delete", async (_event, payload: { connectionId: string; path: string }) => {
+    const connection = getVpsConnectionInput(payload.connectionId)
+    if (!connection) {
+      throw new Error("VPS 连接不存在")
+    }
+    return await deleteRemoteEntry(resolveStoredPayload(connection), payload.path)
+  })
+
+  ipcMain.handle(
+    "vps:files:upload",
+    async (event, payload: { connectionId: string; remotePath: string }) => {
+      const connection = getVpsConnectionInput(payload.connectionId)
+      if (!connection) {
+        throw new Error("VPS 连接不存在")
+      }
+      const window = BrowserWindow.fromWebContents(event.sender)
+      return await pickAndUploadRemoteEntries(window, resolveStoredPayload(connection), payload.remotePath)
+    },
+  )
+
+  ipcMain.handle(
+    "vps:files:download",
+    async (
+      event,
+      payload: { connectionId: string; path: string; name: string; type: "file" | "directory" | "symlink" },
+    ) => {
+      const connection = getVpsConnectionInput(payload.connectionId)
+      if (!connection) {
+        throw new Error("VPS 连接不存在")
+      }
+      const window = BrowserWindow.fromWebContents(event.sender)
+      return await downloadRemoteEntry(window, resolveStoredPayload(connection), payload)
+    },
+  )
 
   ipcMain.handle("vps:test", async (_event, payload: VpsConnectionInput) => {
     try {
@@ -507,6 +858,20 @@ app.whenReady().then(() => {
   )
 
   ipcMain.handle(
+    "vps:inspect-dependency-usage",
+    async (_event, payload: VpsConnectionInput, dependencyId: string) => {
+      return inspectDependencyUsage(resolveStoredPayload(payload), dependencyId)
+    },
+  )
+
+  ipcMain.handle(
+    "vps:uninstall-dependency",
+    async (_event, payload: VpsConnectionInput, dependencyId: string) => {
+      return uninstallRemoteDependency(resolveStoredPayload(payload), dependencyId)
+    },
+  )
+
+  ipcMain.handle(
     "vps:dependency-service",
     async (
       _event,
@@ -517,9 +882,9 @@ app.whenReady().then(() => {
     },
   )
 
-  ipcMain.handle("vps:inspect", async (_event, payload: VpsConnectionInput) => {
+  ipcMain.handle("vps:inspect", async (_event, payload: VpsConnectionInput, options?: { forceRefresh?: boolean }) => {
     try {
-      const result = await inspectConnection(resolveStoredPayload(payload))
+      const result = await inspectConnection(resolveStoredPayload(payload), options)
       if (payload.id) {
         updateConnectionHealth(payload.id, {
           status: "connected",
@@ -571,4 +936,12 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit()
   }
+})
+
+app.on("before-quit", () => {
+  if (backupScheduler) {
+    clearInterval(backupScheduler)
+    backupScheduler = null
+  }
+  void disposeAllRemoteFileSessions()
 })

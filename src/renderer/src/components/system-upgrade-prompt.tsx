@@ -67,7 +67,7 @@ export function SystemUpgradePrompt({ connection }: Props) {
       const result = await applyRemoteSystemUpgrade(payload, { reboot })
       setReboot(false)
       if (result.ok && !result.likelyRebooting) {
-        void inspectConnection(payload)
+        void inspectConnection(payload, { forceRefresh: true })
       }
     } catch {
       // 错误文案已由 store 写入 error

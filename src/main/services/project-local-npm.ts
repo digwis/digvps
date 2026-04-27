@@ -58,6 +58,8 @@ export async function runLocalNpmScript(
   scriptName: string,
   options?: {
     env?: NodeJS.ProcessEnv
+    timeoutMs?: number
+    onOutput?: (chunk: string, stream: "stdout" | "stderr") => void
   },
 ): Promise<ProjectDeployResult> {
   const names = readPackageJsonScriptNames(projectRoot)
@@ -95,30 +97,32 @@ export async function runLocalNpmScript(
           )
 
     let combined = ""
-    const append = (chunk: Buffer | string) => {
-      combined += chunk.toString()
+    const append = (chunk: Buffer | string, stream: "stdout" | "stderr") => {
+      const text = chunk.toString()
+      combined += text
       if (combined.length > 32_000) {
         combined = combined.slice(-24_000)
       }
+      options?.onOutput?.(text, stream)
     }
 
     const timer = setTimeout(() => {
       child.kill("SIGTERM")
       resolve({
         ok: false,
-        message: "脚本执行超时（45 分钟）",
+        message: `脚本执行超时（${Math.round((options?.timeoutMs ?? SCRIPT_TIMEOUT_MS) / 60000)} 分钟）`,
         durationMs: Date.now() - start,
         kind: "local-npm-script",
       })
-    }, SCRIPT_TIMEOUT_MS)
+    }, options?.timeoutMs ?? SCRIPT_TIMEOUT_MS)
 
     const finish = (result: ProjectDeployResult) => {
       clearTimeout(timer)
       resolve(result)
     }
 
-    child.stdout?.on("data", append)
-    child.stderr?.on("data", append)
+    child.stdout?.on("data", (chunk) => append(chunk, "stdout"))
+    child.stderr?.on("data", (chunk) => append(chunk, "stderr"))
 
     child.on("error", (error) => {
       finish({

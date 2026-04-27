@@ -103,6 +103,7 @@ export type ProjectRemoteDetailsInput = {
   projectId: string
   connectionId: string
   browsePath?: string
+  forceRefresh?: boolean
 }
 
 export type ProjectRemoteDetails = {
@@ -173,6 +174,46 @@ export type ProjectDeployResult = {
   kind?: ProjectDeployStrategy
 }
 
+export type ProjectDeployLogEvent = {
+  projectId: string
+  script?: string
+  stream: "stdout" | "stderr" | "system"
+  chunk: string
+  at: string
+}
+
+export type ProjectOperationLogEntry = {
+  id: string
+  projectId: string
+  stream: "stdout" | "stderr" | "system"
+  chunk: string
+  at: string
+}
+
+export type ProjectActionKind = "code" | "data" | "uploads" | "backup"
+export type ProjectBackupSchedule = "off" | "daily" | "weekly"
+
+export type ProjectActionHint = {
+  action: ProjectActionKind
+  needsAttention: boolean
+  reason: string
+  lastRunAt?: string | null
+  localChangedAt?: string | null
+}
+
+export type ProjectActionHints = {
+  projectId: string
+  checkedAt: string
+  hints: ProjectActionHint[]
+}
+
+export type ProjectBackupScheduleState = {
+  projectId: string
+  schedule: ProjectBackupSchedule
+  nextRunAt?: string | null
+  lastRunAt?: string | null
+}
+
 export type ManagedProjectsApi = {
   listProjects: () => Promise<LocalProjectRecord[]>
   addProjectFromPath: (payload: LocalProjectInput) => Promise<LocalProjectRecord>
@@ -189,4 +230,11 @@ export type ManagedProjectsApi = {
   saveProjectSiteSettings: (payload: ProjectSiteSettingsInput) => Promise<ProjectSiteSettingsResult>
   initializeProject: (payload: ProjectInitializeInput) => Promise<ProjectDeployResult>
   deployProject: (payload: ProjectDeployInput) => Promise<ProjectDeployResult>
+  getProjectActionHints: (projectId: string) => Promise<ProjectActionHints>
+  getProjectBackupSchedule: (projectId: string) => Promise<ProjectBackupScheduleState>
+  setProjectBackupSchedule: (
+    payload: { projectId: string; schedule: ProjectBackupSchedule },
+  ) => Promise<ProjectBackupScheduleState>
+  listOperationLogs: (payload?: { limit?: number }) => Promise<ProjectOperationLogEntry[]>
+  onDeployLog: (handler: (event: ProjectDeployLogEvent) => void) => () => void
 }

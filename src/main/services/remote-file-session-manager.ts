@@ -1,14 +1,13 @@
 import path from "node:path"
 import { Client, type ClientChannel } from "ssh2"
-import SftpClient from "ssh2-sftp-client"
 import type {
   RemoteFileBrowseResult,
   RemoteFileMutationResult,
   RemoteFileReadResult,
   VpsConnectionInput,
 } from "../../shared/vps"
-import { attachKeyboardInteractiveFallback, resolveSshConnectConfig } from "./ssh-auth"
 import { REMOTE_FILE_HELPER_SCRIPT, REMOTE_FILE_HELPER_VERSION } from "./remote-file-helper-script"
+import { connectSftpClient, connectSshClient, execOnClient } from "./ssh-runtime"
 
 const HELPER_DIR_NAME = ".digwis-panel"
 const HELPER_FILE_NAME = "remote-file-helper.py"
@@ -58,34 +57,8 @@ function shellQuote(value: string) {
 }
 
 async function uploadHelper(connection: VpsConnectionInput, helperPath: string, versionPath: string) {
-  const sftp = new SftpClient()
+  const sftp = await connectSftpClient(connection, { readyTimeout: 20_000 })
   try {
-    if (connection.authType === "password" && connection.password) {
-      sftp.client.on(
-        "keyboard-interactive",
-        (
-          _name: string,
-          _instructions: string,
-          _lang: string,
-          prompts: Array<unknown>,
-          finish: (answers: string[]) => void,
-        ) => {
-        finish(prompts.map(() => connection.password!))
-        },
-      )
-    }
-    const connectConfig =
-      connection.authType === "password"
-        ? {
-            ...resolveSshConnectConfig(connection),
-            readyTimeout: 20_000,
-            authHandler: ["password", "keyboard-interactive"],
-          }
-        : {
-            ...resolveSshConnectConfig(connection),
-            readyTimeout: 20_000,
-          }
-    await sftp.connect(connectConfig)
     await sftp.put(Buffer.from(REMOTE_FILE_HELPER_SCRIPT, "utf8"), helperPath)
     await sftp.put(Buffer.from(`${REMOTE_FILE_HELPER_VERSION}\n`, "utf8"), versionPath)
   } finally {
@@ -94,39 +67,9 @@ async function uploadHelper(connection: VpsConnectionInput, helperPath: string, 
 }
 
 async function runExec(client: Client, command: string, timeoutMs = 20_000) {
-  return await new Promise<{ code: number; stdout: string; stderr: string }>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("远端 helper 准备超时"))
-    }, timeoutMs)
-    const finish = (fn: () => void) => {
-      clearTimeout(timeout)
-      fn()
-    }
-
-    client.exec(command, (error, stream) => {
-      if (error) {
-        finish(() => reject(error))
-        return
-      }
-      let stdout = ""
-      let stderr = ""
-      stream
-        .on("close", (code?: number) => {
-          finish(() => {
-            resolve({
-              code: code ?? -1,
-              stdout,
-              stderr,
-            })
-          })
-        })
-        .on("data", (chunk: Buffer | string) => {
-          stdout += chunk.toString()
-        })
-      stream.stderr.on("data", (chunk: Buffer | string) => {
-        stderr += chunk.toString()
-      })
-    })
+  return await execOnClient(client, command, {
+    timeoutMs,
+    timeoutMessage: "远端 helper 准备超时",
   })
 }
 
@@ -258,16 +201,8 @@ function bindChannel(session: SessionContext) {
 
 async function createSession(connection: VpsConnectionInput) {
   const key = sessionKey(connection)
-  const client = attachKeyboardInteractiveFallback(new Client(), connection)
-  await new Promise<void>((resolve, reject) => {
-    client
-      .on("ready", () => resolve())
-      .on("error", (error) => reject(error))
-      .connect({
-        ...resolveSshConnectConfig(connection),
-        readyTimeout: 20_000,
-        keepaliveInterval: 5_000,
-      })
+  const client = await connectSshClient(connection, {
+    readyTimeout: 20_000,
   })
 
   try {

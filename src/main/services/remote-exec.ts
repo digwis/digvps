@@ -1,7 +1,6 @@
-import { Client, type ClientChannel } from "ssh2"
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import type { VpsConnectionInput } from "../../shared/vps"
-import { attachKeyboardInteractiveFallback, resolveSshConnectConfig } from "./ssh-auth"
+import { runSshCommand } from "./remote-command"
 
 async function runRemoteShellCommandViaLocalSsh(
   payload: VpsConnectionInput,
@@ -74,64 +73,17 @@ export async function runRemoteShellCommand(
   options?: { timeoutMs?: number },
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const timeoutMs = options?.timeoutMs ?? 120_000
-  const config = resolveSshConnectConfig(payload)
-  const connection = attachKeyboardInteractiveFallback(new Client(), payload)
 
   try {
-    return await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        connection.end()
-        reject(new Error("远程命令执行超时"))
-      }, timeoutMs)
-
-      const finish = (fn: () => void) => {
-        clearTimeout(timeout)
-        fn()
-      }
-
-      connection
-        .on("ready", () => {
-          connection.exec(command, (error: Error | undefined, stream: ClientChannel) => {
-            if (error) {
-              finish(() => {
-                connection.end()
-                reject(error)
-              })
-              return
-            }
-
-            let stdout = ""
-            let stderr = ""
-
-            stream
-              .on("close", (code: number | undefined) => {
-                connection.end()
-                finish(() =>
-                  resolve({
-                    code: code ?? -1,
-                    stdout,
-                    stderr,
-                  }),
-                )
-              })
-              .on("data", (chunk: Buffer | string) => {
-                stdout += chunk.toString()
-              })
-
-            stream.stderr.on("data", (chunk: Buffer | string) => {
-              stderr += chunk.toString()
-            })
-          })
-        })
-        .on("error", (error) => {
-          finish(() => reject(error))
-        })
-        .connect({
-          ...config,
-          readyTimeout: 15_000,
-          keepaliveInterval: 5_000,
-        })
+    const result = await runSshCommand(payload, command, {
+      timeoutMs,
+      timeoutMessage: "远程命令执行超时",
     })
+    return {
+      code: result.code ?? -1,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : ""
     if (

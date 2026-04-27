@@ -1,78 +1,35 @@
-import { Client, type ConnectConfig, type ClientChannel } from "ssh2"
-import SftpClient from "ssh2-sftp-client"
+import type { ConnectConfig } from "ssh2"
 import { createHash } from "node:crypto"
 import type { ConnectionTestResult, VpsConnectionInput } from "../../shared/vps"
-import { attachKeyboardInteractiveFallback, resolveSshConnectConfig } from "./ssh-auth"
+import { resolveSshConnectConfig } from "./ssh-auth"
+import { connectSftpClient, connectSshClient, execOnClient } from "./ssh-runtime"
 
 async function executeProbe(payload: VpsConnectionInput, config: ConnectConfig) {
   const start = Date.now()
-  const connection = attachKeyboardInteractiveFallback(new Client(), payload)
   let fingerprint = ""
   let workingDirectory = ""
   const timeoutMs = 15_000
-
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      connection.end()
-      reject(new Error("连接测试超时，请检查 SSH 配置或网络状态"))
-    }, timeoutMs)
-
-    const finish = (callback: () => void) => {
-      clearTimeout(timeout)
-      callback()
-    }
-
-    connection
-      .on("ready", () => {
-        connection.exec("pwd", (error: Error | undefined, stream: ClientChannel) => {
-          if (error) {
-            finish(() => reject(error))
-            return
-          }
-
-          let stdout = ""
-          let stderr = ""
-
-          stream
-            .on("close", (code: number | undefined) => {
-              if (code !== 0 && stderr) {
-                finish(() => reject(new Error(stderr.trim())))
-                return
-              }
-
-              workingDirectory = stdout.trim()
-              finish(() => resolve())
-            })
-            .on("data", (chunk: Buffer | string) => {
-              stdout += chunk.toString()
-            })
-
-          stream.stderr.on("data", (chunk: Buffer | string) => {
-            stderr += chunk.toString()
-          })
-        })
-      })
-      .on("error", (error) => {
-        finish(() => reject(error))
-      })
-      .connect({
-        ...config,
-        hostVerifier: (keyHash: string | Buffer) => {
-          fingerprint = createHash("sha256").update(keyHash).digest("base64")
-          return true
-        },
-        readyTimeout: 10_000,
-        keepaliveInterval: 5_000,
-      })
+  const connection = await connectSshClient(payload, {
+    config,
+    readyTimeout: 10_000,
+    onHostVerifier: (keyHash) => {
+      fingerprint = createHash("sha256").update(keyHash).digest("base64")
+      return true
+    },
   })
 
-  const sftp = new SftpClient()
+  const pwdResult = await execOnClient(connection, "pwd", {
+    timeoutMs,
+    timeoutMessage: "连接测试超时，请检查 SSH 配置或网络状态",
+  })
+  if (pwdResult.code !== 0 && pwdResult.stderr.trim()) {
+    connection.end()
+    throw new Error(pwdResult.stderr.trim())
+  }
+  workingDirectory = pwdResult.stdout.trim()
+
+  const sftp = await connectSftpClient(payload, { readyTimeout: 10_000 })
   try {
-    await sftp.connect({
-      ...config,
-      readyTimeout: 10_000,
-      tryKeyboard: payload.authType === "password",
-    })
     workingDirectory = workingDirectory || (await sftp.cwd())
   } finally {
     await sftp.end().catch(() => undefined)

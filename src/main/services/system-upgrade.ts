@@ -1,72 +1,9 @@
-import { Client, type ClientChannel, type ConnectConfig } from "ssh2"
 import type {
   SystemUpgradeApplyResult,
   SystemUpgradeCheckResult,
   VpsConnectionInput,
 } from "../../shared/vps"
-import { attachKeyboardInteractiveFallback, resolveSshConnectConfig } from "./ssh-auth"
-
-type ExecResult = {
-  stdout: string
-  stderr: string
-  code: number | undefined
-}
-
-async function runRemoteCommand(
-  payload: VpsConnectionInput,
-  config: ConnectConfig,
-  command: string,
-  options: { timeoutMs: number },
-): Promise<ExecResult> {
-  const connection = attachKeyboardInteractiveFallback(new Client(), payload)
-
-  return new Promise<ExecResult>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      connection.end()
-      reject(new Error("远程命令执行超时"))
-    }, options.timeoutMs)
-
-    const finish = (callback: () => void) => {
-      clearTimeout(timeout)
-      callback()
-    }
-
-    connection
-      .on("ready", () => {
-        connection.exec(command, (error: Error | undefined, stream: ClientChannel) => {
-          if (error) {
-            connection.end()
-            finish(() => reject(error))
-            return
-          }
-
-          let stdout = ""
-          let stderr = ""
-
-          stream
-            .on("close", (code: number | undefined) => {
-              connection.end()
-              finish(() => resolve({ stdout, stderr, code }))
-            })
-            .on("data", (chunk: Buffer | string) => {
-              stdout += chunk.toString()
-            })
-
-          stream.stderr.on("data", (chunk: Buffer | string) => {
-            stderr += chunk.toString()
-          })
-        })
-      })
-      .on("error", (error) => {
-        finish(() => reject(error))
-      })
-      .connect({
-        ...config,
-        readyTimeout: 10_000,
-        keepaliveInterval: 5_000,
-      })
-  })
-}
+import { runSshCommand } from "./remote-command"
 
 const upgradeCheckScript = `
 set +e
@@ -140,8 +77,9 @@ function parseCheckOutput(raw: string): SystemUpgradeCheckResult {
 }
 
 export async function checkSystemUpgrades(payload: VpsConnectionInput): Promise<SystemUpgradeCheckResult> {
-  const raw = await runRemoteCommand(payload, resolveSshConnectConfig(payload), upgradeCheckScript, {
+  const raw = await runSshCommand(payload, upgradeCheckScript, {
     timeoutMs: 120_000,
+    timeoutMessage: "远程命令执行超时",
   })
   if (raw.code !== 0 && raw.stderr.trim()) {
     return {
@@ -184,8 +122,9 @@ export async function applySystemUpgrade(
 ): Promise<SystemUpgradeApplyResult> {
   const script = buildApplyScript(options.reboot)
   try {
-    const result = await runRemoteCommand(payload, resolveSshConnectConfig(payload), script, {
+    const result = await runSshCommand(payload, script, {
       timeoutMs: 900_000,
+      timeoutMessage: "远程命令执行超时",
     })
     const combined = `${result.stdout}\n${result.stderr}`
     const sawDoneMarker = combined.includes("DIGWIS_UPGRADE_DONE")

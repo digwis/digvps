@@ -1,8 +1,7 @@
 import http from "node:http"
 import https from "node:https"
-import { Client, type ClientChannel, type ConnectConfig } from "ssh2"
 import type { VpsInspection, VpsConnectionInput } from "../../shared/vps"
-import { attachKeyboardInteractiveFallback, resolveSshConnectConfig } from "./ssh-auth"
+import { runSshCommand } from "./remote-command"
 
 const INSPECTION_CACHE_TTL_MS = 15_000
 const inspectionCache = new Map<string, { expiresAt: number; value: VpsInspection }>()
@@ -14,63 +13,17 @@ function inspectionCacheKey(payload: VpsConnectionInput) {
 
 async function runRemoteCommand(
   payload: VpsConnectionInput,
-  config: ConnectConfig,
   command: string,
   options?: { timeoutMs?: number },
 ) {
-  const connection = attachKeyboardInteractiveFallback(new Client(), payload)
-  const timeoutMs = options?.timeoutMs ?? 15_000
-
-  return new Promise<string>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      connection.end()
-      reject(new Error("环境检测超时，请检查 SSH 连通性或认证配置"))
-    }, timeoutMs)
-
-    const finish = (callback: () => void) => {
-      clearTimeout(timeout)
-      callback()
-    }
-
-    connection
-      .on("ready", () => {
-        connection.exec(command, (error: Error | undefined, stream: ClientChannel) => {
-          if (error) {
-            connection.end()
-            finish(() => reject(error))
-            return
-          }
-
-          let stdout = ""
-          let stderr = ""
-
-          stream
-            .on("close", (code: number | undefined) => {
-              connection.end()
-              if (code !== 0 && stderr.trim()) {
-                finish(() => reject(new Error(stderr.trim())))
-                return
-              }
-              finish(() => resolve(stdout))
-            })
-            .on("data", (chunk: Buffer | string) => {
-              stdout += chunk.toString()
-            })
-
-          stream.stderr.on("data", (chunk: Buffer | string) => {
-            stderr += chunk.toString()
-          })
-        })
-      })
-      .on("error", (error) => {
-        finish(() => reject(error))
-      })
-      .connect({
-        ...config,
-        readyTimeout: 10_000,
-        keepaliveInterval: 5_000,
-      })
+  const result = await runSshCommand(payload, command, {
+    timeoutMs: options?.timeoutMs ?? 15_000,
+    timeoutMessage: "环境检测超时，请检查 SSH 连通性或认证配置",
   })
+  if (result.code !== 0 && result.stderr.trim()) {
+    throw new Error(result.stderr.trim())
+  }
+  return result.stdout
 }
 
 const inspectionCommand = `
@@ -441,7 +394,7 @@ function mergeExtIntoPackages(
 }
 
 async function loadInspection(payload: VpsConnectionInput): Promise<VpsInspection> {
-  const raw = await runRemoteCommand(payload, resolveSshConnectConfig(payload), inspectionCommand, {
+  const raw = await runRemoteCommand(payload, inspectionCommand, {
     timeoutMs: 45_000,
   })
   const reachabilityChecks = await buildReachabilityChecks(payload).catch(() => [])

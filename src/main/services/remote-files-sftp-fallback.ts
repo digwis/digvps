@@ -1,6 +1,5 @@
 import fs from "node:fs/promises"
 import path from "node:path"
-import SftpClient from "ssh2-sftp-client"
 import type {
   RemoteFileBrowseResult,
   RemoteFileDownloadInput,
@@ -13,7 +12,7 @@ import type {
 } from "../../shared/vps"
 import type { BrowserWindow } from "electron"
 import { dialog, type OpenDialogOptions, type SaveDialogOptions } from "electron"
-import { resolveSshConnectConfig } from "./ssh-auth"
+import { connectSftpClient } from "./ssh-runtime"
 
 type SftpLike = any
 const DEFAULT_REMOTE_BROWSE_PATH = "/var/www"
@@ -94,36 +93,8 @@ export function mapRemoteType(
 }
 
 async function withSftp<T>(connection: VpsConnectionInput, callback: (sftp: SftpLike) => Promise<T>) {
-  const sftp = new SftpClient()
+  const sftp = await connectSftpClient(connection, { readyTimeout: 20_000 })
   try {
-    if (connection.authType === "password" && connection.password) {
-      sftp.client.on(
-        "keyboard-interactive",
-        (
-          _name: string,
-          _instructions: string,
-          _lang: string,
-          prompts: Array<unknown>,
-          finish: (answers: string[]) => void,
-        ) => {
-          finish(prompts.map(() => connection.password!))
-        },
-      )
-    }
-
-    const connectConfig =
-      connection.authType === "password"
-        ? {
-            ...resolveSshConnectConfig(connection),
-            readyTimeout: 20_000,
-            authHandler: ["password", "keyboard-interactive"],
-          }
-        : {
-            ...resolveSshConnectConfig(connection),
-            readyTimeout: 20_000,
-          }
-
-    await sftp.connect(connectConfig)
     return await callback(sftp)
   } finally {
     await sftp.end().catch(() => undefined)

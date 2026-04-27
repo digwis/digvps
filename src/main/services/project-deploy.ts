@@ -1,27 +1,8 @@
 import path from "node:path"
-import SftpClient from "ssh2-sftp-client"
-import type { ConnectConfig } from "ssh2"
 import type { VpsConnectionInput } from "../../shared/vps"
 import type { ProjectDeployResult } from "../../shared/projects"
 import { runRemoteShellCommand } from "./remote-exec"
-
-function resolveSftpConfig(payload: VpsConnectionInput): ConnectConfig {
-  const base = {
-    host: payload.host.trim(),
-    port: payload.port,
-    username: payload.username.trim(),
-  }
-
-  if (payload.authType === "password") {
-    return { ...base, password: payload.password }
-  }
-
-  return {
-    ...base,
-    privateKey: payload.privateKey,
-    passphrase: payload.passphrase,
-  }
-}
+import { connectSftpClient } from "./ssh-runtime"
 
 function shellSingleQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`
@@ -130,7 +111,6 @@ export async function deployLocalProjectToVps(options: {
 }): Promise<ProjectDeployResult> {
   const start = Date.now()
   const { connection, localRoot, remoteDeployPath } = options
-  const config = resolveSftpConfig(connection)
 
   try {
     assertSaneRemoteDeployPath(remoteDeployPath)
@@ -153,12 +133,8 @@ export async function deployLocalProjectToVps(options: {
     }
   }
 
-  const sftp = new SftpClient()
+  const sftp = await connectSftpClient(connection, { readyTimeout: 20_000 })
   try {
-    await sftp.connect({
-      ...config,
-      readyTimeout: 20_000,
-    })
     await sftp.uploadDir(localRoot, remoteDeployPath, {
       useFastput: true,
       filter: defaultUploadFilter,

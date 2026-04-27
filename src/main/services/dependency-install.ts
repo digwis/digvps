@@ -1,68 +1,5 @@
-import { Client, type ClientChannel, type ConnectConfig } from "ssh2"
 import type { DependencyInstallResult, VpsConnectionInput } from "../../shared/vps"
-import { attachKeyboardInteractiveFallback, resolveSshConnectConfig } from "./ssh-auth"
-
-type ExecResult = {
-  stdout: string
-  stderr: string
-  code: number | undefined
-}
-
-async function runRemoteCommand(
-  payload: VpsConnectionInput,
-  config: ConnectConfig,
-  command: string,
-  options: { timeoutMs: number },
-): Promise<ExecResult> {
-  const connection = attachKeyboardInteractiveFallback(new Client(), payload)
-
-  return new Promise<ExecResult>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      connection.end()
-      reject(new Error("远程安装命令超时"))
-    }, options.timeoutMs)
-
-    const finish = (callback: () => void) => {
-      clearTimeout(timeout)
-      callback()
-    }
-
-    connection
-      .on("ready", () => {
-        connection.exec(command, (error: Error | undefined, stream: ClientChannel) => {
-          if (error) {
-            connection.end()
-            finish(() => reject(error))
-            return
-          }
-
-          let stdout = ""
-          let stderr = ""
-
-          stream
-            .on("close", (code: number | undefined) => {
-              connection.end()
-              finish(() => resolve({ stdout, stderr, code }))
-            })
-            .on("data", (chunk: Buffer | string) => {
-              stdout += chunk.toString()
-            })
-
-          stream.stderr.on("data", (chunk: Buffer | string) => {
-            stderr += chunk.toString()
-          })
-        })
-      })
-      .on("error", (error) => {
-        finish(() => reject(error))
-      })
-      .connect({
-        ...config,
-        readyTimeout: 10_000,
-        keepaliveInterval: 5_000,
-      })
-  })
-}
+import { runSshCommand } from "./remote-command"
 
 function tailText(text: string, max = 6000): string {
   if (text.length <= max) {
@@ -287,7 +224,10 @@ export async function installRemoteDependency(
   const script = buildInstallScript(dependencyId)
 
   try {
-    const result = await runRemoteCommand(payload, resolveSshConnectConfig(payload), script, { timeoutMs: 900_000 })
+    const result = await runSshCommand(payload, script, {
+      timeoutMs: 900_000,
+      timeoutMessage: "远程安装命令超时",
+    })
     const combined = `${result.stdout}\n${result.stderr}`
     const sawOk = combined.includes("DIGWIS_DEP_OK")
 
@@ -327,7 +267,10 @@ export async function uninstallRemoteDependency(
   const script = buildUninstallScript(dependencyId)
 
   try {
-    const result = await runRemoteCommand(payload, resolveSshConnectConfig(payload), script, { timeoutMs: 900_000 })
+    const result = await runSshCommand(payload, script, {
+      timeoutMs: 900_000,
+      timeoutMessage: "远程安装命令超时",
+    })
     const combined = `${result.stdout}\n${result.stderr}`
     const sawOk = combined.includes("DIGWIS_DEP_OK")
 

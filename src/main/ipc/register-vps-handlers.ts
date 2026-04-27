@@ -1,4 +1,4 @@
-import { ipcMain } from "electron"
+import { } from "electron"
 import {
   createAndInstallSshKey,
 } from "../services/ssh-key-setup"
@@ -35,46 +35,66 @@ import { runDependencyServiceAction } from "../services/service-control"
 import { inspectConnection } from "../services/inspection"
 import { applySystemUpgrade, checkSystemUpgrades } from "../services/system-upgrade"
 import { ensureSavedPayload, resolveStoredPayload } from "./helpers"
+import { registerIpcHandle } from "./ipc-error"
+import {
+  connectionIdSchema,
+  dependencyServiceSchema,
+  forceRefreshOptionsSchema,
+  parseOrThrow,
+  rawSshConfigSaveSchema,
+  remoteBrowseSchema,
+  remoteCreateDirectorySchema,
+  remoteDownloadSchema,
+  remoteReadSchema,
+  remoteRenameSchema,
+  remoteUploadSchema,
+  remoteWriteSchema,
+  sshConfigDeleteSchema,
+  sshConfigMutationSchema,
+  upgradeApplySchema,
+  vpsConnectionInputSchema,
+} from "./schemas"
 import { requireResolvedConnection, requireSenderWindow, runConnectionHealthTracked } from "./vps-runtime"
 import type { DependencyServiceAction, SshConfigMutationInput, VpsConnectionInput } from "../../shared/vps"
 
 export function registerVpsHandlers() {
-  ipcMain.handle("vps:list", async () => {
+  registerIpcHandle("vps:list", async () => {
     return listConnections()
   })
 
-  ipcMain.handle("vps:import-local", async () => {
+  registerIpcHandle("vps:import-local", async () => {
     return importDiscoveredConnections(discoverLocalConnections())
   })
 
-  ipcMain.handle("vps:list-ssh-config-candidates", async () => {
+  registerIpcHandle("vps:list-ssh-config-candidates", async () => {
     return listSshConfigCandidates()
   })
 
-  ipcMain.handle("vps:get-raw-ssh-config", async () => {
+  registerIpcHandle("vps:get-raw-ssh-config", async () => {
     return getRawSshConfig()
   })
 
-  ipcMain.handle("vps:save-raw-ssh-config", async (_event, payload: { content: string }) => {
+  registerIpcHandle("vps:save-raw-ssh-config", async (_event, payload: { content: string }) => {
+    payload = parseOrThrow(rawSshConfigSaveSchema, payload)
     return saveRawSshConfig(payload.content)
   })
 
-  ipcMain.handle("vps:create-ssh-config-candidate", async (_event, payload: SshConfigMutationInput) => {
-    return createSshConfigCandidate(payload)
+  registerIpcHandle("vps:create-ssh-config-candidate", async (_event, payload: SshConfigMutationInput) => {
+    return createSshConfigCandidate(parseOrThrow(sshConfigMutationSchema, payload))
   })
 
-  ipcMain.handle("vps:update-ssh-config-candidate", async (_event, payload: SshConfigMutationInput) => {
-    return updateSshConfigCandidate(payload)
+  registerIpcHandle("vps:update-ssh-config-candidate", async (_event, payload: SshConfigMutationInput) => {
+    return updateSshConfigCandidate(parseOrThrow(sshConfigMutationSchema, payload))
   })
 
-  ipcMain.handle(
+  registerIpcHandle(
     "vps:delete-ssh-config-candidate",
     async (_event, payload: { configPath: string; originalName: string }) => {
-      return deleteSshConfigCandidate(payload)
+      return deleteSshConfigCandidate(parseOrThrow(sshConfigDeleteSchema, payload))
     },
   )
 
-  ipcMain.handle("vps:discover-hosts", async () => {
+  registerIpcHandle("vps:discover-hosts", async () => {
     const connections = listConnections()
     return discoverKnownHosts(
       connections.map((item) => ({
@@ -84,101 +104,120 @@ export function registerVpsHandlers() {
     )
   })
 
-  ipcMain.handle("vps:save", async (_event, payload: VpsConnectionInput) => {
-    return saveConnection(ensureSavedPayload(payload))
+  registerIpcHandle("vps:save", async (_event, payload: VpsConnectionInput) => {
+    return saveConnection(ensureSavedPayload(parseOrThrow(vpsConnectionInputSchema, payload)))
   })
 
-  ipcMain.handle("vps:create-and-install-ssh-key", async (_event, payload: VpsConnectionInput) => {
-    return await createAndInstallSshKey(ensureSavedPayload(payload))
+  registerIpcHandle("vps:create-and-install-ssh-key", async (_event, payload: VpsConnectionInput) => {
+    return await createAndInstallSshKey(ensureSavedPayload(parseOrThrow(vpsConnectionInputSchema, payload)))
   })
 
-  ipcMain.handle("vps:files:browse", async (_event, payload: { connectionId: string; path?: string; forceRefresh?: boolean }) => {
+  registerIpcHandle("vps:files:browse", async (_event, payload: { connectionId: string; path?: string; forceRefresh?: boolean }) => {
+    payload = parseOrThrow(remoteBrowseSchema, payload)
     const connection = requireResolvedConnection(payload.connectionId)
     return await browseRemoteFiles(connection, payload.path, {
       forceRefresh: payload.forceRefresh,
     })
   })
 
-  ipcMain.handle("vps:files:read-text", async (_event, payload: { connectionId: string; path: string }) => {
+  registerIpcHandle("vps:files:read-text", async (_event, payload: { connectionId: string; path: string }) => {
+    payload = parseOrThrow(remoteReadSchema, payload)
     const connection = requireResolvedConnection(payload.connectionId)
     return await readRemoteTextFile(connection, payload.path)
   })
 
-  ipcMain.handle(
+  registerIpcHandle(
     "vps:files:write-text",
     async (_event, payload: { connectionId: string; path: string; content: string }) => {
+      payload = parseOrThrow(remoteWriteSchema, payload)
       const connection = requireResolvedConnection(payload.connectionId)
       return await writeRemoteTextFile(connection, payload.path, payload.content)
     },
   )
 
-  ipcMain.handle(
+  registerIpcHandle(
     "vps:files:create-directory",
     async (_event, payload: { connectionId: string; parentPath: string; directoryName: string }) => {
+      payload = parseOrThrow(remoteCreateDirectorySchema, payload)
       const connection = requireResolvedConnection(payload.connectionId)
       return await createRemoteDirectory(connection, payload.parentPath, payload.directoryName)
     },
   )
 
-  ipcMain.handle(
+  registerIpcHandle(
     "vps:files:rename",
     async (_event, payload: { connectionId: string; path: string; nextName: string }) => {
+      payload = parseOrThrow(remoteRenameSchema, payload)
       const connection = requireResolvedConnection(payload.connectionId)
       return await renameRemoteEntry(connection, payload.path, payload.nextName)
     },
   )
 
-  ipcMain.handle("vps:files:delete", async (_event, payload: { connectionId: string; path: string }) => {
+  registerIpcHandle("vps:files:delete", async (_event, payload: { connectionId: string; path: string }) => {
+    payload = parseOrThrow(remoteReadSchema, payload)
     const connection = requireResolvedConnection(payload.connectionId)
     return await deleteRemoteEntry(connection, payload.path)
   })
 
-  ipcMain.handle("vps:files:upload", async (event, payload: { connectionId: string; remotePath: string }) => {
+  registerIpcHandle("vps:files:upload", async (event, payload: { connectionId: string; remotePath: string }) => {
+    payload = parseOrThrow(remoteUploadSchema, payload)
     const connection = requireResolvedConnection(payload.connectionId)
     const window = requireSenderWindow(event.sender)
     return await pickAndUploadRemoteEntries(window, connection, payload.remotePath)
   })
 
-  ipcMain.handle(
+  registerIpcHandle(
     "vps:files:download",
     async (
       event,
       payload: { connectionId: string; path: string; name: string; type: "file" | "directory" | "symlink" },
     ) => {
+      payload = parseOrThrow(remoteDownloadSchema, payload)
       const connection = requireResolvedConnection(payload.connectionId)
       const window = requireSenderWindow(event.sender)
       return await downloadRemoteEntry(window, connection, payload)
     },
   )
 
-  ipcMain.handle("vps:test", async (_event, payload: VpsConnectionInput) => {
+  registerIpcHandle("vps:test", async (_event, payload: VpsConnectionInput) => {
+    payload = parseOrThrow(vpsConnectionInputSchema, payload)
     return await runConnectionHealthTracked(payload, testConnection, "未知错误")
   })
 
-  ipcMain.handle("vps:install-dependency", async (_event, payload: VpsConnectionInput, dependencyId: string) => {
+  registerIpcHandle("vps:install-dependency", async (_event, payload: VpsConnectionInput, dependencyId: string) => {
+    payload = parseOrThrow(vpsConnectionInputSchema, payload)
+    dependencyId = parseOrThrow(connectionIdSchema, dependencyId)
     return installRemoteDependency(resolveStoredPayload(payload), dependencyId)
   })
 
-  ipcMain.handle("vps:inspect-dependency-usage", async (_event, payload: VpsConnectionInput, dependencyId: string) => {
+  registerIpcHandle("vps:inspect-dependency-usage", async (_event, payload: VpsConnectionInput, dependencyId: string) => {
+    payload = parseOrThrow(vpsConnectionInputSchema, payload)
+    dependencyId = parseOrThrow(connectionIdSchema, dependencyId)
     return inspectDependencyUsage(resolveStoredPayload(payload), dependencyId)
   })
 
-  ipcMain.handle("vps:uninstall-dependency", async (_event, payload: VpsConnectionInput, dependencyId: string) => {
+  registerIpcHandle("vps:uninstall-dependency", async (_event, payload: VpsConnectionInput, dependencyId: string) => {
+    payload = parseOrThrow(vpsConnectionInputSchema, payload)
+    dependencyId = parseOrThrow(connectionIdSchema, dependencyId)
     return uninstallRemoteDependency(resolveStoredPayload(payload), dependencyId)
   })
 
-  ipcMain.handle(
+  registerIpcHandle(
     "vps:dependency-service",
     async (
       _event,
       payload: VpsConnectionInput,
       options: { dependencyId: string; action: DependencyServiceAction; systemdUnit?: string },
     ) => {
+      payload = parseOrThrow(vpsConnectionInputSchema, payload)
+      options = parseOrThrow(dependencyServiceSchema, options)
       return runDependencyServiceAction(resolveStoredPayload(payload), options)
     },
   )
 
-  ipcMain.handle("vps:inspect", async (_event, payload: VpsConnectionInput, options?: { forceRefresh?: boolean }) => {
+  registerIpcHandle("vps:inspect", async (_event, payload: VpsConnectionInput, options?: { forceRefresh?: boolean }) => {
+    payload = parseOrThrow(vpsConnectionInputSchema, payload)
+    options = parseOrThrow(forceRefreshOptionsSchema, options)
     return await runConnectionHealthTracked(
       payload,
       async (connection) => await inspectConnection(connection, options),
@@ -186,15 +225,19 @@ export function registerVpsHandlers() {
     )
   })
 
-  ipcMain.handle("vps:upgrade-check", async (_event, payload: VpsConnectionInput) => {
+  registerIpcHandle("vps:upgrade-check", async (_event, payload: VpsConnectionInput) => {
+    payload = parseOrThrow(vpsConnectionInputSchema, payload)
     return checkSystemUpgrades(resolveStoredPayload(payload))
   })
 
-  ipcMain.handle("vps:upgrade-apply", async (_event, payload: VpsConnectionInput, options: { reboot: boolean }) => {
+  registerIpcHandle("vps:upgrade-apply", async (_event, payload: VpsConnectionInput, options: { reboot: boolean }) => {
+    payload = parseOrThrow(vpsConnectionInputSchema, payload)
+    options = parseOrThrow(upgradeApplySchema, options)
     return applySystemUpgrade(resolveStoredPayload(payload), options)
   })
 
-  ipcMain.handle("vps:delete", async (_event, id: string) => {
+  registerIpcHandle("vps:delete", async (_event, id: string) => {
+    id = parseOrThrow(connectionIdSchema, id)
     deleteConnection(id)
     return { success: true as const }
   })

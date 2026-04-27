@@ -48,7 +48,7 @@ printf 'index_refreshed=%s\\n' "$index_refreshed"
 exit 0
 `
 
-function parseCheckOutput(raw: string): SystemUpgradeCheckResult {
+export function parseCheckOutput(raw: string): SystemUpgradeCheckResult {
   const map = new Map<string, string>()
   for (const line of raw.split("\n")) {
     const trimmed = line.trim()

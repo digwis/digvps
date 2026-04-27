@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, type OpenDialogOptions } from "electron"
+import { BrowserWindow, dialog, type OpenDialogOptions } from "electron"
 import {
   addLocalProjectFromPath,
   deleteLocalProject,
@@ -28,6 +28,19 @@ import {
 } from "../services/project-action-state"
 import { appendOperationLog, listOperationLogs } from "../services/project-operation-log"
 import { buildProjectScriptEnv, resolveActionKindFromScript, resolveStoredPayload } from "./helpers"
+import { registerIpcHandle } from "./ipc-error"
+import {
+  localProjectInputSchema,
+  operationLogsQuerySchema,
+  parseOrThrow,
+  projectBackupScheduleSchema,
+  projectConnectionSchema,
+  projectDeploySchema,
+  projectEnvUpdateSchema,
+  projectIdSchema,
+  projectRemoteDetailsSchema,
+  projectSiteSettingsSchema,
+} from "./schemas"
 import type {
   LocalProjectInput,
   ProjectBackupSchedule,
@@ -53,20 +66,22 @@ function requireConnection(connectionId: string) {
 }
 
 export function registerProjectHandlers() {
-  ipcMain.handle("projects:list", async () => {
+  registerIpcHandle("projects:list", async () => {
     return listLocalProjects()
   })
 
-  ipcMain.handle("projects:add", async (_event, payload: LocalProjectInput) => {
-    return addLocalProjectFromPath(payload)
+  registerIpcHandle("projects:add", async (_event, payload: LocalProjectInput) => {
+    return addLocalProjectFromPath(parseOrThrow(localProjectInputSchema, payload))
   })
 
-  ipcMain.handle("projects:delete", async (_event, id: string) => {
+  registerIpcHandle("projects:delete", async (_event, id: string) => {
+    id = parseOrThrow(projectIdSchema, id)
     deleteLocalProject(id)
     return { success: true as const }
   })
 
-  ipcMain.handle("projects:list-npm-scripts", async (_event, projectId: string) => {
+  registerIpcHandle("projects:list-npm-scripts", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
     const project = getLocalProject(projectId)
     if (!project) {
       return []
@@ -74,7 +89,8 @@ export function registerProjectHandlers() {
     return readPackageJsonScriptNames(project.localPath)
   })
 
-  ipcMain.handle("projects:get-deploy-profile", async (_event, projectId: string) => {
+  registerIpcHandle("projects:get-deploy-profile", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
     const project = getLocalProject(projectId)
     if (!project) {
       return {
@@ -88,7 +104,8 @@ export function registerProjectHandlers() {
     return readProjectDeployProfile(project.localPath)
   })
 
-  ipcMain.handle("projects:get-remote-state", async (_event, payload: { projectId: string; connectionId: string }) => {
+  registerIpcHandle("projects:get-remote-state", async (_event, payload: { projectId: string; connectionId: string }) => {
+    payload = parseOrThrow(projectConnectionSchema, payload)
     const project = requireProject(payload.projectId)
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
@@ -101,7 +118,8 @@ export function registerProjectHandlers() {
     })
   })
 
-  ipcMain.handle("projects:get-remote-details", async (_event, payload: ProjectRemoteDetailsInput) => {
+  registerIpcHandle("projects:get-remote-details", async (_event, payload: ProjectRemoteDetailsInput) => {
+    payload = parseOrThrow(projectRemoteDetailsSchema, payload)
     const project = requireProject(payload.projectId)
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
@@ -121,7 +139,8 @@ export function registerProjectHandlers() {
     )
   })
 
-  ipcMain.handle("projects:get-env", async (_event, payload: { projectId: string; connectionId: string }) => {
+  registerIpcHandle("projects:get-env", async (_event, payload: { projectId: string; connectionId: string }) => {
+    payload = parseOrThrow(projectConnectionSchema, payload)
     const project = requireProject(payload.projectId)
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
@@ -132,9 +151,10 @@ export function registerProjectHandlers() {
     return await readProjectEnvFile(resolveStoredPayload(connection), remoteAppDir)
   })
 
-  ipcMain.handle(
+  registerIpcHandle(
     "projects:save-env",
     async (_event, payload: { projectId: string; connectionId: string; content: string }) => {
+      payload = parseOrThrow(projectEnvUpdateSchema, payload)
       const project = requireProject(payload.projectId)
       const connection = requireConnection(payload.connectionId)
       const config = readProjectDeployConfig(project.localPath)
@@ -146,7 +166,8 @@ export function registerProjectHandlers() {
     },
   )
 
-  ipcMain.handle("projects:rotate-secret", async (_event, payload: { projectId: string; connectionId: string }) => {
+  registerIpcHandle("projects:rotate-secret", async (_event, payload: { projectId: string; connectionId: string }) => {
+    payload = parseOrThrow(projectConnectionSchema, payload)
     const project = requireProject(payload.projectId)
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
@@ -157,9 +178,10 @@ export function registerProjectHandlers() {
     return await rotateProjectSessionSecret(resolveStoredPayload(connection), remoteAppDir)
   })
 
-  ipcMain.handle(
+  registerIpcHandle(
     "projects:restart-service",
     async (_event, payload: { projectId: string; connectionId: string }) => {
+      payload = parseOrThrow(projectConnectionSchema, payload)
       const project = requireProject(payload.projectId)
       const connection = requireConnection(payload.connectionId)
       const config = readProjectDeployConfig(project.localPath)
@@ -171,7 +193,8 @@ export function registerProjectHandlers() {
     },
   )
 
-  ipcMain.handle("projects:save-site-settings", async (_event, payload: ProjectSiteSettingsInput) => {
+  registerIpcHandle("projects:save-site-settings", async (_event, payload: ProjectSiteSettingsInput) => {
+    payload = parseOrThrow(projectSiteSettingsSchema, payload)
     const project = requireProject(payload.projectId)
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
@@ -198,7 +221,8 @@ export function registerProjectHandlers() {
     })
   })
 
-  ipcMain.handle("projects:initialize", async (_event, payload: { projectId: string; connectionId: string }) => {
+  registerIpcHandle("projects:initialize", async (_event, payload: { projectId: string; connectionId: string }) => {
+    payload = parseOrThrow(projectConnectionSchema, payload)
     const project = requireProject(payload.projectId)
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
@@ -230,7 +254,7 @@ export function registerProjectHandlers() {
     return result
   })
 
-  ipcMain.handle("projects:pick-directory", async (event) => {
+  registerIpcHandle("projects:pick-directory", async (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     const dialogOptions: OpenDialogOptions = {
       properties: ["openDirectory", "createDirectory"],
@@ -245,7 +269,8 @@ export function registerProjectHandlers() {
     return result.filePaths[0] ?? null
   })
 
-  ipcMain.handle("projects:deploy", async (event, payload: ProjectDeployInput) => {
+  registerIpcHandle("projects:deploy", async (event, payload: ProjectDeployInput) => {
+    payload = parseOrThrow(projectDeploySchema, payload)
     const project = requireProject(payload.projectId)
     const connection = requireConnection(payload.connectionId)
     const strategy = payload.strategy ?? "sftp"
@@ -355,19 +380,22 @@ export function registerProjectHandlers() {
     return result
   })
 
-  ipcMain.handle("projects:get-action-hints", async (_event, projectId: string) => {
+  registerIpcHandle("projects:get-action-hints", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
     const project = requireProject(projectId)
     return await inspectProjectActionHints(project)
   })
 
-  ipcMain.handle("projects:get-backup-schedule", async (_event, projectId: string) => {
+  registerIpcHandle("projects:get-backup-schedule", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
     const project = requireProject(projectId)
     return getProjectBackupSchedule(project.id)
   })
 
-  ipcMain.handle(
+  registerIpcHandle(
     "projects:set-backup-schedule",
     async (_event, payload: { projectId: string; schedule: ProjectBackupSchedule }) => {
+      payload = parseOrThrow(projectBackupScheduleSchema, payload)
       const project = requireProject(payload.projectId)
       const next = setProjectBackupSchedule(project.id, payload.schedule)
       appendOperationLog({
@@ -379,7 +407,8 @@ export function registerProjectHandlers() {
     },
   )
 
-  ipcMain.handle("projects:list-operation-logs", async (_event, payload?: { limit?: number }) => {
+  registerIpcHandle("projects:list-operation-logs", async (_event, payload?: { limit?: number }) => {
+    payload = parseOrThrow(operationLogsQuerySchema, payload)
     return listOperationLogs(payload?.limit)
   })
 }

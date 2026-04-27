@@ -1,5 +1,11 @@
 import type { ManagedProjectsApi } from "./projects"
 
+export type DigwisIpcError = {
+  code: string
+  message: string
+  details?: unknown
+}
+
 export type AuthType = "password" | "privateKey"
 
 export type ConnectionStatus = "idle" | "connected" | "failed"

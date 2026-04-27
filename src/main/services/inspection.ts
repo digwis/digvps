@@ -276,7 +276,7 @@ line port_kiro "$(check_port 9527)"
 line port_vite "$(check_port 5173)"
 `
 
-function parseInspectionTelemetry(map: Map<string, string>): VpsInspection["telemetry"] | undefined {
+export function parseInspectionTelemetry(map: Map<string, string>): VpsInspection["telemetry"] | undefined {
   const read = (key: string) => Number.parseFloat(map.get(key) ?? "")
   const cpuPercent = read("metric_cpu_pct")
   if (!Number.isFinite(cpuPercent)) {
@@ -304,7 +304,7 @@ function parseInspectionTelemetry(map: Map<string, string>): VpsInspection["tele
   }
 }
 
-function parsePortChecks(map: Map<string, string>): VpsInspection["portChecks"] {
+export function parsePortChecks(map: Map<string, string>): VpsInspection["portChecks"] {
   const checks = [
     { key: "port_http", label: "HTTP", port: 80 },
     { key: "port_https", label: "HTTPS", port: 443 },

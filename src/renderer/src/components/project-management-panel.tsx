@@ -61,6 +61,7 @@ export type ProjectManagementPanelProps = {
   connections: VpsConnectionRecord[]
   selectedConnectionId?: string
   highlightedProjectId?: string
+  onOpenRemoteDirectory?: (payload: { connectionId: string; path: string; projectId: string }) => void
 }
 
 type DeployScriptOption = {
@@ -318,6 +319,7 @@ function ProjectDeployCard({
   recentLogs,
   fullLogs,
   onBackupScheduleChange,
+  onOpenRemoteDirectory,
 }: {
   project: LocalProjectRecord
   connections: VpsConnectionRecord[]
@@ -340,6 +342,7 @@ function ProjectDeployCard({
   recentLogs?: ProjectOperationLogEntry[]
   fullLogs?: ProjectOperationLogEntry[]
   onBackupScheduleChange: (schedule: ProjectBackupSchedule) => void
+  onOpenRemoteDirectory?: (payload: { connectionId: string; path: string; projectId: string }) => void
 }) {
   const [connectionId, setConnectionId] = useState<string>(project.lastConnectionId ?? selectedConnectionId ?? "")
   const [remoteParent, setRemoteParent] = useState("")
@@ -574,6 +577,7 @@ function ProjectDeployCard({
     remoteState,
     actionHints,
   })
+  const canOpenRemoteDirectory = Boolean(connectionId && effectiveRemoteAppDir && onOpenRemoteDirectory)
   const latestInitLog = latestMatchingLog(fullLogs, isInitLog)
   const latestActionLog = latestMatchingLog(fullLogs, (entry) => !isInitLog(entry) && !isConfigLog(entry))
   const initSummary = latestInitLog ? summarizeProjectLog(latestInitLog) : null
@@ -860,7 +864,25 @@ function ProjectDeployCard({
             </p>
             <p className="truncate">
               远端目录
-              <span className="ml-1 text-foreground">{effectiveRemoteAppDir ?? "未配置"}</span>
+              {canOpenRemoteDirectory ? (
+                <button
+                  type="button"
+                  className="ml-1 inline-flex max-w-full items-center gap-1 truncate text-foreground underline-offset-4 hover:text-primary hover:underline"
+                  onClick={() =>
+                    onOpenRemoteDirectory?.({
+                      connectionId,
+                      path: effectiveRemoteAppDir as string,
+                      projectId: project.id,
+                    })
+                  }
+                  title={`打开 ${effectiveRemoteAppDir} 到文件浏览`}
+                >
+                  <span className="truncate">{effectiveRemoteAppDir}</span>
+                  <ExternalLink className="size-3 shrink-0" />
+                </button>
+              ) : (
+                <span className="ml-1 text-foreground">{effectiveRemoteAppDir ?? "未配置"}</span>
+              )}
             </p>
             <p className="truncate">
               代码状态
@@ -1383,6 +1405,7 @@ export function ProjectManagementPanel({
   connections,
   selectedConnectionId,
   highlightedProjectId,
+  onOpenRemoteDirectory,
 }: ProjectManagementPanelProps) {
   const {
     projects,
@@ -1688,6 +1711,7 @@ export function ProjectManagementPanel({
                     })
                   })
               }}
+              onOpenRemoteDirectory={onOpenRemoteDirectory}
             />
           ))}
         </div>

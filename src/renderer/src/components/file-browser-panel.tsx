@@ -66,6 +66,9 @@ import type {
 
 export type FileBrowserPanelProps = {
   selectedConnection?: VpsConnectionRecord
+  fallbackConnectionId?: string
+  requestedPath?: string
+  requestToken?: number
 }
 
 const DEFAULT_REMOTE_DIRECTORY = "/var/www"
@@ -159,7 +162,12 @@ function buildPathSegments(currentPath: string, rootPath: string) {
   return items
 }
 
-export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) {
+export function FileBrowserPanel({
+  selectedConnection,
+  fallbackConnectionId,
+  requestedPath,
+  requestToken,
+}: FileBrowserPanelProps) {
   const [browserView, setBrowserView] = useState<"files" | "trash">("files")
   const [displayMode, setDisplayMode] = useState<"list" | "cards">("list")
   const [browser, setBrowser] = useState<RemoteFileBrowseResult | null>(null)
@@ -186,9 +194,10 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
   const [editorContent, setEditorContent] = useState("")
   const [editorMeta, setEditorMeta] = useState<RemoteFileReadResult | null>(null)
   const browseCacheRef = useRef<Map<string, CachedBrowseEntry>>(buildBrowseCacheMap())
-  const prefetchingRef = useRef<Set<string>>(new Set())
+  const prefetchingRef = useRef<Set<string>>(new Set<string>())
+  const lastHandledRequestTokenRef = useRef<number | undefined>(undefined)
 
-  const connectionId = selectedConnection?.id
+  const connectionId = selectedConnection?.id ?? fallbackConnectionId
   const visibleEntries = useMemo(
     () => browser?.entries.filter((entry) => showHiddenFiles || !isHiddenRemoteEntry(entry)) ?? [],
     [browser, showHiddenFiles],
@@ -341,14 +350,18 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
   useEffect(() => {
     setBrowserView("files")
     setTrash(null)
-    const restored = restoreCachedBrowser(DEFAULT_REMOTE_DIRECTORY)
+    const targetPath = requestedPath?.trim() || DEFAULT_REMOTE_DIRECTORY
+    if (requestToken && lastHandledRequestTokenRef.current !== requestToken) {
+      lastHandledRequestTokenRef.current = requestToken
+    }
+    const restored = restoreCachedBrowser(targetPath)
     if (!restored) {
       setBrowser(null)
-      setPathDraft(DEFAULT_REMOTE_DIRECTORY)
+      setPathDraft(targetPath)
       setSelectedPath(undefined)
     }
-    void loadBrowser(DEFAULT_REMOTE_DIRECTORY)
-  }, [connectionId])
+    void loadBrowser(targetPath)
+  }, [connectionId, requestedPath, requestToken])
 
   const loadTrash = async () => {
     if (!connectionId) {
@@ -848,7 +861,7 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
     )
   }
 
-  if (!selectedConnection) {
+  if (!connectionId) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border/80 bg-muted/10 px-8 py-16 text-center">
         <FolderTree className="size-8 text-muted-foreground" />
@@ -867,7 +880,7 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
               <div className="flex items-center gap-2">
                 <h3 className="text-base font-semibold text-foreground">文件浏览</h3>
                 <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-                  {selectedConnection.username}@{selectedConnection.host}
+                  {selectedConnection ? `${selectedConnection.username}@${selectedConnection.host}` : "项目绑定连接"}
                 </span>
                 {browser?.transport === "sftp" ? (
                   <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-300">

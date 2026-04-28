@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
 import {
   AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
   Boxes,
   CheckCircle2,
   Clock3,
@@ -9,7 +11,6 @@ import {
   FolderKanban,
   HardDriveDownload,
   LoaderCircle,
-  Moon,
   PanelLeft,
   Plus,
   PlugZap,
@@ -18,7 +19,6 @@ import {
   Settings,
   ShieldAlert,
   SquarePen,
-  Sun,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -42,8 +42,7 @@ import { cn } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { useProjectStore } from "@/store/project-store"
 import { useVpsStore } from "@/store/vps-store"
-import { useThemeStore } from "@/store/theme-store"
-import { AppSettingsSheet } from "@/components/app-settings-sheet"
+import { AppSettingsPage } from "@/components/app-settings-page"
 import { DependencyCards } from "@/components/dependency-cards"
 import { InspectionServiceBrowser } from "@/components/inspection-service-browser"
 import { InspectionTelemetryCards } from "@/components/inspection-telemetry-cards"
@@ -63,7 +62,7 @@ import type {
   VpsInspection,
 } from "../../shared/vps"
 
-type NavKey = "monitor" | "deps" | "projects" | "files"
+type NavKey = "monitor" | "deps" | "projects" | "files" | "settings"
 
 const LAST_ACTIVE_NAV_KEY = "digwis:last-active-nav"
 const SIDEBAR_COLLAPSED_KEY = "digwis:sidebar-collapsed"
@@ -77,7 +76,7 @@ const navItems: Array<{ key: NavKey; label: string; icon: typeof Server }> = [
 ]
 
 function isNavKey(value: string): value is NavKey {
-  return navItems.some((item) => item.key === value)
+  return value === "settings" || navItems.some((item) => item.key === value)
 }
 
 function readLastActiveNav(): NavKey {
@@ -111,6 +110,23 @@ function writeSidebarCollapsed(collapsed: boolean) {
   } catch {
     // Ignore storage errors in desktop renderer.
   }
+}
+
+function sidebarItemClass(active: boolean, collapsed: boolean) {
+  return cn(
+    "group flex w-full items-center overflow-hidden rounded-2xl text-left transition-all duration-300 ease-out",
+    collapsed ? "h-11 justify-center px-0" : "h-11 gap-3 px-3.5",
+    active
+      ? "bg-background/90 font-medium text-foreground shadow-sm"
+      : "text-muted-foreground hover:bg-background/45 hover:text-foreground",
+  )
+}
+
+function sidebarToolClass(collapsed: boolean) {
+  return cn(
+    "flex h-10 items-center rounded-xl text-muted-foreground transition-all duration-300 ease-out hover:bg-background/45 hover:text-foreground",
+    collapsed ? "w-10 justify-center" : "gap-3 px-3",
+  )
 }
 
 function statusLabel(connection: VpsConnectionRecord) {
@@ -290,7 +306,6 @@ function reachabilityBadge(check: InspectionReachabilityCheck) {
 }
 
 export default function App() {
-  const { theme, toggleTheme } = useThemeStore()
   const { projects, loadProjects, isLoading: isProjectsLoading } = useProjectStore()
   const {
     connections,
@@ -321,12 +336,12 @@ export default function App() {
   } = useVpsStore()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogPreset, setDialogPreset] = useState<Partial<VpsConnectionInput> | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [activeNav, setActiveNav] = useState<NavKey>(() => readLastActiveNav())
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readSidebarCollapsed())
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [highlightedProjectId, setHighlightedProjectId] = useState<string>()
+  const [fileBrowserRequest, setFileBrowserRequest] = useState<{ connectionId: string; path: string; token: number }>()
   const [monitorProjectEntries, setMonitorProjectEntries] = useState<
     Array<{ project: LocalProjectRecord; details: ProjectRemoteDetails | null }>
   >([])
@@ -538,6 +553,19 @@ export default function App() {
     setSearchQuery("")
   }
 
+  const openRemoteDirectoryInBrowser = (payload: { connectionId: string; path: string; projectId: string }) => {
+    if (connections.some((item: VpsConnectionRecord) => item.id === payload.connectionId)) {
+      selectConnection(payload.connectionId)
+    }
+    setHighlightedProjectId(payload.projectId)
+    setFileBrowserRequest({
+      connectionId: payload.connectionId,
+      path: payload.path,
+      token: Date.now(),
+    })
+    setActiveNav("files")
+  }
+
   return (
     <div className="h-screen overflow-hidden bg-background text-foreground">
       <Toaster />
@@ -594,48 +622,84 @@ export default function App() {
         </CommandList>
       </CommandDialog>
       <SystemUpgradePrompt connection={selectedConnection} />
-      <AppSettingsSheet open={settingsOpen} onOpenChange={setSettingsOpen} />
       <VpsConnectionDialog open={dialogOpen} onOpenChange={setDialogOpen} preset={dialogPreset} />
 
       <div className="fixed inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,hsl(var(--primary)/0.06),transparent)] dark:bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,hsl(var(--primary)/0.12),transparent)]" />
 
       <div className="relative flex h-screen overflow-hidden">
+        <div className="pointer-events-none absolute left-[126px] top-4 z-30 flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="pointer-events-auto size-9 rounded-xl text-muted-foreground transition-all duration-300 hover:bg-background/45 hover:text-foreground"
+            type="button"
+            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+            onClick={() => setSidebarCollapsed((current) => !current)}
+          >
+            <PanelLeft
+              className={cn(
+                "size-[18px] transition-transform duration-300",
+                sidebarCollapsed && "rotate-180",
+              )}
+            />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="pointer-events-auto size-9 rounded-xl text-muted-foreground/85 transition-all duration-300 hover:bg-background/45 hover:text-foreground"
+            type="button"
+            title="后退"
+            disabled
+          >
+            <ArrowLeft className="size-[18px]" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="pointer-events-auto size-9 rounded-xl text-muted-foreground/45 transition-all duration-300 hover:bg-background/45 hover:text-foreground"
+            type="button"
+            title="前进"
+            disabled
+          >
+            <ArrowRight className="size-[18px]" />
+          </Button>
+        </div>
+
         {/* Sidebar */}
         <aside
           className={cn(
-            "h-screen min-h-0 shrink-0 flex-col border-r border-border/80 bg-sidebar px-3 pb-5 pt-6 lg:flex",
-            sidebarCollapsed ? "hidden w-0 overflow-hidden border-r-0 px-0 pb-0 pt-0" : "hidden w-[272px]",
+            "hidden h-screen min-h-0 shrink-0 flex-col border-r border-border/60 bg-sidebar/95 pb-5 pt-16 backdrop-blur-sm transition-[width,padding,opacity] duration-300 ease-out lg:flex",
+            sidebarCollapsed
+              ? "w-0 overflow-hidden border-r-0 px-0 opacity-0"
+              : "w-[288px] px-4 opacity-100",
           )}
         >
-          <div className="flex items-center gap-2.5 px-1">
-            <div className="grid size-9 place-items-center rounded-xl border border-border/80 bg-background text-foreground shadow-sm">
-              <Server className="size-[18px]" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">digwis-panel</p>
-              <h1 className="truncate text-[15px] font-semibold leading-tight tracking-tight">VPS Control Desk</h1>
-            </div>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="size-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
-              onClick={toggleTheme}
+          <div className="mt-7 flex shrink-0 flex-col gap-1 px-1 transition-all duration-300">
+            <button
+              type="button"
+              className={sidebarToolClass(false)}
+              onClick={() => setSearchOpen(true)}
             >
-              {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
-            </Button>
+              <Search className="size-[18px] shrink-0" />
+              <span className="whitespace-nowrap text-[15px] transition-all duration-200">搜索</span>
+            </button>
+            <button
+              type="button"
+              className={sidebarToolClass(false)}
+              onClick={() => openCreateDialog()}
+            >
+              <SquarePen className="size-[18px] shrink-0" />
+              <span className="whitespace-nowrap text-[15px] transition-all duration-200">新建服务器</span>
+            </button>
           </div>
 
-          <button
-            type="button"
-            className="mt-3 flex w-full items-center gap-2.5 rounded-full border border-transparent bg-background/70 px-3.5 py-2 text-left text-[13px] text-muted-foreground shadow-sm ring-1 ring-border/50 transition hover:bg-background hover:text-foreground hover:ring-border"
-            onClick={() => setSearchOpen(true)}
+          <nav
+            className={cn(
+              "mt-8 flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
+              "gap-1 px-1",
+            )}
           >
-            <Search className="size-3.5 shrink-0 opacity-70" />
-            <span className="truncate">搜索服务器、项目…</span>
-            <span className="ml-auto text-[11px] text-muted-foreground/80">⌘K</span>
-          </button>
-
-          <nav className="mt-6 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden px-0.5 [scrollbar-gutter:stable]">
+            <div className="px-3.5 pb-2 text-[12px] font-medium text-muted-foreground/75">工作区</div>
             {navItems.map((item) => (
               (() => {
                 const active = item.key === activeNav
@@ -644,137 +708,131 @@ export default function App() {
                 key={item.label}
                 type="button"
                 onClick={() => setActiveNav(item.key)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition",
-                  active
-                    ? "bg-background font-medium text-foreground shadow-sm ring-1 ring-border/70"
-                    : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
-                )}
+                className={sidebarItemClass(active, false)}
               >
                 <item.icon
                   className={cn(
-                    "size-4 shrink-0",
-                    active ? "text-muted-foreground" : "opacity-70",
+                    "size-[18px] shrink-0",
+                    active ? "text-foreground/80" : "opacity-70",
                   )}
                 />
-                {item.label}
+                <span className="whitespace-nowrap text-[15px] transition-all duration-200">{item.label}</span>
               </button>
                 )
               })()
             ))}
           </nav>
 
-          <div className="mt-3 shrink-0 border-t border-border/70 px-0.5 pt-3">
+          <div className="mt-4 shrink-0 border-t border-border/50 px-1 pt-4">
             <Button
               type="button"
               variant="ghost"
-              className="h-10 w-full justify-start gap-2.5 rounded-lg px-2.5 text-[13px] font-medium text-muted-foreground hover:bg-background/80 hover:text-foreground"
-              onClick={() => setSettingsOpen(true)}
+              className={sidebarItemClass(activeNav === "settings", false)}
+              onClick={() => setActiveNav("settings")}
             >
-              <Settings className="size-4 shrink-0 opacity-80" />
-              设置
+              <Settings className="size-[18px] shrink-0 opacity-80" />
+              <span className="whitespace-nowrap text-[15px] transition-all duration-200">设置</span>
             </Button>
           </div>
         </aside>
 
-        <main className="flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background pt-4">
-          <header className="flex shrink-0 items-center justify-between border-b border-border/60 px-5 py-1.5 lg:px-7">
-            <div className="flex min-w-0 items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
-                type="button"
-                title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-                onClick={() => setSidebarCollapsed((current) => !current)}
-              >
-                <PanelLeft className="size-4" />
-              </Button>
+        <main className="flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-tl-[24px] border-l border-t border-border/60 bg-background shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+          <header className="flex h-14 shrink-0 items-center justify-between border-b border-border/60 bg-background/95 px-5 backdrop-blur-sm lg:px-7">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="w-[172px] shrink-0" aria-hidden="true" />
               <div className="min-w-0">
-              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                <h2 className="truncate text-[14px] font-semibold text-foreground">
-                  {selectedConnection?.name ?? "服务器监控"}
-                </h2>
-                {selectedConnection ? (
-                  <span
-                    className={cn(
-                      "inline-flex h-5 items-center rounded-full px-2 text-[11px] font-medium",
-                      statusLabel(selectedConnection).className,
-                    )}
-                  >
-                    {statusLabel(selectedConnection).text}
-                  </span>
-                ) : null}
-                {inspection ? (
-                  <span className="truncate text-xs text-muted-foreground">
-                    {inspection.hostname}
-                    <span className="mx-1 text-muted-foreground/70">·</span>
-                    系统在线 {inspection.uptime}
-                  </span>
-                ) : (
-                  <span className="truncate text-xs text-muted-foreground">选择服务器后显示巡检状态</span>
-                )}
-              </div>
+                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                  <h2 className="truncate text-[15px] font-semibold text-foreground">
+                    {activeNav === "settings" ? "应用设置" : selectedConnection?.name ?? "服务器监控"}
+                  </h2>
+                  {activeNav !== "settings" && selectedConnection ? (
+                    <span
+                      className={cn(
+                        "inline-flex h-5 items-center rounded-full px-2 text-[11px] font-medium",
+                        statusLabel(selectedConnection).className,
+                      )}
+                    >
+                      {statusLabel(selectedConnection).text}
+                    </span>
+                  ) : null}
+                  {activeNav === "settings" ? (
+                    <span className="truncate text-[12px] text-muted-foreground">
+                      外观与界面偏好会在当前设备上立即生效
+                    </span>
+                  ) : inspection ? (
+                    <span className="truncate text-[12px] text-muted-foreground">
+                      {inspection.hostname}
+                      <span className="mx-1 text-muted-foreground/70">·</span>
+                      系统在线 {inspection.uptime}
+                    </span>
+                  ) : (
+                    <span className="truncate text-[12px] text-muted-foreground">选择服务器后显示巡检状态</span>
+                  )}
+                </div>
               </div>
             </div>
             <div className="ml-4 flex shrink-0 items-center gap-2">
-              <Select
-                value={selectedConnectionId ?? ""}
-                onValueChange={(value: string) => {
-                  if (!value) {
-                    return
-                  }
-                  selectConnection(value)
-                }}
-              >
-                <SelectTrigger className="h-8 w-[148px] rounded-lg border-border/70 bg-background shadow-none sm:w-[220px]">
-                  <SelectValue placeholder="选择服务器" />
-                </SelectTrigger>
-                <SelectContent>
-                  {connections.length === 0 ? (
-                    <SelectItem value="__empty__" disabled>
-                      暂无服务器
-                    </SelectItem>
-                  ) : (
-                    connections.map((connection: VpsConnectionRecord) => (
-                      <SelectItem key={connection.id} value={connection.id}>
-                        {connection.name}
-                      </SelectItem>
-                    ))
-                  )}
-                </SelectContent>
-              </Select>
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                className="size-8 rounded-lg border-border/70 shadow-none"
-                title="编辑当前服务器"
-                onClick={() => {
-                  if (!selectedConnection) {
-                    return
-                  }
-                  openCreateDialog(selectedConnection as VpsConnectionInput)
-                }}
-                disabled={!selectedConnection}
-              >
-                <SquarePen className="size-4" />
-              </Button>
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                className="size-8 rounded-lg border-border/70 shadow-none"
-                title="添加服务器"
-                onClick={() => openCreateDialog()}
-              >
-                <Plus className="size-4" />
-              </Button>
-              {inspection ? (
-                <div className="hidden h-8 items-center rounded-full bg-muted px-3 text-[11px] text-muted-foreground sm:inline-flex">
-                  已更新 {new Date(inspection.checkedAt).toLocaleTimeString()}
-                </div>
-              ) : null}
+              {activeNav === "settings" ? null : (
+                <>
+                  <Select
+                    value={selectedConnectionId ?? ""}
+                    onValueChange={(value: string) => {
+                      if (!value) {
+                        return
+                      }
+                      selectConnection(value)
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-[148px] rounded-lg border-border/70 bg-background shadow-none sm:w-[220px]">
+                      <SelectValue placeholder="选择服务器" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {connections.length === 0 ? (
+                        <SelectItem value="__empty__" disabled>
+                          暂无服务器
+                        </SelectItem>
+                      ) : (
+                        connections.map((connection: VpsConnectionRecord) => (
+                          <SelectItem key={connection.id} value={connection.id}>
+                            {connection.name}
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="size-8 rounded-lg border-border/70 shadow-none"
+                    title="编辑当前服务器"
+                    onClick={() => {
+                      if (!selectedConnection) {
+                        return
+                      }
+                      openCreateDialog(selectedConnection as VpsConnectionInput)
+                    }}
+                    disabled={!selectedConnection}
+                  >
+                    <SquarePen className="size-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    className="size-8 rounded-lg border-border/70 shadow-none"
+                    title="添加服务器"
+                    onClick={() => openCreateDialog()}
+                  >
+                    <Plus className="size-4" />
+                  </Button>
+                  {inspection ? (
+                    <div className="hidden h-8 items-center rounded-full bg-muted px-3 text-[11px] text-muted-foreground sm:inline-flex">
+                      已更新 {new Date(inspection.checkedAt).toLocaleTimeString()}
+                    </div>
+                  ) : null}
+                </>
+              )}
             </div>
           </header>
 
@@ -792,14 +850,22 @@ export default function App() {
 
               <div className="flex min-h-0 flex-1 flex-col gap-5">
                 <div className="flex min-h-[min(520px,70svh)] flex-1 flex-col gap-5">
-                {activeNav === "projects" ? (
+                {activeNav === "settings" ? (
+                  <AppSettingsPage />
+                ) : activeNav === "projects" ? (
                   <ProjectManagementPanel
                     connections={connections}
                     selectedConnectionId={selectedConnectionId}
                     highlightedProjectId={highlightedProjectId}
+                    onOpenRemoteDirectory={openRemoteDirectoryInBrowser}
                   />
                 ) : activeNav === "files" ? (
-                  <FileBrowserPanel selectedConnection={selectedConnection} />
+                  <FileBrowserPanel
+                    selectedConnection={selectedConnection}
+                    fallbackConnectionId={fileBrowserRequest?.connectionId}
+                    requestedPath={fileBrowserRequest?.path}
+                    requestToken={fileBrowserRequest?.token}
+                  />
                 ) : !selectedConnection ? (
                   <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/20 px-8 py-16 text-center">
                     <p className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">

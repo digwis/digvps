@@ -64,6 +64,15 @@ import type {
 
 type NavKey = "monitor" | "deps" | "projects" | "files" | "settings"
 
+type AppLocation = {
+  nav: NavKey
+  highlightedProjectId?: string
+  fileBrowserRequest?: {
+    connectionId: string
+    path: string
+  }
+}
+
 const LAST_ACTIVE_NAV_KEY = "digwis:last-active-nav"
 const SIDEBAR_COLLAPSED_KEY = "digwis:sidebar-collapsed"
 const TELEMETRY_FRESH_MS = 20_000
@@ -117,26 +126,16 @@ function sidebarItemClass(active: boolean, collapsed: boolean) {
     "group flex w-full items-center overflow-hidden rounded-2xl text-left transition-all duration-300 ease-out",
     collapsed ? "h-11 justify-center px-0" : "h-11 gap-3 px-3.5",
     active
-      ? "bg-background/90 font-medium text-foreground shadow-sm"
-      : "text-muted-foreground hover:bg-background/45 hover:text-foreground",
+      ? "bg-background/90 font-medium text-foreground shadow-sm dark:bg-white/10"
+      : "text-muted-foreground hover:bg-background/45 hover:text-foreground dark:hover:bg-white/5",
   )
 }
 
 function sidebarToolClass(collapsed: boolean) {
   return cn(
-    "flex h-10 items-center rounded-xl text-muted-foreground transition-all duration-300 ease-out hover:bg-background/45 hover:text-foreground",
+    "flex h-10 items-center rounded-xl text-muted-foreground transition-all duration-300 ease-out hover:bg-background/45 hover:text-foreground dark:hover:bg-white/5",
     collapsed ? "w-10 justify-center" : "gap-3 px-3",
   )
-}
-
-function statusLabel(connection: VpsConnectionRecord) {
-  if (connection.status === "connected") {
-    return { text: "最近可用", className: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300" }
-  }
-  if (connection.status === "failed") {
-    return { text: "需要修复", className: "bg-amber-500/10 text-amber-600 dark:text-amber-300" }
-  }
-  return { text: "未验证", className: "bg-muted text-muted-foreground" }
 }
 
 function upgradeStatusPresentation(
@@ -275,18 +274,17 @@ function inspectionFreshness(checkedAt: string, now: number) {
   }
 }
 
-function metricValue(inspection: VpsInspection, label: string) {
-  return inspection.metrics.find((metric) => metric.label === label)?.value ?? "unknown"
+function sameLocation(left: AppLocation, right: AppLocation) {
+  return (
+    left.nav === right.nav &&
+    left.highlightedProjectId === right.highlightedProjectId &&
+    left.fileBrowserRequest?.connectionId === right.fileBrowserRequest?.connectionId &&
+    left.fileBrowserRequest?.path === right.fileBrowserRequest?.path
+  )
 }
 
-function inspectionStaticCards(inspection: VpsInspection) {
-  return [
-    { label: "CPU", value: metricValue(inspection, "CPU") },
-    { label: "逻辑核心", value: metricValue(inspection, "逻辑核心") },
-    { label: "内存占用", value: metricValue(inspection, "内存占用") },
-    { label: "系统盘", value: metricValue(inspection, "系统盘") },
-    { label: "inode", value: metricValue(inspection, "inode") },
-  ]
+function metricValue(inspection: VpsInspection, label: string) {
+  return inspection.metrics.find((metric) => metric.label === label)?.value ?? "unknown"
 }
 
 function reachabilityBadge(check: InspectionReachabilityCheck) {
@@ -303,6 +301,32 @@ function reachabilityBadge(check: InspectionReachabilityCheck) {
     label: "可达",
     className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
   }
+}
+
+function summarizeUptime(uptime: string) {
+  const normalized = uptime.toLowerCase()
+  const yearMatch = normalized.match(/(\d+)\s+year/)
+  if (yearMatch) {
+    return `${yearMatch[1]} 年`
+  }
+  const monthMatch = normalized.match(/(\d+)\s+month/)
+  if (monthMatch) {
+    return `${monthMatch[1]} 个月`
+  }
+  const weekMatch = normalized.match(/(\d+)\s+week/)
+  if (weekMatch) {
+    const weeks = Number(weekMatch[1])
+    return weeks >= 4 ? `${Math.floor(weeks / 4)} 个月` : `${weeks} 周`
+  }
+  const dayMatch = normalized.match(/(\d+)\s+day/)
+  if (dayMatch) {
+    return `${dayMatch[1]} 天`
+  }
+  const hourMatch = normalized.match(/(\d+)\s+hour/)
+  if (hourMatch) {
+    return `${hourMatch[1]} 小时`
+  }
+  return "刚上线"
 }
 
 export default function App() {
@@ -347,6 +371,13 @@ export default function App() {
   >([])
   const [monitorProjectsLoading, setMonitorProjectsLoading] = useState(false)
   const [nowTick, setNowTick] = useState(() => Date.now())
+  const [navHistoryState, setNavHistoryState] = useState<{
+    entries: AppLocation[]
+    index: number
+  }>({
+    entries: [{ nav: readLastActiveNav() }],
+    index: 0,
+  })
 
   useEffect(() => {
     void loadConnections().then(() => {
@@ -539,16 +570,53 @@ export default function App() {
     setDialogOpen(true)
   }
 
+  const navigateTo = (location: AppLocation, options?: { recordHistory?: boolean }) => {
+    setActiveNav(location.nav)
+    setHighlightedProjectId(location.highlightedProjectId)
+    if (location.fileBrowserRequest) {
+      setFileBrowserRequest({
+        ...location.fileBrowserRequest,
+        token: Date.now(),
+      })
+    }
+    if (options?.recordHistory === false) {
+      return
+    }
+    setNavHistoryState((current) => {
+      const activeLocation = current.entries[current.index] ?? current.entries[0]
+      if (sameLocation(activeLocation, location)) {
+        return current
+      }
+      const nextEntries = [...current.entries.slice(0, current.index + 1), location]
+      return {
+        entries: nextEntries.slice(-80),
+        index: Math.min(nextEntries.length - 1, 79),
+      }
+    })
+  }
+
+  const canGoBack = navHistoryState.index > 0
+  const canGoForward = navHistoryState.index < navHistoryState.entries.length - 1
+
+  const moveHistory = (direction: "back" | "forward") => {
+    const nextIndex = direction === "back" ? navHistoryState.index - 1 : navHistoryState.index + 1
+    const target = navHistoryState.entries[nextIndex]
+    if (!target) {
+      return
+    }
+    setNavHistoryState((current) => ({ ...current, index: nextIndex }))
+    navigateTo(target, { recordHistory: false })
+  }
+
   const openServerFromSearch = (connectionId: string) => {
     selectConnection(connectionId)
-    setActiveNav("monitor")
+    navigateTo({ nav: "monitor" })
     setSearchOpen(false)
     setSearchQuery("")
   }
 
   const openProjectFromSearch = (projectId: string) => {
-    setActiveNav("projects")
-    setHighlightedProjectId(projectId)
+    navigateTo({ nav: "projects", highlightedProjectId: projectId })
     setSearchOpen(false)
     setSearchQuery("")
   }
@@ -557,13 +625,14 @@ export default function App() {
     if (connections.some((item: VpsConnectionRecord) => item.id === payload.connectionId)) {
       selectConnection(payload.connectionId)
     }
-    setHighlightedProjectId(payload.projectId)
-    setFileBrowserRequest({
-      connectionId: payload.connectionId,
-      path: payload.path,
-      token: Date.now(),
+    navigateTo({
+      nav: "files",
+      highlightedProjectId: payload.projectId,
+      fileBrowserRequest: {
+        connectionId: payload.connectionId,
+        path: payload.path,
+      },
     })
-    setActiveNav("files")
   }
 
   return (
@@ -624,21 +693,20 @@ export default function App() {
       <SystemUpgradePrompt connection={selectedConnection} />
       <VpsConnectionDialog open={dialogOpen} onOpenChange={setDialogOpen} preset={dialogPreset} />
 
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,hsl(var(--primary)/0.06),transparent)] dark:bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,hsl(var(--primary)/0.12),transparent)]" />
-
       <div className="relative flex h-screen overflow-hidden">
-        <div className="pointer-events-none absolute left-[126px] top-4 z-30 flex items-center gap-2">
+        {activeNav === "settings" ? null : (
+        <div className="pointer-events-none absolute left-[108px] top-3.5 z-30 flex items-center gap-2.5">
           <Button
             variant="ghost"
             size="icon"
-            className="pointer-events-auto size-9 rounded-xl text-muted-foreground transition-all duration-300 hover:bg-background/45 hover:text-foreground"
+            className="pointer-events-auto size-11 rounded-2xl text-muted-foreground transition-all duration-300 hover:bg-background/45 hover:text-foreground"
             type="button"
             title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
             onClick={() => setSidebarCollapsed((current) => !current)}
           >
             <PanelLeft
               className={cn(
-                "size-[18px] transition-transform duration-300",
+                "size-[22px] transition-transform duration-300",
                 sidebarCollapsed && "rotate-180",
               )}
             />
@@ -646,29 +714,33 @@ export default function App() {
           <Button
             variant="ghost"
             size="icon"
-            className="pointer-events-auto size-9 rounded-xl text-muted-foreground/85 transition-all duration-300 hover:bg-background/45 hover:text-foreground"
+            className="pointer-events-auto size-10 rounded-xl text-muted-foreground/85 transition-all duration-300 hover:bg-background/45 hover:text-foreground disabled:pointer-events-none disabled:text-muted-foreground/35 dark:hover:bg-white/5"
             type="button"
             title="后退"
-            disabled
+            disabled={!canGoBack}
+            onClick={() => moveHistory("back")}
           >
-            <ArrowLeft className="size-[18px]" />
+            <ArrowLeft className="size-5" />
           </Button>
           <Button
             variant="ghost"
             size="icon"
-            className="pointer-events-auto size-9 rounded-xl text-muted-foreground/45 transition-all duration-300 hover:bg-background/45 hover:text-foreground"
+            className="pointer-events-auto size-10 rounded-xl text-muted-foreground/85 transition-all duration-300 hover:bg-background/45 hover:text-foreground disabled:pointer-events-none disabled:text-muted-foreground/35 dark:hover:bg-white/5"
             type="button"
             title="前进"
-            disabled
+            disabled={!canGoForward}
+            onClick={() => moveHistory("forward")}
           >
-            <ArrowRight className="size-[18px]" />
+            <ArrowRight className="size-5" />
           </Button>
         </div>
+        )}
 
         {/* Sidebar */}
+        {activeNav === "settings" ? null : (
         <aside
           className={cn(
-            "hidden h-screen min-h-0 shrink-0 flex-col border-r border-border/60 bg-sidebar/95 pb-5 pt-16 backdrop-blur-sm transition-[width,padding,opacity] duration-300 ease-out lg:flex",
+            "hidden h-screen min-h-0 shrink-0 flex-col border-r border-border/60 bg-sidebar/95 pb-5 pt-16 backdrop-blur-sm transition-[width,padding,opacity] duration-300 ease-out lg:flex dark:border-white/10",
             sidebarCollapsed
               ? "w-0 overflow-hidden border-r-0 px-0 opacity-0"
               : "w-[288px] px-4 opacity-100",
@@ -707,7 +779,7 @@ export default function App() {
               <button
                 key={item.label}
                 type="button"
-                onClick={() => setActiveNav(item.key)}
+                onClick={() => navigateTo({ nav: item.key })}
                 className={sidebarItemClass(active, false)}
               >
                 <item.icon
@@ -723,56 +795,33 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="mt-4 shrink-0 border-t border-border/50 px-1 pt-4">
+          <div className="mt-4 shrink-0 px-0 pt-5">
             <Button
               type="button"
               variant="ghost"
-              className={sidebarItemClass(activeNav === "settings", false)}
-              onClick={() => setActiveNav("settings")}
+              className="flex h-14 w-full items-center justify-start gap-3 rounded-none px-5 text-left text-muted-foreground shadow-none transition-all duration-200 hover:bg-transparent hover:text-foreground dark:hover:bg-transparent"
+              onClick={() => navigateTo({ nav: "settings" })}
             >
-              <Settings className="size-[18px] shrink-0 opacity-80" />
-              <span className="whitespace-nowrap text-[15px] transition-all duration-200">设置</span>
+              <Settings className="size-[22px] shrink-0 opacity-85" />
+              <span className="whitespace-nowrap text-[16px] font-medium tracking-normal">设置</span>
             </Button>
           </div>
         </aside>
+        )}
 
-        <main className="flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-tl-[24px] border-l border-t border-border/60 bg-background shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-          <header className="flex h-14 shrink-0 items-center justify-between border-b border-border/60 bg-background/95 px-5 backdrop-blur-sm lg:px-7">
+        <main className={cn(
+          "flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background",
+          activeNav === "settings"
+            ? ""
+            : "rounded-tl-[28px] border-l border-t border-border/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:border-white/10 dark:shadow-none",
+        )}>
+          {activeNav === "settings" ? null : (
+          <header className="relative flex h-14 shrink-0 items-center justify-between bg-background/95 px-5 backdrop-blur-sm lg:px-7 dark:bg-background">
+            <div className="pointer-events-none absolute bottom-0 left-[28px] right-0 h-px bg-border/60 dark:bg-white/10" />
             <div className="flex min-w-0 items-center gap-3">
               <div className="w-[172px] shrink-0" aria-hidden="true" />
-              <div className="min-w-0">
-                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                  <h2 className="truncate text-[15px] font-semibold text-foreground">
-                    {activeNav === "settings" ? "应用设置" : selectedConnection?.name ?? "服务器监控"}
-                  </h2>
-                  {activeNav !== "settings" && selectedConnection ? (
-                    <span
-                      className={cn(
-                        "inline-flex h-5 items-center rounded-full px-2 text-[11px] font-medium",
-                        statusLabel(selectedConnection).className,
-                      )}
-                    >
-                      {statusLabel(selectedConnection).text}
-                    </span>
-                  ) : null}
-                  {activeNav === "settings" ? (
-                    <span className="truncate text-[12px] text-muted-foreground">
-                      外观与界面偏好会在当前设备上立即生效
-                    </span>
-                  ) : inspection ? (
-                    <span className="truncate text-[12px] text-muted-foreground">
-                      {inspection.hostname}
-                      <span className="mx-1 text-muted-foreground/70">·</span>
-                      系统在线 {inspection.uptime}
-                    </span>
-                  ) : (
-                    <span className="truncate text-[12px] text-muted-foreground">选择服务器后显示巡检状态</span>
-                  )}
-                </div>
-              </div>
             </div>
             <div className="ml-4 flex shrink-0 items-center gap-2">
-              {activeNav === "settings" ? null : (
                 <>
                   <Select
                     value={selectedConnectionId ?? ""}
@@ -783,7 +832,7 @@ export default function App() {
                       selectConnection(value)
                     }}
                   >
-                    <SelectTrigger className="h-8 w-[148px] rounded-lg border-border/70 bg-background shadow-none sm:w-[220px]">
+                    <SelectTrigger className="h-8 w-[148px] rounded-lg border-border/70 bg-background shadow-none dark:border-white/10 dark:bg-white/[0.03] sm:w-[220px]">
                       <SelectValue placeholder="选择服务器" />
                     </SelectTrigger>
                     <SelectContent>
@@ -804,7 +853,7 @@ export default function App() {
                     type="button"
                     size="icon"
                     variant="outline"
-                    className="size-8 rounded-lg border-border/70 shadow-none"
+                    className="size-8 rounded-lg border-border/70 shadow-none dark:border-white/10 dark:bg-white/[0.03]"
                     title="编辑当前服务器"
                     onClick={() => {
                       if (!selectedConnection) {
@@ -820,26 +869,30 @@ export default function App() {
                     type="button"
                     size="icon"
                     variant="outline"
-                    className="size-8 rounded-lg border-border/70 shadow-none"
+                    className="size-8 rounded-lg border-border/70 shadow-none dark:border-white/10 dark:bg-white/[0.03]"
                     title="添加服务器"
                     onClick={() => openCreateDialog()}
                   >
                     <Plus className="size-4" />
                   </Button>
                   {inspection ? (
-                    <div className="hidden h-8 items-center rounded-full bg-muted px-3 text-[11px] text-muted-foreground sm:inline-flex">
-                      已更新 {new Date(inspection.checkedAt).toLocaleTimeString()}
+                    <div className="hidden h-8 items-center rounded-full bg-muted px-3 text-[11px] text-muted-foreground dark:bg-white/[0.06] sm:inline-flex">
+                      <span className="mr-2 inline-block size-2 rounded-full bg-emerald-500" />
+                      已更新 {new Date(inspection.checkedAt).toLocaleTimeString()} · 在线 {summarizeUptime(inspection.uptime)}
                     </div>
                   ) : null}
                 </>
-              )}
             </div>
           </header>
+          )}
 
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto overflow-x-hidden px-5 py-6 lg:px-8">
+            <div className={cn(
+              "flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto overflow-x-hidden",
+              activeNav === "settings" ? "px-0 py-0" : "px-5 py-6 lg:px-8",
+            )}>
               {(info || error) && (
-                <div className="rounded-2xl border border-border/80 bg-card px-4 py-3 text-sm shadow-sm">
+                <div className="rounded-2xl border border-border/80 bg-card px-4 py-3 text-sm shadow-sm dark:border-white/10 dark:bg-[#1b1b1b] dark:shadow-none">
                   {error ? (
                     <p className="text-destructive">{error}</p>
                   ) : (
@@ -851,7 +904,13 @@ export default function App() {
               <div className="flex min-h-0 flex-1 flex-col gap-5">
                 <div className="flex min-h-[min(520px,70svh)] flex-1 flex-col gap-5">
                 {activeNav === "settings" ? (
-                  <AppSettingsPage />
+                  <AppSettingsPage onExit={() => {
+                    if (canGoBack) {
+                      moveHistory("back")
+                      return
+                    }
+                    navigateTo({ nav: "monitor" })
+                  }} />
                 ) : activeNav === "projects" ? (
                   <ProjectManagementPanel
                     connections={connections}
@@ -867,7 +926,7 @@ export default function App() {
                     requestToken={fileBrowserRequest?.token}
                   />
                 ) : !selectedConnection ? (
-                  <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/20 px-8 py-16 text-center">
+                  <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/20 px-8 py-16 text-center dark:border-white/10 dark:bg-white/[0.03]">
                     <p className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
                       接下来要管理哪台服务器？
                     </p>
@@ -884,7 +943,7 @@ export default function App() {
                     </Button>
                   </div>
                 ) : isInspecting && !inspection ? (
-                  <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/15 px-6 py-16 text-center">
+                  <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/15 px-6 py-16 text-center dark:border-white/10 dark:bg-white/[0.03]">
                     <LoaderCircle className="size-8 animate-spin text-muted-foreground" />
                     <p className="text-sm text-muted-foreground">正在拉取远程环境信息…</p>
                   </div>
@@ -925,20 +984,18 @@ export default function App() {
                         (item) => !item.ok || (item.responseTimeMs ?? 0) >= 1500,
                       )
                       const freshTelemetry = freshness.stale ? undefined : inspection.telemetry
-                      const staticMetricCards = inspectionStaticCards(inspection)
-
                       return (
                         <>
                           <div className="grid gap-3 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.95fr)]">
-                            <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
+                            <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm dark:border-white/10 dark:bg-[#1b1b1b] dark:shadow-none">
                               <div className="flex items-start gap-3">
-                                <div className="mt-0.5 grid size-9 place-items-center rounded-xl bg-muted text-muted-foreground">
+                                <div className="mt-0.5 grid size-9 place-items-center rounded-xl bg-muted text-muted-foreground dark:bg-white/10">
                                   <Server className="size-4" />
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <div className="flex flex-wrap items-center gap-2">
                                     <h3 className="text-lg font-semibold text-foreground">{inspection.hostname}</h3>
-                                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground dark:bg-white/10">
                                       {inspection.packageManager ?? "未知"}
                                     </span>
                                   </div>
@@ -971,7 +1028,7 @@ export default function App() {
                             </div>
 
                             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-                              <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
+                              <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm dark:border-white/10 dark:bg-[#1b1b1b] dark:shadow-none">
                                 <div className="flex items-center justify-between gap-3">
                                   <div>
                                     <p className="text-xs font-medium text-muted-foreground">风险提醒</p>
@@ -1021,7 +1078,7 @@ export default function App() {
                                     "border-amber-500/25 bg-amber-500/[0.06]",
                                   upgradePresentation.tone === "danger" &&
                                     "border-destructive/20 bg-destructive/[0.05]",
-                                  upgradePresentation.tone === "muted" && "border-border/70 bg-card",
+                                  upgradePresentation.tone === "muted" && "border-border/70 bg-card dark:border-white/10 dark:bg-[#1b1b1b]",
                                 )}
                               >
                                 <p className="text-xs font-medium text-muted-foreground">软件包更新</p>
@@ -1050,22 +1107,10 @@ export default function App() {
                               metrics={inspection.metrics}
                               checkedAt={inspection.checkedAt}
                             />
-                          ) : (
-                            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-                              {staticMetricCards.map((metric) => (
-                                <div
-                                  key={metric.label}
-                                  className="rounded-2xl border border-border/80 bg-card p-4 shadow-sm"
-                                >
-                                  <p className="text-sm text-muted-foreground">{metric.label}</p>
-                                  <p className="mt-3 text-lg font-semibold text-foreground">{metric.value}</p>
-                                </div>
-                              ))}
-                            </div>
-                          )}
+                          ) : null}
 
                           <div className="grid gap-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
-                            <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
+                            <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm dark:border-white/10 dark:bg-[#1b1b1b] dark:shadow-none">
                               <div className="flex items-center justify-between gap-3">
                                 <div>
                                   <p className="text-sm font-medium text-foreground">服务状态</p>
@@ -1088,7 +1133,7 @@ export default function App() {
                                     return (
                                       <div
                                         key={pkg.id}
-                                        className="rounded-xl border border-border/70 px-3 py-3"
+                                        className="rounded-xl border border-border/70 px-3 py-3 dark:border-white/10 dark:bg-white/[0.02]"
                                       >
                                         <div className="flex items-center justify-between gap-2">
                                           <div className="min-w-0">
@@ -1111,7 +1156,7 @@ export default function App() {
                               </div>
                             </div>
 
-                            <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
+                            <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm dark:border-white/10 dark:bg-[#1b1b1b] dark:shadow-none">
                               <p className="text-sm font-medium text-foreground">巡检摘要</p>
                               <div className="mt-4 space-y-3 text-sm">
                                 <div className="flex items-center justify-between gap-3">
@@ -1136,7 +1181,7 @@ export default function App() {
 
                           <InspectionServiceBrowser services={inspection.services ?? []} />
 
-                          <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
+                          <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm dark:border-white/10 dark:bg-[#1b1b1b] dark:shadow-none">
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <p className="text-sm font-medium text-foreground">关键端口监听</p>
@@ -1152,7 +1197,7 @@ export default function App() {
                               {(inspection.portChecks ?? []).map((check) => (
                                 <div
                                   key={`${check.label}-${check.port}`}
-                                  className="rounded-xl border border-border/70 px-3 py-3"
+                                  className="rounded-xl border border-border/70 px-3 py-3 dark:border-white/10 dark:bg-white/[0.02]"
                                 >
                                   <div className="flex items-start justify-between gap-2">
                                     <div>
@@ -1168,7 +1213,7 @@ export default function App() {
                             </div>
                           </div>
 
-                          <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
+                          <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm dark:border-white/10 dark:bg-[#1b1b1b] dark:shadow-none">
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <p className="text-sm font-medium text-foreground">入口连通性</p>
@@ -1189,8 +1234,8 @@ export default function App() {
                                     className={cn(
                                       "rounded-xl border px-3 py-3",
                                       item.ok
-                                        ? "border-border/70"
-                                        : "border-destructive/25 bg-destructive/[0.03]",
+                                        ? "border-border/70 dark:border-white/10 dark:bg-white/[0.02]"
+                                        : "border-destructive/25 bg-destructive/[0.03] dark:bg-destructive/[0.08]",
                                     )}
                                   >
                                   <div className="flex items-start justify-between gap-2">
@@ -1216,7 +1261,7 @@ export default function App() {
                             </div>
                           </div>
 
-                          <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
+                          <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm dark:border-white/10 dark:bg-[#1b1b1b] dark:shadow-none">
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <p className="text-sm font-medium text-foreground">项目入口</p>
@@ -1241,7 +1286,7 @@ export default function App() {
                                 monitorProjectEntries.map(({ project, details }) => (
                                   <div
                                     key={project.id}
-                                    className="rounded-xl border border-border/70 px-3 py-3"
+                                    className="rounded-xl border border-border/70 px-3 py-3 dark:border-white/10 dark:bg-white/[0.02]"
                                   >
                                     <p className="text-sm font-medium text-foreground">{project.displayName}</p>
                                     <p className="mt-1 truncate text-[11px] text-muted-foreground">
@@ -1249,12 +1294,12 @@ export default function App() {
                                     </p>
                                     <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                                       {details?.appPort ? (
-                                        <span className="rounded-full bg-muted px-2 py-0.5">端口 {details.appPort}</span>
+                                        <span className="rounded-full bg-muted px-2 py-0.5 dark:bg-white/10">端口 {details.appPort}</span>
                                       ) : null}
                                       {details?.site.mode === "domain" ? (
-                                        <span className="rounded-full bg-muted px-2 py-0.5">域名入口</span>
+                                        <span className="rounded-full bg-muted px-2 py-0.5 dark:bg-white/10">域名入口</span>
                                       ) : details?.site.mode === "port" ? (
-                                        <span className="rounded-full bg-muted px-2 py-0.5">端口预览</span>
+                                        <span className="rounded-full bg-muted px-2 py-0.5 dark:bg-white/10">端口预览</span>
                                       ) : null}
                                     </div>
                                   </div>
@@ -1267,7 +1312,7 @@ export default function App() {
                     })()
                   )
                 ) : (
-                  <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/80 bg-muted/15 px-6 py-16 text-center text-sm text-muted-foreground">
+                  <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/80 bg-muted/15 px-6 py-16 text-center text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
                     这台服务器还没有监控快照
                   </div>
                 )}

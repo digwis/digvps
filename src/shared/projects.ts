@@ -174,6 +174,12 @@ export type ProjectDeployResult = {
   kind?: ProjectDeployStrategy
 }
 
+export type ProjectOperationResult = {
+  ok: boolean
+  message: string
+  durationMs: number
+}
+
 export type ProjectDeployLogEvent = {
   projectId: string
   script?: string
@@ -191,7 +197,7 @@ export type ProjectOperationLogEntry = {
 }
 
 export type ProjectActionKind = "code" | "data" | "uploads" | "backup"
-export type ProjectBackupSchedule = "off" | "daily" | "weekly"
+export type ProjectBackupSchedule = "off" | "daily" | "weekly" | "monthly"
 
 export type ProjectActionHint = {
   action: ProjectActionKind
@@ -214,6 +220,18 @@ export type ProjectBackupScheduleState = {
   lastRunAt?: string | null
 }
 
+export type ProjectMigrationInput = {
+  projectId: string
+  sourceConnectionId: string
+  targetConnectionId: string
+}
+
+export type ProjectMigrationResult = ProjectOperationResult & {
+  targetConnectionId?: string
+  targetRemotePath?: string
+  sourceDisabled: boolean
+}
+
 export type ManagedProjectsApi = {
   listProjects: () => Promise<LocalProjectRecord[]>
   addProjectFromPath: (payload: LocalProjectInput) => Promise<LocalProjectRecord>
@@ -227,6 +245,7 @@ export type ManagedProjectsApi = {
   saveProjectEnv: (payload: ProjectEnvUpdateInput) => Promise<ProjectEnvResult>
   rotateProjectSecret: (payload: ProjectEnvInput) => Promise<ProjectEnvResult>
   restartProjectService: (payload: ProjectEnvInput) => Promise<ProjectEnvResult>
+  stopProjectService: (payload: ProjectEnvInput) => Promise<ProjectEnvResult>
   saveProjectSiteSettings: (payload: ProjectSiteSettingsInput) => Promise<ProjectSiteSettingsResult>
   initializeProject: (payload: ProjectInitializeInput) => Promise<ProjectDeployResult>
   deployProject: (payload: ProjectDeployInput) => Promise<ProjectDeployResult>
@@ -235,6 +254,8 @@ export type ManagedProjectsApi = {
   setProjectBackupSchedule: (
     payload: { projectId: string; schedule: ProjectBackupSchedule },
   ) => Promise<ProjectBackupScheduleState>
+  runProjectBackup: (payload: ProjectEnvInput) => Promise<ProjectOperationResult>
+  migrateProject: (payload: ProjectMigrationInput) => Promise<ProjectMigrationResult>
   listOperationLogs: (payload?: { limit?: number }) => Promise<ProjectOperationLogEntry[]>
   onDeployLog: (handler: (event: ProjectDeployLogEvent) => void) => () => void
 }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen } from "electron"
+import { app, BrowserWindow, ipcMain, Menu, screen } from "electron"
 import path from "node:path"
 import {
   getVpsConnectionInput,
@@ -20,6 +20,7 @@ import {
 } from "./services/project-operation-log"
 import { readProjectDeployConfig } from "./services/project-deploy-profile"
 import { buildProjectScriptEnv, resolveStoredPayload } from "./ipc/helpers"
+import { runProjectRemoteBackup } from "./services/project-backup"
 import { registerProjectHandlers } from "./ipc/register-project-handlers"
 import { registerVpsHandlers } from "./ipc/register-vps-handlers"
 import type { ProjectBackupSchedule } from "../shared/projects"
@@ -55,6 +56,25 @@ function createWindow() {
 
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     console.error("Preload failed:", preloadPath, error)
+  })
+
+  window.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") {
+      return
+    }
+
+    const key = input.key.toLowerCase()
+    const isReloadShortcut =
+      key === "f5" ||
+      ((input.meta || input.control) && key === "r")
+
+    if (isReloadShortcut) {
+      event.preventDefault()
+    }
+  })
+
+  window.webContents.on("will-navigate", (event) => {
+    event.preventDefault()
   })
 
   window.once("ready-to-show", () => {
@@ -102,6 +122,19 @@ async function runDueBackupTasks() {
       const scripts = readPackageJsonScriptNames(project.localPath)
       const backupScript = scripts.includes("backup:vps") ? "backup:vps" : scripts.includes("backup") ? "backup" : null
       if (!backupScript) {
+        const remoteAppDir = project.lastRemotePath || config?.deploy?.remoteAppDir?.trim()
+        if (!remoteAppDir) {
+          markProjectBackupRun(project.id)
+          continue
+        }
+        const result = await runProjectRemoteBackup({
+          connection: resolveStoredPayload(connection),
+          projectId: project.id,
+          remoteAppDir,
+        })
+        if (result.ok) {
+          markProjectActionRun(project.id, "backup")
+        }
         markProjectBackupRun(project.id)
         continue
       }
@@ -130,6 +163,7 @@ async function runDueBackupTasks() {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null)
   const userDataPath = app.getPath("userData")
   initializeDatabase(userDataPath)
   initializeProjectActionState(userDataPath)

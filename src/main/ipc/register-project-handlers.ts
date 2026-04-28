@@ -15,6 +15,7 @@ import {
   restartProjectRemoteService,
   rotateProjectSessionSecret,
   saveProjectEnvFile,
+  stopProjectRemoteService,
 } from "../services/project-env"
 import { initializeProjectOnVps } from "../services/project-bootstrap"
 import { readPackageJsonScriptNames, runLocalNpmScript } from "../services/project-local-npm"
@@ -24,9 +25,12 @@ import { inspectProjectActionHints } from "../services/project-action-hints"
 import {
   getProjectBackupSchedule,
   markProjectActionRun,
+  markProjectBackupRun,
   setProjectBackupSchedule,
 } from "../services/project-action-state"
 import { appendOperationLog, listOperationLogs } from "../services/project-operation-log"
+import { runProjectRemoteBackup } from "../services/project-backup"
+import { migrateProjectBetweenServers } from "../services/project-migration"
 import { buildProjectScriptEnv, resolveActionKindFromScript, resolveStoredPayload } from "./helpers"
 import { registerIpcHandle } from "./ipc-error"
 import {
@@ -38,6 +42,7 @@ import {
   projectDeploySchema,
   projectEnvUpdateSchema,
   projectIdSchema,
+  projectMigrationSchema,
   projectRemoteDetailsSchema,
   projectSiteSettingsSchema,
 } from "./schemas"
@@ -45,6 +50,7 @@ import type {
   LocalProjectInput,
   ProjectBackupSchedule,
   ProjectDeployInput,
+  ProjectMigrationInput,
   ProjectRemoteDetailsInput,
   ProjectSiteSettingsInput,
 } from "../../shared/projects"
@@ -190,6 +196,21 @@ export function registerProjectHandlers() {
         throw new Error("项目未配置 deploy.remoteService")
       }
       return await restartProjectRemoteService(resolveStoredPayload(connection), remoteService)
+    },
+  )
+
+  registerIpcHandle(
+    "projects:stop-service",
+    async (_event, payload: { projectId: string; connectionId: string }) => {
+      payload = parseOrThrow(projectConnectionSchema, payload)
+      const project = requireProject(payload.projectId)
+      const connection = requireConnection(payload.connectionId)
+      const config = readProjectDeployConfig(project.localPath)
+      const remoteService = config?.deploy?.remoteService?.trim()
+      if (!remoteService) {
+        throw new Error("项目未配置 deploy.remoteService")
+      }
+      return await stopProjectRemoteService(resolveStoredPayload(connection), remoteService)
     },
   )
 
@@ -406,6 +427,79 @@ export function registerProjectHandlers() {
       return next
     },
   )
+
+  registerIpcHandle("projects:run-backup", async (_event, payload: { projectId: string; connectionId: string }) => {
+    payload = parseOrThrow(projectConnectionSchema, payload)
+    const project = requireProject(payload.projectId)
+    const connection = requireConnection(payload.connectionId)
+    const config = readProjectDeployConfig(project.localPath)
+    const remoteAppDir = project.lastRemotePath || config?.deploy?.remoteAppDir?.trim()
+    if (!remoteAppDir) {
+      throw new Error("项目未配置 deploy.remoteAppDir，且还没有记录远端部署目录")
+    }
+    appendOperationLog({
+      projectId: project.id,
+      stream: "system",
+      chunk: "[start] remote backup\n",
+    })
+    const result = await runProjectRemoteBackup({
+      connection: resolveStoredPayload(connection),
+      projectId: project.id,
+      remoteAppDir,
+    })
+    appendOperationLog({
+      projectId: project.id,
+      stream: result.ok ? "system" : "stderr",
+      chunk: `[finish] ${result.ok ? "success" : "failed"} (${Math.round(result.durationMs / 1000)}s)\n${result.message}\n`,
+    })
+    if (result.ok) {
+      markProjectActionRun(project.id, "backup")
+      markProjectBackupRun(project.id)
+    }
+    return result
+  })
+
+  registerIpcHandle("projects:migrate", async (_event, payload: ProjectMigrationInput) => {
+    payload = parseOrThrow(projectMigrationSchema, payload)
+    if (payload.sourceConnectionId === payload.targetConnectionId) {
+      throw new Error("迁移目标必须是另一台服务器")
+    }
+    const project = requireProject(payload.projectId)
+    const sourceConnection = requireConnection(payload.sourceConnectionId)
+    const targetConnection = requireConnection(payload.targetConnectionId)
+    const config = readProjectDeployConfig(project.localPath)
+    const remoteAppDir = project.lastRemotePath || config?.deploy?.remoteAppDir?.trim()
+    if (!remoteAppDir) {
+      throw new Error("项目未配置 deploy.remoteAppDir，且还没有记录远端部署目录")
+    }
+    appendOperationLog({
+      projectId: project.id,
+      stream: "system",
+      chunk: `[start] migrate project to ${targetConnection.name}\n`,
+    })
+    const result = await migrateProjectBetweenServers({
+      projectId: project.id,
+      config,
+      sourceConnection: resolveStoredPayload(sourceConnection),
+      targetConnection: resolveStoredPayload(targetConnection),
+      remoteAppDir,
+    })
+    appendOperationLog({
+      projectId: project.id,
+      stream: result.ok ? "system" : "stderr",
+      chunk: `[finish] ${result.ok ? "success" : "failed"} (${Math.round(result.durationMs / 1000)}s)\n${result.message}\n`,
+    })
+    if (result.ok) {
+      updateLocalProjectDeployResult(project.id, {
+        connectionId: targetConnection.id!,
+        remotePath: result.targetRemotePath ?? remoteAppDir,
+        status: "success",
+        message: result.message,
+        deployKind: project.lastDeployKind ?? config?.deploy?.strategy ?? "local-npm-script",
+      })
+    }
+    return result
+  })
 
   registerIpcHandle("projects:list-operation-logs", async (_event, payload?: { limit?: number }) => {
     payload = parseOrThrow(operationLogsQuerySchema, payload)

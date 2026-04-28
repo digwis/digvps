@@ -72,8 +72,10 @@ function nextRunAt(schedule: ProjectBackupSchedule, fromIso: string): string | n
   const next = new Date(fromIso)
   if (schedule === "daily") {
     next.setDate(next.getDate() + 1)
-  } else {
+  } else if (schedule === "weekly") {
     next.setDate(next.getDate() + 7)
+  } else {
+    next.setMonth(next.getMonth() + 1)
   }
   return next.toISOString()
 }

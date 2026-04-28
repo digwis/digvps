@@ -47,7 +47,13 @@ export const projectDeploySchema = projectConnectionSchema.extend({
 
 export const projectBackupScheduleSchema = z.object({
   projectId: projectIdSchema,
-  schedule: z.enum(["off", "daily", "weekly"]),
+  schedule: z.enum(["off", "daily", "weekly", "monthly"]),
+})
+
+export const projectMigrationSchema = z.object({
+  projectId: projectIdSchema,
+  sourceConnectionId: connectionIdSchema,
+  targetConnectionId: connectionIdSchema,
 })
 
 export const operationLogsQuerySchema = z

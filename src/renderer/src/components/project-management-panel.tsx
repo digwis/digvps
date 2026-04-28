@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
 import {
+  Archive,
+  ArrowRightLeft,
+  CircleStop,
   ExternalLink,
   FileText,
   FolderInput,
@@ -39,6 +42,13 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { useProjectStore } from "@/store/project-store"
@@ -105,7 +115,6 @@ function buildDeployScriptOptions(scripts: string[]): DeployScriptOption[] {
   add(["deploy:panel", "deploy:vps:code"], "部署代码", "code")
   add(["sync:vps:admin-data", "sync:vps:data", "sync:vps"], "部署数据", "data")
   add(["sync:vps:uploads", "sync:uploads:vps"], "同步文件", "uploads")
-  add(["backup:vps", "backup"], "备份数据", "backup")
 
   if (options.length === 0) {
     const fallback = scripts.slice(0, 4)
@@ -128,6 +137,19 @@ function formatActionSummary(hint?: ProjectActionHint) {
   return "已是最新"
 }
 
+function backupScheduleLabel(schedule?: ProjectBackupSchedule) {
+  if (schedule === "daily") {
+    return "每天"
+  }
+  if (schedule === "weekly") {
+    return "每周"
+  }
+  if (schedule === "monthly") {
+    return "每月"
+  }
+  return "关闭"
+}
+
 function recommendedAction(project: LocalProjectRecord, args: {
   selectedConnectionId?: string
   remoteDetails: ProjectRemoteDetails | null
@@ -147,7 +169,7 @@ function recommendedAction(project: LocalProjectRecord, args: {
   if (project.lastDeployStatus === "failed") {
     return {
       label: "重新部署代码",
-      detail: project.lastDeployMessage ?? "上次部署失败，建议先恢复主链路",
+      detail: "上次部署失败，请查看日志后重试。",
       tone: "bg-destructive/10 text-destructive",
     }
   }
@@ -198,7 +220,7 @@ function summarizeProjectLog(entry: ProjectOperationLogEntry) {
     const failed = text.includes("failed")
     return {
       title: failed ? "最近执行失败" : "最近执行完成",
-      detail: text.replace("[finish]", "").trim(),
+      detail: failed ? "执行失败，详情请查看日志。" : "执行完成，详情可在日志中查看。",
       tone: failed ? "text-destructive" : "text-foreground",
     }
   }
@@ -218,7 +240,7 @@ function summarizeProjectLog(entry: ProjectOperationLogEntry) {
   }
   return {
     title: entry.stream === "stderr" ? "最近输出" : "最近记录",
-    detail: text,
+    detail: entry.stream === "stderr" ? "有新的错误输出，详情请查看日志。" : "有新的执行记录，详情请查看日志。",
     tone: entry.stream === "stderr" ? "text-destructive" : "text-muted-foreground",
   }
 }
@@ -318,7 +340,7 @@ function ProjectDeployCard({
   backupSchedule,
   recentLogs,
   fullLogs,
-  onBackupScheduleChange,
+  onProjectStateRefresh,
   onOpenRemoteDirectory,
 }: {
   project: LocalProjectRecord
@@ -341,7 +363,7 @@ function ProjectDeployCard({
   backupSchedule?: ProjectBackupScheduleState
   recentLogs?: ProjectOperationLogEntry[]
   fullLogs?: ProjectOperationLogEntry[]
-  onBackupScheduleChange: (schedule: ProjectBackupSchedule) => void
+  onProjectStateRefresh: () => Promise<void>
   onOpenRemoteDirectory?: (payload: { connectionId: string; path: string; projectId: string }) => void
 }) {
   const [connectionId, setConnectionId] = useState<string>(project.lastConnectionId ?? selectedConnectionId ?? "")
@@ -373,6 +395,11 @@ function ProjectDeployCard({
   const [logFilter, setLogFilter] = useState<ProjectLogFilter>("all")
   const [logQuery, setLogQuery] = useState("")
   const [deleteConfirmText, setDeleteConfirmText] = useState("")
+  const [stoppingService, setStoppingService] = useState(false)
+  const [runningBackup, setRunningBackup] = useState(false)
+  const [migrateOpen, setMigrateOpen] = useState(false)
+  const [migrating, setMigrating] = useState(false)
+  const [migrationTargetId, setMigrationTargetId] = useState("")
   const hintByAction = useMemo(() => {
     const map = new Map<string, ProjectActionHint>()
     for (const item of actionHints ?? []) {
@@ -409,6 +436,11 @@ function ProjectDeployCard({
       setStrategy("sftp")
     }
   }, [project.lastDeployKind])
+
+  useEffect(() => {
+    const fallbackTarget = connections.find((item) => item.id !== connectionId)?.id ?? ""
+    setMigrationTargetId((current) => (current && current !== connectionId ? current : fallbackTarget))
+  }, [connectionId, connections])
 
   useEffect(() => {
     let cancelled = false
@@ -702,6 +734,110 @@ function ProjectDeployCard({
     }
   }
 
+  const stopRemoteService = async () => {
+    if (!connectionId) {
+      return
+    }
+    setStoppingService(true)
+    try {
+      const stopped = await getDesktopApi().projects.stopProjectService({
+        projectId: project.id,
+        connectionId,
+      })
+      if (!stopped.ok) {
+        toast({
+          variant: "destructive",
+          title: `${project.displayName} 停止失败`,
+          description: stopped.message,
+        })
+        return
+      }
+      toast({
+        title: `${project.displayName} 已停止`,
+        description: stopped.message,
+      })
+      await refreshRemoteDetails()
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 停止失败`,
+        description: error instanceof Error ? error.message : "无法停止远端服务",
+      })
+    } finally {
+      setStoppingService(false)
+    }
+  }
+
+  const runManualBackup = async () => {
+    if (!connectionId) {
+      return
+    }
+    setRunningBackup(true)
+    try {
+      const result = await getDesktopApi().projects.runProjectBackup({
+        projectId: project.id,
+        connectionId,
+      })
+      if (!result.ok) {
+        toast({
+          variant: "destructive",
+          title: `${project.displayName} 备份失败`,
+          description: result.message,
+        })
+        return
+      }
+      toast({
+        title: `${project.displayName} 备份完成`,
+        description: result.message,
+      })
+      await onProjectStateRefresh()
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 备份失败`,
+        description: error instanceof Error ? error.message : "无法执行远端备份",
+      })
+    } finally {
+      setRunningBackup(false)
+    }
+  }
+
+  const runMigration = async () => {
+    if (!connectionId || !migrationTargetId || migrationTargetId === connectionId) {
+      return
+    }
+    setMigrating(true)
+    try {
+      const result = await getDesktopApi().projects.migrateProject({
+        projectId: project.id,
+        sourceConnectionId: connectionId,
+        targetConnectionId: migrationTargetId,
+      })
+      if (!result.ok) {
+        toast({
+          variant: "destructive",
+          title: `${project.displayName} 迁移失败`,
+          description: result.message,
+        })
+        return
+      }
+      toast({
+        title: `${project.displayName} 已迁移`,
+        description: result.message,
+      })
+      setMigrateOpen(false)
+      await onProjectStateRefresh()
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 迁移失败`,
+        description: error instanceof Error ? error.message : "无法执行项目迁移",
+      })
+    } finally {
+      setMigrating(false)
+    }
+  }
+
   const saveSiteSettings = async () => {
     if (!connectionId) {
       setSiteError("请先选择目标 VPS")
@@ -890,7 +1026,7 @@ function ProjectDeployCard({
             </p>
             <p className="truncate">
               备份计划
-              <span className="ml-1 text-foreground">{backupSchedule?.schedule ?? "off"}</span>
+              <span className="ml-1 text-foreground">{backupScheduleLabel(backupSchedule?.schedule)}</span>
             </p>
           </div>
           <div className="flex items-start gap-2 rounded-xl border border-border/60 bg-background px-3 py-2.5">
@@ -901,43 +1037,47 @@ function ProjectDeployCard({
               {nextAction.detail}
             </p>
           </div>
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-            <div className="rounded-xl border border-border/60 bg-muted/[0.05] px-3 py-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <p className={cn("text-[11px] font-medium", initSummary?.tone ?? "text-muted-foreground")}>
-                  {initSummary?.title ?? "最近初始化"}
-                </p>
-                <span className="shrink-0 text-[10px] text-muted-foreground">
-                  {latestInitLog ? new Date(latestInitLog.at).toLocaleTimeString() : "暂无"}
-                </span>
+          <div className="space-y-2 rounded-xl border border-border/60 bg-muted/[0.05] px-3 py-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] text-muted-foreground">最近执行</p>
+                <div className="mt-1 flex min-w-0 items-center gap-2">
+                  <span className={cn("shrink-0 text-[12px] font-medium", actionSummary?.tone ?? "text-foreground")}>
+                    {actionSummary?.title ?? "暂无记录"}
+                  </span>
+                  <span className="truncate text-[11px] text-muted-foreground">
+                    {actionSummary?.detail ?? "尚未记录部署、同步或备份结果。"}
+                  </span>
+                </div>
               </div>
-              <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">
-                {initSummary?.detail ?? "尚未执行初始化或没有记录。"}
-              </p>
-            </div>
-            <div className="rounded-xl border border-border/60 bg-muted/[0.05] px-3 py-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <p className={cn("text-[11px] font-medium", actionSummary?.tone ?? "text-muted-foreground")}>
-                  {actionSummary?.title ?? "最近部署/操作"}
-                </p>
-                <span className="shrink-0 text-[10px] text-muted-foreground">
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="text-[10px] text-muted-foreground">
                   {latestActionLog ? new Date(latestActionLog.at).toLocaleTimeString() : "暂无"}
                 </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 rounded-lg px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                  disabled={!fullLogs?.length}
+                  onClick={() => setLogsOpen(true)}
+                >
+                  <FileText className="size-3.5" />
+                  日志
+                </Button>
               </div>
-              <p className="mt-1 line-clamp-2 text-[11px] leading-5 text-muted-foreground">
-                {actionSummary?.detail ?? "尚未记录部署、同步或备份结果。"}
-              </p>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-full min-h-16 rounded-xl px-3 text-xs shadow-none"
-              disabled={!fullLogs?.length}
-              onClick={() => setLogsOpen(true)}
-            >
-              <FileText className="size-4" />
-              查看日志
-            </Button>
+            <div className="flex items-center justify-between gap-3 border-t border-border/50 pt-2">
+              <div className="min-w-0">
+                <p className="text-[11px] text-muted-foreground">初始化</p>
+                <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                  {initSummary?.detail ?? "尚未执行初始化"}
+                </p>
+              </div>
+              <span className="shrink-0 text-[10px] text-muted-foreground">
+                {latestInitLog ? new Date(latestInitLog.at).toLocaleTimeString() : "暂无"}
+              </span>
+            </div>
           </div>
           {hasScriptActions ? null : (
             <div className="space-y-1.5">
@@ -1051,6 +1191,56 @@ function ProjectDeployCard({
                 )}
               </Button>
             )}
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 rounded-xl text-xs shadow-none"
+              disabled={!connectionId || runningBackup || busy || bootstrapping}
+              onClick={() => void runManualBackup()}
+            >
+              {runningBackup ? (
+                <>
+                  <LoaderCircle className="size-4 animate-spin" />
+                  备份中…
+                </>
+              ) : (
+                <>
+                  <Archive className="size-4" />
+                  立即备份
+                </>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 rounded-xl text-xs shadow-none"
+              disabled={!connectionId || stoppingService || !remoteDetails?.service.configured}
+              onClick={() => void stopRemoteService()}
+            >
+              {stoppingService ? (
+                <>
+                  <LoaderCircle className="size-4 animate-spin" />
+                  停止中…
+                </>
+              ) : (
+                <>
+                  <CircleStop className="size-4" />
+                  停止项目
+                </>
+              )}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-9 rounded-xl text-xs shadow-none"
+              disabled={!connectionId || connections.filter((item) => item.id !== connectionId).length === 0}
+              onClick={() => setMigrateOpen(true)}
+            >
+              <ArrowRightLeft className="size-4" />
+              一键迁移
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -1397,6 +1587,72 @@ function ProjectDeployCard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={migrateOpen} onOpenChange={setMigrateOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>一键迁移项目</DialogTitle>
+            <DialogDescription>{project.displayName}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-xl border border-border/70 bg-muted/[0.08] p-3 text-[12px] text-muted-foreground">
+              迁移会先在目标服务器检查并补装部署依赖，然后完整复制当前项目目录、systemd 服务配置、站点入口与证书内容。迁移完成后会停用原服务器上的服务和入口，避免旧实例继续对外可用。
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">当前服务器</Label>
+                <div className="rounded-xl border border-border/60 bg-background px-3 py-2.5 text-sm text-foreground">
+                  {connectionLabel(connections, connectionId) || "未选择"}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">迁移目标</Label>
+                <Select value={migrationTargetId} onValueChange={setMigrationTargetId}>
+                  <SelectTrigger className="h-10 rounded-xl text-sm shadow-none">
+                    <SelectValue placeholder="选择目标服务器" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {connections
+                      .filter((item) => item.id !== connectionId)
+                      .map((item) => (
+                        <SelectItem key={item.id} value={item.id}>
+                          {item.name}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid gap-2 rounded-xl border border-border/60 bg-background p-3 text-[11px] text-muted-foreground">
+              <p>
+                远端目录
+                <span className="ml-1 font-mono text-foreground">{effectiveRemoteAppDir ?? "未配置"}</span>
+              </p>
+              <p>
+                服务
+                <span className="ml-1 text-foreground">{remoteDetails?.service.unit ?? deployProfile?.defaultRemoteService ?? "未配置"}</span>
+              </p>
+              <p>
+                当前备份计划
+                <span className="ml-1 text-foreground">{backupScheduleLabel(backupSchedule?.schedule)}</span>
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={migrating} onClick={() => setMigrateOpen(false)}>
+              取消
+            </Button>
+            <Button
+              type="button"
+              disabled={!connectionId || !migrationTargetId || migrationTargetId === connectionId || migrating}
+              onClick={() => void runMigration()}
+            >
+              {migrating ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowRightLeft className="size-4" />}
+              开始迁移
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
@@ -1541,6 +1797,33 @@ export function ProjectManagementPanel({
     target.scrollIntoView({ behavior: "smooth", block: "center" })
   }, [highlightedProjectId, projects])
 
+  const refreshProjectMeta = async () => {
+    const latestProjects = await getDesktopApi().projects.listProjects()
+    await loadOperationLogs(400)
+    const entries = await Promise.all(
+      latestProjects.map(async (project) => {
+        const [hints, backup] = await Promise.all([
+          getDesktopApi().projects.getProjectActionHints(project.id),
+          getDesktopApi().projects.getProjectBackupSchedule(project.id),
+        ])
+        return {
+          id: project.id,
+          hints: hints.hints,
+          backup,
+        }
+      }),
+    ).catch(() => [])
+    const nextHints: Record<string, ProjectActionHint[]> = {}
+    const nextBackup: Record<string, ProjectBackupScheduleState> = {}
+    for (const entry of entries) {
+      nextHints[entry.id] = entry.hints
+      nextBackup[entry.id] = entry.backup
+    }
+    useProjectStore.setState({ projects: latestProjects })
+    setActionHintsByProject(nextHints)
+    setBackupScheduleByProject(nextBackup)
+  }
+
   const sorted = useMemo(() => {
     const copy = [...projects]
     copy.sort((a, b) => {
@@ -1590,27 +1873,28 @@ export function ProjectManagementPanel({
     <div className="flex min-h-0 flex-1 flex-col gap-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
-          <h3 className="text-lg font-semibold tracking-tight text-foreground">项目管理</h3>
-          <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-            <span className="rounded-full bg-muted px-2 py-1">项目 {summary.total}</span>
-            <span className="rounded-full bg-muted px-2 py-1">部署正常 {summary.success}</span>
-            <span className="rounded-full bg-muted px-2 py-1">失败 {summary.failed}</span>
-            {selectedConnectionId ? <span className="rounded-full bg-muted px-2 py-1">当前服务器关联 {summary.linked}</span> : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-lg font-semibold tracking-tight text-foreground">项目管理</h3>
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+              {summary.total} 个项目
+            </span>
           </div>
           <div className="flex flex-wrap gap-2 pt-1">
             {[
               { key: "all", label: "全部", count: summary.total },
               { key: "attention", label: "需关注", count: summary.attention },
               { key: "failed", label: "失败", count: summary.failed },
-              { key: "linked", label: "当前服务器", count: summary.linked },
+              ...(selectedConnectionId ? [{ key: "linked", label: "当前服务器", count: summary.linked }] : []),
             ].map((item) => (
               <Button
                 key={item.key}
                 type="button"
                 variant="outline"
                 className={cn(
-                  "h-7 rounded-full px-3 text-[11px] shadow-none",
-                  statusFilter === item.key && "border-primary/40 bg-primary/[0.06] text-foreground",
+                  "h-8 rounded-full px-3 text-[11px] shadow-none",
+                  statusFilter === item.key
+                    ? "border-primary/40 bg-primary/[0.06] text-foreground"
+                    : "text-muted-foreground",
                 )}
                 onClick={() => setStatusFilter(item.key as typeof statusFilter)}
               >
@@ -1690,27 +1974,7 @@ export function ProjectManagementPanel({
               backupSchedule={backupScheduleByProject[project.id]}
               recentLogs={recentLogsByProject[project.id]}
               fullLogs={fullLogsByProject[project.id]}
-              onBackupScheduleChange={(schedule) => {
-                void getDesktopApi()
-                  .projects.setProjectBackupSchedule({ projectId: project.id, schedule })
-                  .then((next) => {
-                    setBackupScheduleByProject((current) => ({
-                      ...current,
-                      [project.id]: next,
-                    }))
-                    toast({
-                      title: "自动备份已更新",
-                      description: schedule === "off" ? "已关闭自动备份" : `已设置为${schedule === "daily" ? "每天" : "每周"}`,
-                    })
-                  })
-                  .catch((error) => {
-                    toast({
-                      variant: "destructive",
-                      title: "自动备份设置失败",
-                      description: error instanceof Error ? error.message : "无法更新自动备份设置",
-                    })
-                  })
-              }}
+              onProjectStateRefresh={refreshProjectMeta}
               onOpenRemoteDirectory={onOpenRemoteDirectory}
             />
           ))}

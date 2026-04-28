@@ -89,21 +89,41 @@ export async function restartProjectRemoteService(
   connection: VpsConnectionInput,
   remoteService: string,
 ): Promise<ProjectEnvResult> {
+  return await controlProjectRemoteService(connection, remoteService, "restart")
+}
+
+export async function stopProjectRemoteService(
+  connection: VpsConnectionInput,
+  remoteService: string,
+): Promise<ProjectEnvResult> {
+  return await controlProjectRemoteService(connection, remoteService, "stop")
+}
+
+async function controlProjectRemoteService(
+  connection: VpsConnectionInput,
+  remoteService: string,
+  action: "restart" | "stop",
+): Promise<ProjectEnvResult> {
   const result = await runRemoteShellCommand(
     connection,
-    `sudo -n systemctl restart ${shellSingleQuote(remoteService)} && systemctl is-active ${shellSingleQuote(remoteService)}`,
+    action === "restart"
+      ? `sudo -n systemctl restart ${shellSingleQuote(remoteService)} && systemctl is-active ${shellSingleQuote(remoteService)}`
+      : `sudo -n systemctl stop ${shellSingleQuote(remoteService)} && ! systemctl is-active ${shellSingleQuote(remoteService)}`,
     { timeoutMs: 120_000 },
   )
 
   if (result.code !== 0) {
     return {
       ok: false,
-      message: result.stderr.trim() || result.stdout.trim() || "重启远端服务失败",
+      message:
+        result.stderr.trim() ||
+        result.stdout.trim() ||
+        `${action === "restart" ? "重启" : "停止"}远端服务失败`,
     }
   }
 
   return {
     ok: true,
-    message: `服务已重启：${result.stdout.trim() || remoteService}`,
+    message: `服务已${action === "restart" ? "重启" : "停止"}：${result.stdout.trim() || remoteService}`,
   }
 }

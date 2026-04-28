@@ -11,6 +11,7 @@ import type {
   ProjectDeployInput,
   ProjectDeployLogEvent,
   ProjectEnvInput,
+  ProjectMigrationInput,
   ProjectRemoteDetailsInput,
   ProjectEnvUpdateInput,
   ProjectInitializeInput,
@@ -33,6 +34,7 @@ const api: DigwisApi = {
     saveProjectEnv: (payload: ProjectEnvUpdateInput) => ipcRenderer.invoke("projects:save-env", payload),
     rotateProjectSecret: (payload: ProjectEnvInput) => ipcRenderer.invoke("projects:rotate-secret", payload),
     restartProjectService: (payload: ProjectEnvInput) => ipcRenderer.invoke("projects:restart-service", payload),
+    stopProjectService: (payload: ProjectEnvInput) => ipcRenderer.invoke("projects:stop-service", payload),
     saveProjectSiteSettings: (payload: ProjectSiteSettingsInput) => ipcRenderer.invoke("projects:save-site-settings", payload),
     initializeProject: (payload: ProjectInitializeInput) => ipcRenderer.invoke("projects:initialize", payload),
     deployProject: (payload: ProjectDeployInput) => ipcRenderer.invoke("projects:deploy", payload),
@@ -41,6 +43,8 @@ const api: DigwisApi = {
       ipcRenderer.invoke("projects:get-backup-schedule", projectId),
     setProjectBackupSchedule: (payload: { projectId: string; schedule: ProjectBackupSchedule }) =>
       ipcRenderer.invoke("projects:set-backup-schedule", payload),
+    runProjectBackup: (payload: ProjectEnvInput) => ipcRenderer.invoke("projects:run-backup", payload),
+    migrateProject: (payload: ProjectMigrationInput) => ipcRenderer.invoke("projects:migrate", payload),
     listOperationLogs: (payload?: { limit?: number }) =>
       ipcRenderer.invoke("projects:list-operation-logs", payload),
     onDeployLog: (handler: (event: ProjectDeployLogEvent) => void) => {

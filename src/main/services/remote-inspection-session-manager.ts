@@ -1,32 +1,21 @@
 import path from "node:path"
 import { Client, type ClientChannel } from "ssh2"
-import type {
-  RemoteFileBrowseResult,
-  RemoteFileMutationResult,
-  RemoteFileReadResult,
-  VpsConnectionInput,
-} from "../../shared/vps"
-import { REMOTE_FILE_HELPER_SCRIPT, REMOTE_FILE_HELPER_VERSION } from "./remote-file-helper-script"
+import type { VpsConnectionInput, VpsInspection } from "../../shared/vps"
+import { REMOTE_INSPECTION_HELPER_SCRIPT, REMOTE_INSPECTION_HELPER_VERSION } from "./remote-inspection-helper-script"
 import { connectSftpClient, connectSshClient, execOnClient } from "./ssh-runtime"
 
 const HELPER_DIR_NAME = ".digwis-panel"
-const HELPER_FILE_NAME = "remote-file-helper.py"
-const HELPER_VERSION_FILE = "remote-file-helper.version"
+const HELPER_FILE_NAME = "remote-inspection-helper.py"
+const HELPER_VERSION_FILE = "remote-inspection-helper.version"
 const SESSION_IDLE_TIMEOUT_MS = 90_000
-const BROWSE_CACHE_TTL_MS = 10_000
 
-type HelperMethod = "ping" | "version" | "browse" | "readText" | "writeText" | "mkdir" | "rename" | "delete"
+type HelperMethod = "ping" | "version" | "inspect"
 
 type RpcEnvelope = {
   id: number | string | null
   ok: boolean
   result?: unknown
   error?: string
-}
-
-type SessionBrowseCacheEntry = {
-  cachedAt: number
-  result: RemoteFileBrowseResult
 }
 
 type SessionContext = {
@@ -40,8 +29,6 @@ type SessionContext = {
   nextRequestId: number
   buffer: string
   pending: Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>
-  browseCache: Map<string, SessionBrowseCacheEntry>
-  inflightBrowse: Map<string, Promise<RemoteFileBrowseResult>>
   idleTimer?: NodeJS.Timeout
   closed: boolean
 }
@@ -59,8 +46,8 @@ function shellQuote(value: string) {
 async function uploadHelper(connection: VpsConnectionInput, helperPath: string, versionPath: string) {
   const sftp = await connectSftpClient(connection, { readyTimeout: 20_000 })
   try {
-    await sftp.put(Buffer.from(REMOTE_FILE_HELPER_SCRIPT, "utf8"), helperPath)
-    await sftp.put(Buffer.from(`${REMOTE_FILE_HELPER_VERSION}\n`, "utf8"), versionPath)
+    await sftp.put(Buffer.from(REMOTE_INSPECTION_HELPER_SCRIPT, "utf8"), helperPath)
+    await sftp.put(Buffer.from(`${REMOTE_INSPECTION_HELPER_VERSION}\n`, "utf8"), versionPath)
   } finally {
     await sftp.end().catch(() => undefined)
   }
@@ -69,7 +56,7 @@ async function uploadHelper(connection: VpsConnectionInput, helperPath: string, 
 async function runExec(client: Client, command: string, timeoutMs = 20_000) {
   return await execOnClient(client, command, {
     timeoutMs,
-    timeoutMessage: "远端 helper 准备超时",
+    timeoutMessage: "远端监控 helper 准备超时",
   })
 }
 
@@ -87,7 +74,7 @@ async function ensureHelperInstalled(client: Client, connection: VpsConnectionIn
   ].join("\n")
   const result = await runExec(client, `bash -lc ${shellQuote(inspectCommand)}`)
   if (result.code !== 0) {
-    throw new Error(result.stderr.trim() || "远端 helper 初始化失败")
+    throw new Error(result.stderr.trim() || "远端监控 helper 初始化失败")
   }
   const values = new Map<string, string>()
   for (const line of result.stdout.split("\n")) {
@@ -102,14 +89,14 @@ async function ensureHelperInstalled(client: Client, connection: VpsConnectionIn
   const homeDir = values.get("HOME")?.trim()
   const currentVersion = values.get("VERSION")?.trim() || ""
   if (!pythonBin) {
-    throw new Error("远端缺少 python3/python，无法启动文件 helper")
+    throw new Error("远端缺少 python3/python，无法启动监控 helper")
   }
   if (!helperPath || !homeDir) {
-    throw new Error("远端 helper 路径解析失败")
+    throw new Error("远端监控 helper 路径解析失败")
   }
   const helperDir = path.posix.dirname(helperPath)
   const versionPath = path.posix.join(helperDir, HELPER_VERSION_FILE)
-  if (currentVersion !== REMOTE_FILE_HELPER_VERSION) {
+  if (currentVersion !== REMOTE_INSPECTION_HELPER_VERSION) {
     await uploadHelper(connection, helperPath, versionPath)
     const chmodResult = await runExec(
       client,
@@ -117,7 +104,7 @@ async function ensureHelperInstalled(client: Client, connection: VpsConnectionIn
       20_000,
     )
     if (chmodResult.code !== 0) {
-      throw new Error(chmodResult.stderr.trim() || "远端 helper 权限设置失败")
+      throw new Error(chmodResult.stderr.trim() || "远端监控 helper 权限设置失败")
     }
   }
   return {
@@ -132,15 +119,8 @@ function scheduleIdleDispose(session: SessionContext) {
     clearTimeout(session.idleTimer)
   }
   session.idleTimer = setTimeout(() => {
-    void disposeSession(session.key)
+    void disposeInspectionSession(session.key)
   }, SESSION_IDLE_TIMEOUT_MS)
-}
-
-function invalidateBrowseCache(session: SessionContext, targetPath: string) {
-  const normalized = targetPath.replace(/\\/g, "/")
-  const parent = path.posix.dirname(normalized) || "/"
-  session.browseCache.delete(normalized)
-  session.browseCache.delete(parent)
 }
 
 function bindChannel(session: SessionContext) {
@@ -173,7 +153,7 @@ function bindChannel(session: SessionContext) {
       if (payload.ok) {
         pending.resolve(payload.result)
       } else {
-        pending.reject(new Error(payload.error || "远端 helper 调用失败"))
+        pending.reject(new Error(payload.error || "远端监控 helper 调用失败"))
       }
     }
   })
@@ -184,7 +164,7 @@ function bindChannel(session: SessionContext) {
     }
     session.closed = true
     for (const pending of session.pending.values()) {
-      pending.reject(new Error("远端 helper 连接已关闭"))
+      pending.reject(new Error("远端监控 helper 连接已关闭"))
     }
     session.pending.clear()
     if (session.idleTimer) {
@@ -230,8 +210,6 @@ async function createSession(connection: VpsConnectionInput) {
       nextRequestId: 1,
       buffer: "",
       pending: new Map(),
-      browseCache: new Map(),
-      inflightBrowse: new Map(),
       closed: false,
     }
     bindChannel(session)
@@ -265,7 +243,7 @@ async function requestRpc(
   options?: { bypassRestart?: boolean },
 ): Promise<unknown> {
   if (session.closed) {
-    throw new Error("远端 helper 连接已关闭")
+    throw new Error("远端监控 helper 连接已关闭")
   }
   const requestId = session.nextRequestId++
   scheduleIdleDispose(session)
@@ -288,7 +266,7 @@ async function requestRpc(
     if (options?.bypassRestart) {
       throw error
     }
-    await disposeSession(session.key)
+    await disposeInspectionSession(session.key)
     const nextSession = await getOrCreateSession(session.connection)
     return await requestRpc(nextSession, method, params, { bypassRestart: true })
   })
@@ -296,109 +274,12 @@ async function requestRpc(
   return result
 }
 
-export async function browseViaRemoteHelper(
-  connection: VpsConnectionInput,
-  requestedPath?: string,
-  options?: { forceRefresh?: boolean },
-): Promise<RemoteFileBrowseResult> {
+export async function inspectViaRemoteHelper(connection: VpsConnectionInput): Promise<Omit<VpsInspection, "connectionId" | "checkedAt" | "reachabilityChecks">> {
   const session = await getOrCreateSession(connection)
-  const cacheKey = requestedPath?.trim() || "/var/www"
-  const cached = session.browseCache.get(cacheKey)
-  if (!options?.forceRefresh && cached && Date.now() - cached.cachedAt <= BROWSE_CACHE_TTL_MS) {
-    return cached.result
-  }
-  const inflightKey = `${cacheKey}:${Boolean(options?.forceRefresh)}`
-  const inflight = session.inflightBrowse.get(inflightKey)
-  if (inflight) {
-    return await inflight
-  }
-  const request = (async () => {
-    const result = (await requestRpc(session, "browse", {
-      path: requestedPath,
-      forceRefresh: options?.forceRefresh,
-    })) as RemoteFileBrowseResult
-    const next = {
-      ...result,
-      transport: "helper" as const,
-    }
-    const cacheEntry = {
-      cachedAt: Date.now(),
-      result: next,
-    }
-    session.browseCache.set(cacheKey, cacheEntry)
-    session.browseCache.set(next.currentPath, cacheEntry)
-    return next
-  })()
-  session.inflightBrowse.set(inflightKey, request)
-  try {
-    return await request
-  } finally {
-    session.inflightBrowse.delete(inflightKey)
-  }
+  return (await requestRpc(session, "inspect", {})) as Omit<VpsInspection, "connectionId" | "checkedAt" | "reachabilityChecks">
 }
 
-export async function readTextViaRemoteHelper(connection: VpsConnectionInput, remotePath: string) {
-  const session = await getOrCreateSession(connection)
-  return (await requestRpc(session, "readText", { path: remotePath })) as RemoteFileReadResult
-}
-
-export async function writeTextViaRemoteHelper(connection: VpsConnectionInput, remotePath: string, content: string) {
-  const session = await getOrCreateSession(connection)
-  const result = (await requestRpc(session, "writeText", {
-    path: remotePath,
-    content,
-  })) as RemoteFileMutationResult
-  invalidateBrowseCache(session, result.path)
-  return result
-}
-
-export async function mkdirViaRemoteHelper(
-  connection: VpsConnectionInput,
-  parentPath: string,
-  directoryName: string,
-) {
-  const session = await getOrCreateSession(connection)
-  const result = (await requestRpc(session, "mkdir", {
-    parentPath,
-    directoryName,
-  })) as RemoteFileMutationResult
-  invalidateBrowseCache(session, parentPath)
-  return result
-}
-
-export async function renameViaRemoteHelper(connection: VpsConnectionInput, remotePath: string, nextName: string) {
-  const session = await getOrCreateSession(connection)
-  const result = (await requestRpc(session, "rename", {
-    path: remotePath,
-    nextName,
-  })) as RemoteFileMutationResult
-  invalidateBrowseCache(session, remotePath)
-  invalidateBrowseCache(session, result.path)
-  return result
-}
-
-export async function deleteViaRemoteHelper(connection: VpsConnectionInput, remotePath: string) {
-  const session = await getOrCreateSession(connection)
-  const result = (await requestRpc(session, "delete", {
-    path: remotePath,
-  })) as RemoteFileMutationResult
-  invalidateBrowseCache(session, remotePath)
-  return result
-}
-
-export async function invalidatePath(connectionId: string, targetPath: string) {
-  const sessionPromise = sessions.get(connectionId)
-  if (!sessionPromise) {
-    return
-  }
-  const session = await sessionPromise.catch(() => null)
-  if (!session) {
-    return
-  }
-  invalidateBrowseCache(session, targetPath)
-}
-
-export async function disposeSession(key: string) {
+export async function disposeInspectionSession(key: string) {
   const sessionPromise = sessions.get(key)
   if (!sessionPromise) {
     return
@@ -413,13 +294,13 @@ export async function disposeSession(key: string) {
     clearTimeout(session.idleTimer)
   }
   for (const pending of session.pending.values()) {
-    pending.reject(new Error("远端 helper 会话已释放"))
+    pending.reject(new Error("远端监控 helper 会话已释放"))
   }
   session.pending.clear()
   session.channel.close()
   session.client.end()
 }
 
-export async function disposeAllRemoteFileSessions() {
-  await Promise.allSettled([...sessions.keys()].map((key) => disposeSession(key)))
+export async function disposeAllRemoteInspectionSessions() {
+  await Promise.allSettled([...sessions.keys()].map((key) => disposeInspectionSession(key)))
 }

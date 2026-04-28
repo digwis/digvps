@@ -101,6 +101,12 @@ const api: DigwisApi = {
       ipcRenderer.invoke("vps:files:rename", payload),
     deleteRemoteEntry: (payload: { connectionId: string; path: string }) =>
       ipcRenderer.invoke("vps:files:delete", payload),
+    listRemoteTrash: (payload: { connectionId: string }) =>
+      ipcRenderer.invoke("vps:files:trash:list", payload),
+    restoreRemoteTrashEntry: (payload: { connectionId: string; trashId: string }) =>
+      ipcRenderer.invoke("vps:files:trash:restore", payload),
+    purgeRemoteTrashEntry: (payload: { connectionId: string; trashId: string }) =>
+      ipcRenderer.invoke("vps:files:trash:purge", payload),
     uploadRemoteEntries: (payload: { connectionId: string; remotePath: string }) =>
       ipcRenderer.invoke("vps:files:upload", payload),
     downloadRemoteEntry: (payload: { connectionId: string; path: string; name: string; type: "file" | "directory" | "symlink" }) =>

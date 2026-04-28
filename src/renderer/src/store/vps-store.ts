@@ -28,6 +28,7 @@ const LAST_SELECTED_CONNECTION_KEY = "digwis:last-selected-connection-id"
 const INSPECTION_CACHE_KEY = "digwis:inspection-cache"
 const INSPECTION_CACHE_TTL_MS = 30 * 60_000
 const INSPECTION_TELEMETRY_FRESH_MS = 20_000
+const UPGRADE_STATUS_TTL_MS = 24 * 60 * 60_000
 
 function connectionDisplayKey(connection: VpsConnectionRecord) {
   return [
@@ -171,6 +172,14 @@ function appendOperationLog(
   return [...items, entry].slice(-60)
 }
 
+function isUpgradeStatusFresh(checkedAt?: string) {
+  if (!checkedAt) {
+    return false
+  }
+  const checkedAtMs = new Date(checkedAt).getTime()
+  return Number.isFinite(checkedAtMs) && Date.now() - checkedAtMs <= UPGRADE_STATUS_TTL_MS
+}
+
 type VpsState = {
   connections: VpsConnectionRecord[]
   discoveredHosts: DiscoveredHostCandidate[]
@@ -198,6 +207,7 @@ type VpsState = {
   upgradePrompt?: SystemUpgradeCheckResult
   upgradePromptForConnectionId?: string
   upgradeStatusMap: Record<string, SystemUpgradeCheckResult>
+  upgradeStatusCheckedAtMap: Record<string, string>
   operationLogs: VpsOperationLogEntry[]
   info?: string
   lastTestResult?: ConnectionTestResult
@@ -270,6 +280,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
   upgradePrompt: undefined,
   upgradePromptForConnectionId: undefined,
   upgradeStatusMap: {},
+  upgradeStatusCheckedAtMap: {},
   operationLogs: [],
   info: undefined,
   error: undefined,
@@ -650,13 +661,36 @@ export const useVpsStore = create<VpsState>((set, get) => ({
     if (!payload.id) {
       return
     }
+    const cachedStatus = get().upgradeStatusMap[payload.id]
+    const cachedCheckedAt = get().upgradeStatusCheckedAtMap[payload.id]
+    if (cachedStatus && isUpgradeStatusFresh(cachedCheckedAt)) {
+      if (payload.id === get().selectedConnectionId) {
+        if (cachedStatus.supported && cachedStatus.upgradableCount > 0) {
+          set({
+            upgradePrompt: cachedStatus,
+            upgradePromptForConnectionId: payload.id,
+          })
+        } else {
+          set({
+            upgradePrompt: undefined,
+            upgradePromptForConnectionId: undefined,
+          })
+        }
+      }
+      return
+    }
     set({ isCheckingUpgrade: true })
     try {
       const result = await getDesktopApi().vps.checkSystemUpgrades(payload)
+      const checkedAt = new Date().toISOString()
       set((state) => ({
         upgradeStatusMap: {
           ...state.upgradeStatusMap,
           [payload.id!]: result,
+        },
+        upgradeStatusCheckedAtMap: {
+          ...state.upgradeStatusCheckedAtMap,
+          [payload.id!]: checkedAt,
         },
       }))
       if (payload.id !== get().selectedConnectionId) {
@@ -687,20 +721,33 @@ export const useVpsStore = create<VpsState>((set, get) => ({
     if (connections.length === 0) {
       return
     }
+    const pendingConnections = connections.filter((conn) => !isUpgradeStatusFresh(get().upgradeStatusCheckedAtMap[conn.id]))
+    if (pendingConnections.length === 0) {
+      return
+    }
     set({ isCheckingAllUpgrades: true })
     const newMap: Record<string, SystemUpgradeCheckResult> = {}
+    const checkedAtMap: Record<string, string> = {}
     await Promise.allSettled(
-      connections.map(async (conn) => {
+      pendingConnections.map(async (conn) => {
         try {
           const result = await getDesktopApi().vps.checkSystemUpgrades(conn as VpsConnectionInput)
           newMap[conn.id] = result
-          set({ upgradeStatusMap: { ...get().upgradeStatusMap, ...newMap } })
+          checkedAtMap[conn.id] = new Date().toISOString()
+          set({
+            upgradeStatusMap: { ...get().upgradeStatusMap, ...newMap },
+            upgradeStatusCheckedAtMap: { ...get().upgradeStatusCheckedAtMap, ...checkedAtMap },
+          })
         } catch {
           // 单个连接检查失败不影响其他连接
         }
       }),
     )
-    set({ upgradeStatusMap: { ...get().upgradeStatusMap, ...newMap }, isCheckingAllUpgrades: false })
+    set({
+      upgradeStatusMap: { ...get().upgradeStatusMap, ...newMap },
+      upgradeStatusCheckedAtMap: { ...get().upgradeStatusCheckedAtMap, ...checkedAtMap },
+      isCheckingAllUpgrades: false,
+    })
   },
   dismissUpgradePrompt: () =>
     set({ upgradePrompt: undefined, upgradePromptForConnectionId: undefined }),
@@ -719,6 +766,10 @@ export const useVpsStore = create<VpsState>((set, get) => ({
         upgradeStatusMap: {
           ...get().upgradeStatusMap,
           [payload.id ?? ""]: { supported: true, manager: "none", upgradableCount: 0, indexRefreshed: false },
+        },
+        upgradeStatusCheckedAtMap: {
+          ...get().upgradeStatusCheckedAtMap,
+          [payload.id ?? ""]: new Date().toISOString(),
         },
         info: result.message,
       })
@@ -766,12 +817,14 @@ export const useVpsStore = create<VpsState>((set, get) => ({
         ? { upgradePrompt: undefined, upgradePromptForConnectionId: undefined }
         : {}
     const { [id]: _removed, ...restStatusMap } = get().upgradeStatusMap
+    const { [id]: _removedCheckedAt, ...restCheckedAtMap } = get().upgradeStatusCheckedAtMap
     set({
       connections: rest,
       selectedConnectionId:
         get().selectedConnectionId === id ? rest[0]?.id : get().selectedConnectionId,
       inspection: get().inspection?.connectionId === id ? undefined : get().inspection,
       upgradeStatusMap: restStatusMap,
+      upgradeStatusCheckedAtMap: restCheckedAtMap,
       ...clearUpgrade,
     })
     writeLastSelectedConnectionId(

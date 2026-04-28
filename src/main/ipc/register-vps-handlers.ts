@@ -7,9 +7,12 @@ import {
   createRemoteDirectory,
   deleteRemoteEntry,
   downloadRemoteEntry,
+  listRemoteTrash,
   pickAndUploadRemoteEntries,
+  purgeRemoteTrashEntry,
   readRemoteTextFile,
   renameRemoteEntry,
+  restoreRemoteTrashEntry,
   writeRemoteTextFile,
 } from "../services/remote-files"
 import {
@@ -47,6 +50,7 @@ import {
   remoteDownloadSchema,
   remoteReadSchema,
   remoteRenameSchema,
+  remoteTrashEntrySchema,
   remoteUploadSchema,
   remoteWriteSchema,
   sshConfigDeleteSchema,
@@ -157,6 +161,24 @@ export function registerVpsHandlers() {
     payload = parseOrThrow(remoteReadSchema, payload)
     const connection = requireResolvedConnection(payload.connectionId)
     return await deleteRemoteEntry(connection, payload.path)
+  })
+
+  registerIpcHandle("vps:files:trash:list", async (_event, payload: { connectionId: string }) => {
+    const connectionId = parseOrThrow(connectionIdSchema, payload.connectionId)
+    const connection = requireResolvedConnection(connectionId)
+    return await listRemoteTrash(connection)
+  })
+
+  registerIpcHandle("vps:files:trash:restore", async (_event, payload: { connectionId: string; trashId: string }) => {
+    payload = parseOrThrow(remoteTrashEntrySchema, payload)
+    const connection = requireResolvedConnection(payload.connectionId)
+    return await restoreRemoteTrashEntry(connection, payload.trashId)
+  })
+
+  registerIpcHandle("vps:files:trash:purge", async (_event, payload: { connectionId: string; trashId: string }) => {
+    payload = parseOrThrow(remoteTrashEntrySchema, payload)
+    const connection = requireResolvedConnection(payload.connectionId)
+    return await purgeRemoteTrashEntry(connection, payload.trashId)
   })
 
   registerIpcHandle("vps:files:upload", async (event, payload: { connectionId: string; remotePath: string }) => {

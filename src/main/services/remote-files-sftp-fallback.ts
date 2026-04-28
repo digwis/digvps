@@ -1,11 +1,14 @@
 import fs from "node:fs/promises"
 import path from "node:path"
+import { randomUUID } from "node:crypto"
 import type {
   RemoteFileBrowseResult,
   RemoteFileDownloadInput,
   RemoteFileEntry,
   RemoteFileMutationResult,
   RemoteFileReadResult,
+  RemoteTrashEntry,
+  RemoteTrashListResult,
   RemoteFileType,
   RemoteFileUploadResult,
   VpsConnectionInput,
@@ -16,6 +19,9 @@ import { connectSftpClient } from "./ssh-runtime"
 
 type SftpLike = any
 const DEFAULT_REMOTE_BROWSE_PATH = "/var/www"
+const TRASH_CONTAINER_DIR = ".digwis-panel/trash"
+const TRASH_FILES_DIRNAME = "files"
+const TRASH_META_DIRNAME = "meta"
 
 export function toRemotePath(rawPath: string) {
   const normalized = path.posix.normalize(rawPath.replace(/\\/g, "/"))
@@ -129,6 +135,68 @@ async function getPathType(sftp: SftpLike, remotePath: string): Promise<RemoteFi
   } catch {
     return null
   }
+}
+
+async function ensureDirectory(sftp: SftpLike, remotePath: string) {
+  const exists = await sftp.exists(remotePath)
+  if (exists === "d") {
+    return
+  }
+  if (exists) {
+    throw new Error(`目标路径不是目录: ${remotePath}`)
+  }
+  await sftp.mkdir(remotePath, true)
+}
+
+async function resolveTrashPaths(sftp: SftpLike) {
+  const home = toRemotePath(await sftp.cwd())
+  const rootPath = joinRemotePath(home, TRASH_CONTAINER_DIR)
+  const filesPath = joinRemotePath(rootPath, TRASH_FILES_DIRNAME)
+  const metaPath = joinRemotePath(rootPath, TRASH_META_DIRNAME)
+  await ensureDirectory(sftp, rootPath)
+  await ensureDirectory(sftp, filesPath)
+  await ensureDirectory(sftp, metaPath)
+  return { rootPath, filesPath, metaPath }
+}
+
+function isWithinPath(targetPath: string, parentPath: string) {
+  const normalizedTarget = toRemotePath(targetPath)
+  const normalizedParent = toRemotePath(parentPath)
+  return normalizedTarget === normalizedParent || normalizedTarget.startsWith(`${normalizedParent}/`)
+}
+
+async function statRemoteEntry(sftp: SftpLike, remotePath: string) {
+  const stat = await sftp.stat(remotePath)
+  const type = mapRemoteType(
+    (stat as { type?: string }).type,
+    (stat as { longname?: string }).longname,
+    stat as {
+      isDirectory?: boolean
+      isSymbolicLink?: boolean
+      isFile?: boolean
+      mode?: number
+    },
+  )
+  return { stat, type }
+}
+
+function buildTrashMetadataPath(metaDir: string, trashId: string) {
+  return joinRemotePath(metaDir, `${trashId}.json`)
+}
+
+async function readTrashMetadata(
+  sftp: SftpLike,
+  metaDir: string,
+  trashId: string,
+): Promise<RemoteTrashEntry | null> {
+  const metaPath = buildTrashMetadataPath(metaDir, trashId)
+  const raw = await sftp.get(metaPath)
+  const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw)
+  const parsed = JSON.parse(text) as RemoteTrashEntry
+  if (!parsed?.id || !parsed?.trashedPath || !parsed?.originalPath) {
+    return null
+  }
+  return parsed
 }
 
 async function getRealRemotePath(sftp: SftpLike, remotePath: string): Promise<string | null> {
@@ -404,26 +472,118 @@ export async function deleteRemoteEntryViaSftp(
 ): Promise<RemoteFileMutationResult> {
   return await withSftp(connection, async (sftp) => {
     const resolvedPath = await resolveBrowsePath(sftp, remotePath)
-    const stat = await sftp.stat(resolvedPath)
-    const type = mapRemoteType(
-      (stat as { type?: string }).type,
-      (stat as { longname?: string }).longname,
-      stat as {
-        isDirectory?: boolean
-        isSymbolicLink?: boolean
-        isFile?: boolean
-        mode?: number
-      },
-    )
-    if (type === "directory") {
-      await sftp.rmdir(resolvedPath, true)
-    } else {
-      await sftp.delete(resolvedPath)
+    const { rootPath, filesPath, metaPath } = await resolveTrashPaths(sftp)
+    if (isWithinPath(resolvedPath, rootPath)) {
+      throw new Error("回收站中的项目请使用彻底删除")
     }
+    const { stat, type } = await statRemoteEntry(sftp, resolvedPath)
+    const trashId = randomUUID()
+    const trashedPath = joinRemotePath(filesPath, trashId)
+    await sftp.rename(resolvedPath, trashedPath)
+    const metadata: RemoteTrashEntry = {
+      id: trashId,
+      name: path.posix.basename(resolvedPath),
+      originalPath: resolvedPath,
+      trashedPath,
+      type,
+      size: Number((stat as { size?: number }).size ?? 0),
+      deletedAt: new Date().toISOString(),
+      modifiedAt: asIsoTime((stat as { modifyTime?: number; mtime?: number }).modifyTime ?? (stat as { mtime?: number }).mtime),
+    }
+    await sftp.put(Buffer.from(JSON.stringify(metadata), "utf8"), buildTrashMetadataPath(metaPath, trashId))
     return {
       ok: true,
       path: resolvedPath,
-      message: type === "directory" ? "目录已删除" : "文件已删除",
+      message: type === "directory" ? "目录已移入回收站" : "文件已移入回收站",
+    }
+  })
+}
+
+export async function listRemoteTrashViaSftp(
+  connection: VpsConnectionInput,
+): Promise<RemoteTrashListResult> {
+  return await withSftp(connection, async (sftp) => {
+    const { rootPath, metaPath } = await resolveTrashPaths(sftp)
+    const metaEntries = await sftp.list(metaPath)
+    const entries: RemoteTrashEntry[] = []
+    for (const entry of metaEntries) {
+      if (!entry.name.endsWith(".json")) {
+        continue
+      }
+      try {
+        const trashId = entry.name.slice(0, -5)
+        const metadata = await readTrashMetadata(sftp, metaPath, trashId)
+        if (!metadata) {
+          continue
+        }
+        const exists = await sftp.exists(metadata.trashedPath)
+        if (!exists) {
+          continue
+        }
+        entries.push(metadata)
+      } catch {
+        continue
+      }
+    }
+    entries.sort((left, right) => new Date(right.deletedAt).getTime() - new Date(left.deletedAt).getTime())
+    return {
+      rootPath,
+      transport: "sftp",
+      entries,
+    }
+  })
+}
+
+export async function restoreRemoteTrashEntryViaSftp(
+  connection: VpsConnectionInput,
+  trashId: string,
+): Promise<RemoteFileMutationResult> {
+  return await withSftp(connection, async (sftp) => {
+    const { metaPath } = await resolveTrashPaths(sftp)
+    const metadata = await readTrashMetadata(sftp, metaPath, trashId)
+    if (!metadata) {
+      throw new Error("回收站记录不存在")
+    }
+    const targetExists = await sftp.exists(metadata.originalPath)
+    if (targetExists) {
+      throw new Error(`原路径已存在同名项目，无法恢复: ${metadata.originalPath}`)
+    }
+    const parentPath = path.posix.dirname(metadata.originalPath) || "/"
+    const parentType = await sftp.exists(parentPath)
+    if (parentType !== "d") {
+      throw new Error(`原目录不存在，无法恢复: ${parentPath}`)
+    }
+    await sftp.rename(metadata.trashedPath, metadata.originalPath)
+    await sftp.delete(buildTrashMetadataPath(metaPath, trashId))
+    return {
+      ok: true,
+      path: metadata.originalPath,
+      message: "已从回收站恢复",
+    }
+  })
+}
+
+export async function purgeRemoteTrashEntryViaSftp(
+  connection: VpsConnectionInput,
+  trashId: string,
+): Promise<RemoteFileMutationResult> {
+  return await withSftp(connection, async (sftp) => {
+    const { metaPath } = await resolveTrashPaths(sftp)
+    const metadata = await readTrashMetadata(sftp, metaPath, trashId)
+    if (!metadata) {
+      throw new Error("回收站记录不存在")
+    }
+    const exists = await sftp.exists(metadata.trashedPath)
+    if (exists === "d") {
+      await sftp.rmdir(metadata.trashedPath, true)
+    } else if (exists) {
+      await sftp.delete(metadata.trashedPath)
+    }
+    await sftp.delete(buildTrashMetadataPath(metaPath, trashId)).catch(() => undefined)
+    return {
+      ok: true,
+      path: metadata.originalPath,
+      message: "已彻底删除",
     }
   })
 }

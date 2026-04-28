@@ -122,6 +122,23 @@ export type RemoteFileMutationResult = {
   message: string
 }
 
+export type RemoteTrashEntry = {
+  id: string
+  name: string
+  originalPath: string
+  trashedPath: string
+  type: RemoteFileType
+  size: number
+  deletedAt: string
+  modifiedAt?: string
+}
+
+export type RemoteTrashListResult = {
+  rootPath: string
+  transport?: "helper" | "sftp"
+  entries: RemoteTrashEntry[]
+}
+
 export type RemoteFileUploadResult = {
   ok: true
   uploadedCount: number
@@ -206,6 +223,14 @@ export type InspectionReachabilityCheck = {
   detail?: string
 }
 
+export type RemoteServiceStatus = {
+  unit: string
+  load: string
+  active: string
+  sub: string
+  description: string
+}
+
 export type VpsInspection = {
   connectionId: string
   hostname: string
@@ -220,6 +245,7 @@ export type VpsInspection = {
   portChecks?: InspectionPortCheck[]
   reachabilityChecks?: InspectionReachabilityCheck[]
   packages: RemotePackageStatus[]
+  services?: RemoteServiceStatus[]
   checkedAt: string
 }
 
@@ -294,6 +320,9 @@ export type DigwisApi = {
     ) => Promise<RemoteFileMutationResult>
     renameRemoteEntry: (payload: { connectionId: string; path: string; nextName: string }) => Promise<RemoteFileMutationResult>
     deleteRemoteEntry: (payload: { connectionId: string; path: string }) => Promise<RemoteFileMutationResult>
+    listRemoteTrash: (payload: { connectionId: string }) => Promise<RemoteTrashListResult>
+    restoreRemoteTrashEntry: (payload: { connectionId: string; trashId: string }) => Promise<RemoteFileMutationResult>
+    purgeRemoteTrashEntry: (payload: { connectionId: string; trashId: string }) => Promise<RemoteFileMutationResult>
     uploadRemoteEntries: (payload: { connectionId: string; remotePath: string }) => Promise<RemoteFileUploadResult>
     downloadRemoteEntry: (payload: { connectionId: string } & RemoteFileDownloadInput) => Promise<RemoteFileMutationResult>
   }

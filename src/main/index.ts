@@ -6,6 +6,7 @@ import {
   listLocalProjects,
 } from "./services/db"
 import { disposeAllRemoteFileSessions } from "./services/remote-files"
+import { disposeAllRemoteInspectionSessions } from "./services/remote-inspection-session-manager"
 import { fetchBitcoinPrice } from "./services/bitcoin"
 import { readPackageJsonScriptNames, runLocalNpmScript } from "./services/project-local-npm"
 import {
@@ -165,4 +166,5 @@ app.on("before-quit", () => {
     backupScheduler = null
   }
   void disposeAllRemoteFileSessions()
+  void disposeAllRemoteInspectionSessions()
 })

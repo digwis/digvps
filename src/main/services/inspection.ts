@@ -2,6 +2,7 @@ import http from "node:http"
 import https from "node:https"
 import type { VpsInspection, VpsConnectionInput } from "../../shared/vps"
 import { runSshCommand } from "./remote-command"
+import { inspectViaRemoteHelper } from "./remote-inspection-session-manager"
 
 const INSPECTION_CACHE_TTL_MS = 15_000
 const inspectionCache = new Map<string, { expiresAt: number; value: VpsInspection }>()
@@ -54,6 +55,11 @@ cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)
 load1=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo 0)
 load_pct=$(awk -v L="$load1" -v C="$cores" 'BEGIN {c=C+0; if(c<1)c=1; l=L+0; p=100*l/c; if(p>100)p=100; printf "%.1f", p}')
 cpu_pct=0
+cpu_iowait_pct=0
+cpu_steal_pct=0
+valid_pct() {
+  awk -v p="$1" 'BEGIN { exit !((p ~ /^([0-9]+([.][0-9]+)?|[.][0-9]+)$/) && (p + 0) >= 0 && (p + 0) <= 100) }'
+}
 read_cpu_stat() {
   awk '/^cpu / {for (i = 2; i <= NF; i++) printf("%s%s", $i, (i < NF ? " " : "")); print ""; exit}' /proc/stat 2>/dev/null
 }
@@ -100,8 +106,9 @@ if [ -n "$cpu_stat1" ]; then
         delta_softirq = softirq2 - softirq1
         delta_steal = steal2 - steal1
         if (delta_total > 0) {
-          busy = delta_user + delta_nice + delta_system + delta_irq + delta_softirq
+          busy = delta_total - delta_idle - delta_iowait
           if (busy < 0) busy = 0
+          if (busy > delta_total) busy = delta_total
           iowait = 100 * delta_iowait / delta_total
           steal = 100 * delta_steal / delta_total
           usage = 100 * busy / delta_total
@@ -120,23 +127,24 @@ if [ -n "$cpu_stat1" ]; then
     cpu_steal_pct=$(echo "$cpu_metrics" | awk '{print $3}')
   fi
 fi
-if [ -z "$cpu_iowait_pct" ]; then cpu_iowait_pct=0; fi
-if [ -z "$cpu_steal_pct" ]; then cpu_steal_pct=0; fi
-if awk -v p="$cpu_pct" 'BEGIN{exit !(p+0<=0)}'; then
+if ! valid_pct "$cpu_pct"; then
   cpu_idle2=$(vmstat 1 2 2>/dev/null | tail -1 | awk '{print $15}' || echo "")
-  if [ -n "$cpu_idle2" ]; then
+  if valid_pct "$cpu_idle2"; then
     cpu_pct=$(awk -v id="$cpu_idle2" 'BEGIN {i=id+0; if(i>100)i=100; if(i<0)i=0; printf "%.1f", 100-i}')
   fi
 fi
-if awk -v p="$cpu_pct" 'BEGIN{exit !(p+0<=0)}'; then
+if ! valid_pct "$cpu_pct"; then
   cpu_idle_line=$(LANG=C top -bn1 2>/dev/null | grep -E '^%Cpu|^Cpu' | head -1 || true)
   if echo "$cpu_idle_line" | grep -q id; then
     cpu_idle=$(echo "$cpu_idle_line" | sed -n 's/.*, *\\([0-9.]*\\) *id.*/\\1/p' | head -1)
-    if [ -n "$cpu_idle" ]; then
+    if valid_pct "$cpu_idle"; then
       cpu_pct=$(awk -v id="$cpu_idle" 'BEGIN {i=id+0; if(i>100)i=100; if(i<0)i=0; printf "%.1f", 100-i}')
     fi
   fi
 fi
+if ! valid_pct "$cpu_pct"; then cpu_pct=0; fi
+if ! valid_pct "$cpu_iowait_pct"; then cpu_iowait_pct=0; fi
+if ! valid_pct "$cpu_steal_pct"; then cpu_steal_pct=0; fi
 iface=$(awk -F':' '/^[[:space:]]*(eth|en|wl|wlan|bond|venet|veth)/ {gsub(/^[[:space:]]+/, "", $1); print $1; exit}' /proc/net/dev)
 if [ -z "$iface" ]; then iface=$(ip -o route get 1.1.1.1 2>/dev/null | sed -n 's/.*dev \\([^ ]*\\).*/\\1/p'); fi
 net_rx_bps=0
@@ -274,6 +282,21 @@ line port_https "$(check_port 443)"
 line port_postgres "$(check_port 5432)"
 line port_kiro "$(check_port 9527)"
 line port_vite "$(check_port 5173)"
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl list-units --type=service --all --no-pager --no-legend --plain 2>/dev/null | \
+    awk '
+      {
+        unit=$1
+        load=$2
+        active=$3
+        substate=$4
+        $1=$2=$3=$4=""
+        sub(/^ +/, "", $0)
+        printf "SVC|%s|%s|%s|%s|%s\n", unit, load, active, substate, $0
+      }
+    ' | head -n 120
+fi
 `
 
 export function parseInspectionTelemetry(map: Map<string, string>): VpsInspection["telemetry"] | undefined {
@@ -317,6 +340,23 @@ export function parsePortChecks(map: Map<string, string>): VpsInspection["portCh
     port: item.port,
     listening: map.get(item.key) === "true",
   }))
+}
+
+export function parseServices(lines: string[]): NonNullable<VpsInspection["services"]> {
+  return lines
+    .filter((line) => line.startsWith("SVC|"))
+    .map((line) => {
+      const parts = line.split("|")
+      const [, unit = "", load = "", active = "", sub = "", ...descriptionParts] = parts
+      return {
+        unit,
+        load,
+        active,
+        sub,
+        description: descriptionParts.join("|").trim(),
+      }
+    })
+    .filter((item) => item.unit)
 }
 
 async function checkReachability(url: string): Promise<NonNullable<VpsInspection["reachabilityChecks"]>[number]> {
@@ -469,6 +509,28 @@ async function loadInspection(payload: VpsConnectionInput): Promise<VpsInspectio
     portChecks: parsePortChecks(map),
     reachabilityChecks,
     packages: mergeExtIntoPackages(packages, extById),
+    services: parseServices(lines),
+  }
+}
+
+async function loadInspectionViaHelper(payload: VpsConnectionInput): Promise<VpsInspection> {
+  const snapshot = await inspectViaRemoteHelper(payload)
+  const reachabilityChecks = await buildReachabilityChecks(payload).catch(() => [])
+  return {
+    connectionId: payload.id ?? "",
+    checkedAt: new Date().toISOString(),
+    hostname: snapshot.hostname ?? "unknown",
+    os: snapshot.os ?? "unknown",
+    kernel: snapshot.kernel ?? "unknown",
+    uptime: snapshot.uptime ?? "unknown",
+    workingDirectory: snapshot.workingDirectory ?? "~",
+    packageManager: snapshot.packageManager ?? "unknown",
+    metrics: snapshot.metrics ?? [],
+    telemetry: snapshot.telemetry,
+    portChecks: snapshot.portChecks ?? [],
+    reachabilityChecks,
+    packages: snapshot.packages ?? [],
+    services: snapshot.services ?? [],
   }
 }
 
@@ -488,7 +550,8 @@ export async function inspectConnection(
     }
   }
 
-  const pending = loadInspection(payload)
+  const pending = loadInspectionViaHelper(payload)
+    .catch(async () => await loadInspection(payload))
     .then((inspection) => {
       inspectionCache.set(key, {
         value: inspection,

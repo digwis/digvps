@@ -69,14 +69,15 @@ export const vpsConnectionInputSchema = z
     passphrase: z.string().optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.authType === "password" && !value.password?.trim()) {
+    const hasStoredId = !!value.id?.trim()
+    if (value.authType === "password" && !hasStoredId && !value.password?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["password"],
         message: "密码认证需要提供 password",
       })
     }
-    if (value.authType === "privateKey" && !value.privateKey?.trim()) {
+    if (value.authType === "privateKey" && !hasStoredId && !value.privateKey?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["privateKey"],
@@ -141,6 +142,11 @@ export const remoteDownloadSchema = z.object({
   path: nonEmptyString("path"),
   name: nonEmptyString("name"),
   type: z.enum(["file", "directory", "symlink"]),
+})
+
+export const remoteTrashEntrySchema = z.object({
+  connectionId: connectionIdSchema,
+  trashId: nonEmptyString("trashId"),
 })
 
 export const dependencyServiceSchema = z.object({

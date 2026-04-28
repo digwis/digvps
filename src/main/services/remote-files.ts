@@ -3,13 +3,13 @@ import type {
   RemoteFileDownloadInput,
   RemoteFileMutationResult,
   RemoteFileReadResult,
+  RemoteTrashListResult,
   RemoteFileUploadResult,
   VpsConnectionInput,
 } from "../../shared/vps"
 import type { BrowserWindow } from "electron"
 import {
   browseViaRemoteHelper,
-  deleteViaRemoteHelper,
   disposeAllRemoteFileSessions,
   invalidatePath,
   mkdirViaRemoteHelper,
@@ -21,10 +21,13 @@ import {
   browseRemoteFilesViaSftp,
   deleteRemoteEntryViaSftp,
   downloadRemoteEntryViaSftp,
+  listRemoteTrashViaSftp,
   pickAndUploadRemoteEntriesViaSftp,
   readRemoteTextFileViaSftp,
+  purgeRemoteTrashEntryViaSftp,
   writeRemoteTextFileViaSftp,
   renameRemoteEntryViaSftp,
+  restoreRemoteTrashEntryViaSftp,
   createRemoteDirectoryViaSftp as mkdirViaSftp,
 } from "./remote-files-sftp-fallback"
 
@@ -105,15 +108,35 @@ export async function deleteRemoteEntry(
   connection: VpsConnectionInput,
   remotePath: string,
 ): Promise<RemoteFileMutationResult> {
-  try {
-    return await deleteViaRemoteHelper(connection, remotePath)
-  } catch {
-    const result = await deleteRemoteEntryViaSftp(connection, remotePath)
-    if (connection.id) {
-      await invalidatePath(connection.id, remotePath)
-    }
-    return result
+  const result = await deleteRemoteEntryViaSftp(connection, remotePath)
+  if (connection.id) {
+    await invalidatePath(connection.id, remotePath)
   }
+  return result
+}
+
+export async function listRemoteTrash(
+  connection: VpsConnectionInput,
+): Promise<RemoteTrashListResult> {
+  return await listRemoteTrashViaSftp(connection)
+}
+
+export async function restoreRemoteTrashEntry(
+  connection: VpsConnectionInput,
+  trashId: string,
+): Promise<RemoteFileMutationResult> {
+  const result = await restoreRemoteTrashEntryViaSftp(connection, trashId)
+  if (connection.id) {
+    await invalidatePath(connection.id, result.path)
+  }
+  return result
+}
+
+export async function purgeRemoteTrashEntry(
+  connection: VpsConnectionInput,
+  trashId: string,
+): Promise<RemoteFileMutationResult> {
+  return await purgeRemoteTrashEntryViaSftp(connection, trashId)
 }
 
 export async function pickAndUploadRemoteEntries(

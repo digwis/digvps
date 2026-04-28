@@ -39,4 +39,17 @@ describe("ipc schemas", () => {
       }),
     ).toThrow(/password/)
   })
+
+  test("allows saved private-key connection without embedded secret", () => {
+    const parsed = parseOrThrow(vpsConnectionInputSchema, {
+      id: "conn-1",
+      name: "demo",
+      host: "127.0.0.1",
+      port: 22,
+      username: "root",
+      authType: "privateKey",
+    })
+    expect(parsed.id).toBe("conn-1")
+    expect(parsed.authType).toBe("privateKey")
+  })
 })

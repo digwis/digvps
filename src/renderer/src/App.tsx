@@ -45,6 +45,7 @@ import { useVpsStore } from "@/store/vps-store"
 import { useThemeStore } from "@/store/theme-store"
 import { AppSettingsSheet } from "@/components/app-settings-sheet"
 import { DependencyCards } from "@/components/dependency-cards"
+import { InspectionServiceBrowser } from "@/components/inspection-service-browser"
 import { InspectionTelemetryCards } from "@/components/inspection-telemetry-cards"
 import { SystemUpgradePrompt } from "@/components/system-upgrade-prompt"
 import { VpsConnectionDialog } from "@/components/vps-connection-dialog"
@@ -65,6 +66,8 @@ import type {
 type NavKey = "monitor" | "deps" | "projects" | "files"
 
 const LAST_ACTIVE_NAV_KEY = "digwis:last-active-nav"
+const SIDEBAR_COLLAPSED_KEY = "digwis:sidebar-collapsed"
+const TELEMETRY_FRESH_MS = 20_000
 
 const navItems: Array<{ key: NavKey; label: string; icon: typeof Server }> = [
   { key: "monitor", label: "系统监控", icon: Server },
@@ -89,6 +92,22 @@ function readLastActiveNav(): NavKey {
 function writeLastActiveNav(nav: NavKey) {
   try {
     window.localStorage.setItem(LAST_ACTIVE_NAV_KEY, nav)
+  } catch {
+    // Ignore storage errors in desktop renderer.
+  }
+}
+
+function readSidebarCollapsed() {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true"
+  } catch {
+    return false
+  }
+}
+
+function writeSidebarCollapsed(collapsed: boolean) {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "true" : "false")
   } catch {
     // Ignore storage errors in desktop renderer.
   }
@@ -208,21 +227,29 @@ function portCheckTone(check: InspectionPortCheck): string {
     : "bg-muted text-muted-foreground"
 }
 
-function inspectionFreshness(checkedAt: string) {
-  const deltaMs = Date.now() - new Date(checkedAt).getTime()
-  const deltaMinutes = Math.max(0, Math.round(deltaMs / 60_000))
-  if (deltaMinutes <= 1) {
+function inspectionFreshness(checkedAt: string, now: number) {
+  const deltaMs = Math.max(0, now - new Date(checkedAt).getTime())
+  const deltaSeconds = Math.round(deltaMs / 1000)
+  const deltaMinutes = Math.round(deltaMs / 60_000)
+  if (deltaMs <= TELEMETRY_FRESH_MS) {
     return {
       label: "刚刚更新",
       className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
       stale: false,
     }
   }
+  if (deltaSeconds < 60) {
+    return {
+      label: `${deltaSeconds} 秒前`,
+      className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      stale: true,
+    }
+  }
   if (deltaMinutes <= 5) {
     return {
       label: `${deltaMinutes} 分钟前`,
-      className: "bg-muted text-muted-foreground",
-      stale: false,
+      className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      stale: true,
     }
   }
   return {
@@ -230,6 +257,20 @@ function inspectionFreshness(checkedAt: string) {
     className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
     stale: true,
   }
+}
+
+function metricValue(inspection: VpsInspection, label: string) {
+  return inspection.metrics.find((metric) => metric.label === label)?.value ?? "unknown"
+}
+
+function inspectionStaticCards(inspection: VpsInspection) {
+  return [
+    { label: "CPU", value: metricValue(inspection, "CPU") },
+    { label: "逻辑核心", value: metricValue(inspection, "逻辑核心") },
+    { label: "内存占用", value: metricValue(inspection, "内存占用") },
+    { label: "系统盘", value: metricValue(inspection, "系统盘") },
+    { label: "inode", value: metricValue(inspection, "inode") },
+  ]
 }
 
 function reachabilityBadge(check: InspectionReachabilityCheck) {
@@ -282,6 +323,7 @@ export default function App() {
   const [dialogPreset, setDialogPreset] = useState<Partial<VpsConnectionInput> | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [activeNav, setActiveNav] = useState<NavKey>(() => readLastActiveNav())
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readSidebarCollapsed())
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [highlightedProjectId, setHighlightedProjectId] = useState<string>()
@@ -289,6 +331,7 @@ export default function App() {
     Array<{ project: LocalProjectRecord; details: ProjectRemoteDetails | null }>
   >([])
   const [monitorProjectsLoading, setMonitorProjectsLoading] = useState(false)
+  const [nowTick, setNowTick] = useState(() => Date.now())
 
   useEffect(() => {
     void loadConnections().then(() => {
@@ -299,6 +342,10 @@ export default function App() {
   useEffect(() => {
     writeLastActiveNav(activeNav)
   }, [activeNav])
+
+  useEffect(() => {
+    writeSidebarCollapsed(sidebarCollapsed)
+  }, [sidebarCollapsed])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -433,6 +480,25 @@ export default function App() {
   }, [inspectConnection, selectedConnectionId, selectedConnectionListed])
 
   useEffect(() => {
+    if (activeNav !== "monitor" || !selectedConnectionId || !selectedConnectionListed) {
+      return
+    }
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || useVpsStore.getState().isInspecting) {
+        return
+      }
+      const conn = useVpsStore
+        .getState()
+        .connections.find((item: VpsConnectionRecord) => item.id === selectedConnectionId)
+      if (!conn) {
+        return
+      }
+      void inspectConnection(conn, { forceRefresh: true })
+    }, 12_000)
+    return () => window.clearInterval(timer)
+  }, [activeNav, inspectConnection, selectedConnectionId, selectedConnectionListed])
+
+  useEffect(() => {
     if (!selectedConnectionId || !inspection || isInspecting) {
       return
     }
@@ -447,6 +513,11 @@ export default function App() {
     }
     void checkSystemUpgradesAfterInspect(conn as VpsConnectionInput)
   }, [checkSystemUpgradesAfterInspect, inspection, isInspecting, selectedConnectionId])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 5_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const openCreateDialog = (preset?: Partial<VpsConnectionInput>) => {
     setDialogPreset(preset ?? null)
@@ -530,7 +601,12 @@ export default function App() {
 
       <div className="relative flex h-screen overflow-hidden">
         {/* Sidebar */}
-        <aside className="hidden h-screen min-h-0 w-[272px] shrink-0 flex-col border-r border-border/80 bg-sidebar px-3 pb-5 pt-10 lg:flex">
+        <aside
+          className={cn(
+            "h-screen min-h-0 shrink-0 flex-col border-r border-border/80 bg-sidebar px-3 pb-5 pt-6 lg:flex",
+            sidebarCollapsed ? "hidden w-0 overflow-hidden border-r-0 px-0 pb-0 pt-0" : "hidden w-[272px]",
+          )}
+        >
           <div className="flex items-center gap-2.5 px-1">
             <div className="grid size-9 place-items-center rounded-xl border border-border/80 bg-background text-foreground shadow-sm">
               <Server className="size-[18px]" />
@@ -601,9 +677,20 @@ export default function App() {
           </div>
         </aside>
 
-        <main className="flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background pt-10">
-          <header className="flex shrink-0 items-center justify-between border-b border-border/60 px-5 py-2.5 lg:px-7">
-            <div className="min-w-0">
+        <main className="flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background pt-4">
+          <header className="flex shrink-0 items-center justify-between border-b border-border/60 px-5 py-1.5 lg:px-7">
+            <div className="flex min-w-0 items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
+                type="button"
+                title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+                onClick={() => setSidebarCollapsed((current) => !current)}
+              >
+                <PanelLeft className="size-4" />
+              </Button>
+              <div className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                 <h2 className="truncate text-[14px] font-semibold text-foreground">
                   {selectedConnection?.name ?? "服务器监控"}
@@ -627,6 +714,7 @@ export default function App() {
                 ) : (
                   <span className="truncate text-xs text-muted-foreground">选择服务器后显示巡检状态</span>
                 )}
+              </div>
               </div>
             </div>
             <div className="ml-4 flex shrink-0 items-center gap-2">
@@ -687,9 +775,6 @@ export default function App() {
                   已更新 {new Date(inspection.checkedAt).toLocaleTimeString()}
                 </div>
               ) : null}
-              <Button variant="ghost" size="icon" className="size-8 rounded-lg lg:hidden" type="button" title="侧栏">
-                <PanelLeft className="size-4" />
-              </Button>
             </div>
           </header>
 
@@ -768,11 +853,13 @@ export default function App() {
                       const runningServices = servicePackages.filter((pkg) => pkg.installed && pkg.running === true)
                       const problemServices = servicePackages.filter((pkg) => pkg.installed && pkg.running === false)
                       const activePortChecks = (inspection.portChecks ?? []).filter((item) => item.listening)
-                      const freshness = inspectionFreshness(inspection.checkedAt)
+                      const freshness = inspectionFreshness(inspection.checkedAt, nowTick)
                       const reachableChecks = inspection.reachabilityChecks ?? []
                       const degradedReachability = reachableChecks.filter(
                         (item) => !item.ok || (item.responseTimeMs ?? 0) >= 1500,
                       )
+                      const freshTelemetry = freshness.stale ? undefined : inspection.telemetry
+                      const staticMetricCards = inspectionStaticCards(inspection)
 
                       return (
                         <>
@@ -891,15 +978,15 @@ export default function App() {
                             </div>
                           </div>
 
-                          {inspection.telemetry ? (
+                          {freshTelemetry ? (
                             <InspectionTelemetryCards
-                              telemetry={inspection.telemetry}
+                              telemetry={freshTelemetry}
                               metrics={inspection.metrics}
                               checkedAt={inspection.checkedAt}
                             />
                           ) : (
-                            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                              {inspection.metrics.map((metric: { label: string; value: string }) => (
+                            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+                              {staticMetricCards.map((metric) => (
                                 <div
                                   key={metric.label}
                                   className="rounded-2xl border border-border/80 bg-card p-4 shadow-sm"
@@ -980,6 +1067,8 @@ export default function App() {
                               </div>
                             </div>
                           </div>
+
+                          <InspectionServiceBrowser services={inspection.services ?? []} />
 
                           <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
                             <div className="flex items-center justify-between gap-3">

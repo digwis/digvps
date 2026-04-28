@@ -107,6 +107,7 @@ export function InspectionTelemetryCards({ telemetry, metrics, checkedAt }: Prop
   const netPct = networkActivityPercent(telemetry.netDownBps, telemetry.netUpBps)
   const sampledAtText = new Date(checkedAt).toLocaleTimeString()
   const cpuExtras = [
+    "1s 采样",
     telemetry.cpuStealPercent >= 0.1 ? `steal ${telemetry.cpuStealPercent.toFixed(1)}%` : "",
     telemetry.cpuIowaitPercent >= 0.1 ? `iowait ${telemetry.cpuIowaitPercent.toFixed(1)}%` : "",
   ]

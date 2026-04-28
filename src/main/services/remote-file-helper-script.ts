@@ -174,13 +174,14 @@ def prefetch_child(child_path):
 def handle_browse(params):
     target = resolve_browse_target(params.get("path"))
     current_path = normalize_path(target["currentPath"])
-    with cache_lock:
-        cached = browse_cache.get(current_path)
-        if cached and now_ts() - cached["cached_at"] <= BROWSE_CACHE_TTL:
-            result = dict(cached["value"])
-            result["focusedPath"] = target["focusedPath"]
-            result["focusedType"] = target["focusedType"]
-            return result
+    if not params.get("forceRefresh"):
+        with cache_lock:
+            cached = browse_cache.get(current_path)
+            if cached and now_ts() - cached["cached_at"] <= BROWSE_CACHE_TTL:
+                result = dict(cached["value"])
+                result["focusedPath"] = target["focusedPath"]
+                result["focusedType"] = target["focusedType"]
+                return result
 
     entries = []
     with os.scandir(current_path) as it:

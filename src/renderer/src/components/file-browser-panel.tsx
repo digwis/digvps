@@ -5,10 +5,13 @@ import {
   FolderOpen,
   FolderPlus,
   FolderTree,
+  LayoutGrid,
+  List,
   LoaderCircle,
   MoreHorizontal,
   Pencil,
   RefreshCw,
+  RotateCcw,
   Trash2,
   Upload,
 } from "lucide-react"
@@ -56,6 +59,8 @@ import type {
   RemoteFileBrowseResult,
   RemoteFileEntry,
   RemoteFileReadResult,
+  RemoteTrashEntry,
+  RemoteTrashListResult,
   VpsConnectionRecord,
 } from "../../../shared/vps"
 
@@ -155,14 +160,22 @@ function buildPathSegments(currentPath: string, rootPath: string) {
 }
 
 export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) {
+  const [browserView, setBrowserView] = useState<"files" | "trash">("files")
+  const [displayMode, setDisplayMode] = useState<"list" | "cards">("list")
   const [browser, setBrowser] = useState<RemoteFileBrowseResult | null>(null)
+  const [trash, setTrash] = useState<RemoteTrashListResult | null>(null)
   const [loading, setLoading] = useState(false)
+  const [trashLoading, setTrashLoading] = useState(false)
   const [busyKey, setBusyKey] = useState<string>()
   const [showHiddenFiles, setShowHiddenFiles] = useState(false)
   const [pathDraft, setPathDraft] = useState("")
+  const [selectedPath, setSelectedPath] = useState<string>()
   const [renameTarget, setRenameTarget] = useState<RemoteFileEntry | null>(null)
   const [renameName, setRenameName] = useState("")
   const [deleteTarget, setDeleteTarget] = useState<RemoteFileEntry | null>(null)
+  const [purgeTarget, setPurgeTarget] = useState<RemoteTrashEntry | null>(null)
+  const [contextMenuTarget, setContextMenuTarget] = useState<RemoteFileEntry | null>(null)
+  const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 })
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [newFolderName, setNewFolderName] = useState("")
   const [editorOpen, setEditorOpen] = useState(false)
@@ -220,6 +233,19 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
       nextStore[cacheKey] = cacheEntry
     }
     writeBrowseCacheStore(nextStore)
+  }
+
+  const invalidateBrowseCache = (...paths: Array<string | undefined | null>) => {
+    if (!connectionId) {
+      return
+    }
+    for (const rawPath of paths) {
+      const normalized = rawPath?.trim()
+      if (!normalized) {
+        continue
+      }
+      browseCacheRef.current.delete(`${connectionId}:${normalized}`)
+    }
   }
 
   const prefetchChildDirectories = (result: RemoteFileBrowseResult) => {
@@ -313,13 +339,73 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
   }
 
   useEffect(() => {
+    setBrowserView("files")
+    setTrash(null)
     const restored = restoreCachedBrowser(DEFAULT_REMOTE_DIRECTORY)
     if (!restored) {
       setBrowser(null)
       setPathDraft(DEFAULT_REMOTE_DIRECTORY)
+      setSelectedPath(undefined)
     }
     void loadBrowser(DEFAULT_REMOTE_DIRECTORY)
   }, [connectionId])
+
+  const loadTrash = async () => {
+    if (!connectionId) {
+      setTrash(null)
+      return
+    }
+    setTrashLoading(true)
+    try {
+      const next = await getDesktopApi().vps.listRemoteTrash({ connectionId })
+      setTrash(next)
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "回收站读取失败",
+        description: error instanceof Error ? error.message : "无法读取远端回收站",
+      })
+    } finally {
+      setTrashLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (browserView !== "trash" || !connectionId) {
+      return
+    }
+    void loadTrash()
+  }, [browserView, connectionId])
+
+  useEffect(() => {
+    if (!browser) {
+      setSelectedPath(undefined)
+      return
+    }
+    setSelectedPath((current) => {
+      if (!current) {
+        return browser.focusedPath ?? undefined
+      }
+      return browser.entries.some((entry) => entry.path === current)
+        ? current
+        : (browser.focusedPath ?? undefined)
+    })
+  }, [browser])
+
+  const openEntry = async (entry: RemoteFileEntry) => {
+    setSelectedPath(entry.path)
+    if (entry.type === "directory") {
+      await loadBrowser(entry.path)
+      return
+    }
+    await openTextEditor(entry)
+  }
+
+  const startRename = (entry: RemoteFileEntry) => {
+    setSelectedPath(entry.path)
+    setRenameTarget(entry)
+    setRenameName(entry.name)
+  }
 
   const openTextEditor = async (entry?: RemoteFileEntry) => {
     if (!connectionId || !browser) {
@@ -446,21 +532,82 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
     }
     setBusyKey(`delete:${deleteTarget.path}`)
     try {
+      const currentPath = browser?.currentPath
       const result = await getDesktopApi().vps.deleteRemoteEntry({
         connectionId,
         path: deleteTarget.path,
       })
+      invalidateBrowseCache(deleteTarget.path, currentPath)
       toast({
-        title: deleteTarget.type === "directory" ? "目录已删除" : "文件已删除",
+        title: deleteTarget.type === "directory" ? "目录已移入回收站" : "文件已移入回收站",
         description: result.path,
       })
       setDeleteTarget(null)
-      await loadBrowser(browser?.currentPath)
+      await loadBrowser(currentPath, { forceRefresh: true })
+      if (trash) {
+        await loadTrash()
+      }
     } catch (error) {
       toast({
         variant: "destructive",
         title: "删除失败",
         description: error instanceof Error ? error.message : "无法删除该项",
+      })
+    } finally {
+      setBusyKey(undefined)
+    }
+  }
+
+  const restoreTrashEntry = async (entry: RemoteTrashEntry) => {
+    if (!connectionId) {
+      return
+    }
+    setBusyKey(`restore:${entry.id}`)
+    try {
+      const result = await getDesktopApi().vps.restoreRemoteTrashEntry({
+        connectionId,
+        trashId: entry.id,
+      })
+      toast({
+        title: "已恢复",
+        description: result.path,
+      })
+      await loadTrash()
+      if (browserView === "files" && browser?.currentPath) {
+        await loadBrowser(browser.currentPath)
+      }
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "恢复失败",
+        description: error instanceof Error ? error.message : "无法恢复该项",
+      })
+    } finally {
+      setBusyKey(undefined)
+    }
+  }
+
+  const purgeTrashEntry = async () => {
+    if (!connectionId || !purgeTarget) {
+      return
+    }
+    setBusyKey(`purge:${purgeTarget.id}`)
+    try {
+      const result = await getDesktopApi().vps.purgeRemoteTrashEntry({
+        connectionId,
+        trashId: purgeTarget.id,
+      })
+      toast({
+        title: "已彻底删除",
+        description: result.path,
+      })
+      setPurgeTarget(null)
+      await loadTrash()
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "彻底删除失败",
+        description: error instanceof Error ? error.message : "无法彻底删除该项",
       })
     } finally {
       setBusyKey(undefined)
@@ -497,6 +644,7 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
     if (!connectionId) {
       return
     }
+    setSelectedPath(entry.path)
     setBusyKey(`download:${entry.path}`)
     try {
       const result = await getDesktopApi().vps.downloadRemoteEntry({
@@ -518,6 +666,186 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
     } finally {
       setBusyKey(undefined)
     }
+  }
+
+  const renderEntryActions = (entry: RemoteFileEntry) => (
+    <>
+      <DropdownMenuItem onClick={() => void openEntry(entry)}>
+        {entry.type === "directory" ? <FolderOpen className="size-4" /> : <FileCode2 className="size-4" />}
+        {entry.type === "directory" ? "打开目录" : "编辑文本"}
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => void downloadEntry(entry)}>
+        {busyKey === `download:${entry.path}` ? (
+          <LoaderCircle className="size-4 animate-spin" />
+        ) : (
+          <Download className="size-4" />
+        )}
+        下载
+      </DropdownMenuItem>
+      <DropdownMenuItem onClick={() => startRename(entry)}>
+        <Pencil className="size-4" />
+        重命名
+      </DropdownMenuItem>
+      <DropdownMenuItem
+        className="text-destructive focus:text-destructive"
+        onClick={() => {
+          setSelectedPath(entry.path)
+          setDeleteTarget(entry)
+        }}
+      >
+        <Trash2 className="size-4" />
+        删除
+      </DropdownMenuItem>
+    </>
+  )
+
+  const renderTrashActions = (entry: RemoteTrashEntry) => (
+    <>
+      <DropdownMenuItem onClick={() => void restoreTrashEntry(entry)}>
+        {busyKey === `restore:${entry.id}` ? (
+          <LoaderCircle className="size-4 animate-spin" />
+        ) : (
+          <RotateCcw className="size-4" />
+        )}
+        恢复
+      </DropdownMenuItem>
+      <DropdownMenuItem
+        className="text-destructive focus:text-destructive"
+        onClick={() => setPurgeTarget(entry)}
+      >
+        <Trash2 className="size-4" />
+        彻底删除
+      </DropdownMenuItem>
+    </>
+  )
+
+  const renderFileCards = () => {
+    if (visibleEntries.length === 0) {
+      return (
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          {showHiddenFiles ? "当前目录为空" : "当前目录没有可见文件"}
+        </div>
+      )
+    }
+    return (
+      <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        {visibleEntries.map((entry) => (
+          <div
+            key={entry.path}
+            className={cn(
+              "rounded-lg border border-border/70 bg-card px-4 py-3 shadow-sm",
+              selectedPath === entry.path && "border-primary/40 bg-primary/[0.04]",
+              browser?.focusedPath === entry.path && "ring-1 ring-primary/20",
+            )}
+            onClick={() => setSelectedPath(entry.path)}
+            onContextMenu={(event) => {
+              event.preventDefault()
+              setSelectedPath(entry.path)
+              setContextMenuPosition({ x: event.clientX, y: event.clientY })
+              setContextMenuTarget(entry)
+            }}
+          >
+            <button
+              type="button"
+              className="flex w-full items-start gap-3 text-left"
+              onDoubleClick={() => void openEntry(entry)}
+            >
+              <div className="mt-0.5 rounded-md bg-muted p-2 text-muted-foreground">
+                {entry.type === "directory" ? <FolderOpen className="size-4" /> : <FileCode2 className="size-4" />}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-mono text-sm text-foreground">{entry.name}</p>
+                    <p className="mt-1 line-clamp-2 break-all text-[11px] text-muted-foreground">{entry.path}</p>
+                  </div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 shrink-0 rounded-lg"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setSelectedPath(entry.path)
+                        }}
+                      >
+                        <MoreHorizontal className="size-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      {renderEntryActions(entry)}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+                  <span>{entry.type === "directory" ? "目录" : entry.type === "symlink" ? "链接" : "文件"}</span>
+                  <span className="font-mono">{entry.type === "directory" ? "-" : formatFileSize(entry.size)}</span>
+                </div>
+                <p className="mt-2 text-[11px] text-muted-foreground">
+                  {entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString() : "-"}
+                </p>
+              </div>
+            </button>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  const renderTrashCards = () => {
+    if (trashLoading && !trash) {
+      return (
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          正在读取回收站…
+        </div>
+      )
+    }
+    if ((trash?.entries.length ?? 0) === 0) {
+      return (
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          回收站为空
+        </div>
+      )
+    }
+    return (
+      <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+        {trash!.entries.map((entry) => (
+          <div key={entry.id} className="rounded-lg border border-border/70 bg-card px-4 py-3 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-md bg-muted p-2 text-muted-foreground">
+                {entry.type === "directory" ? <FolderOpen className="size-4" /> : <FileCode2 className="size-4" />}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-mono text-sm text-foreground">{entry.name}</p>
+                    <p className="mt-1 line-clamp-2 break-all text-[11px] text-muted-foreground">{entry.originalPath}</p>
+                  </div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0 rounded-lg">
+                        <MoreHorizontal className="size-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      {renderTrashActions(entry)}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <p className="mt-2 truncate text-[11px] text-muted-foreground">{entry.trashedPath}</p>
+                <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+                  <span>{entry.type === "directory" ? "目录" : entry.type === "symlink" ? "链接" : "文件"}</span>
+                  <span className="font-mono">{entry.type === "directory" ? "-" : formatFileSize(entry.size)}</span>
+                </div>
+                <p className="mt-2 text-[11px] text-muted-foreground">{new Date(entry.deletedAt).toLocaleString()}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    )
   }
 
   if (!selectedConnection) {
@@ -547,12 +875,34 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
                   </span>
                 ) : null}
               </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant={browserView === "files" ? "default" : "outline"}
+                  size="sm"
+                  className="rounded-lg"
+                  onClick={() => setBrowserView("files")}
+                >
+                  文件
+                </Button>
+                <Button
+                  type="button"
+                  variant={browserView === "trash" ? "default" : "outline"}
+                  size="sm"
+                  className="rounded-lg"
+                  onClick={() => setBrowserView("trash")}
+                >
+                  <Trash2 className="size-4" />
+                  回收站
+                </Button>
+              </div>
               <div className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
                 {pathSegments.map((segment, index) => (
                   <div key={segment.path} className="flex min-w-0 items-center gap-1">
                     <button
                       type="button"
                       className="max-w-[14rem] truncate rounded px-1 py-0.5 hover:bg-muted hover:text-foreground"
+                      disabled={browserView !== "files"}
                       onClick={() => void loadBrowser(segment.path)}
                     >
                       {segment.label}
@@ -563,15 +913,35 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => void openTextEditor()} disabled={!browser}>
+              <div className="flex items-center rounded-lg border border-border/70 bg-muted/20 p-1">
+                <Button
+                  type="button"
+                  variant={displayMode === "list" ? "secondary" : "ghost"}
+                  size="icon"
+                  className="size-8 rounded-md"
+                  onClick={() => setDisplayMode("list")}
+                >
+                  <List className="size-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant={displayMode === "cards" ? "secondary" : "ghost"}
+                  size="icon"
+                  className="size-8 rounded-md"
+                  onClick={() => setDisplayMode("cards")}
+                >
+                  <LayoutGrid className="size-4" />
+                </Button>
+              </div>
+              <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => void openTextEditor()} disabled={!browser || browserView !== "files"}>
                 <FileCode2 className="size-4" />
                 新建文本
               </Button>
-              <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => setNewFolderOpen(true)} disabled={!browser}>
+              <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => setNewFolderOpen(true)} disabled={!browser || browserView !== "files"}>
                 <FolderPlus className="size-4" />
                 新建目录
               </Button>
-              <Button type="button" size="sm" className="rounded-lg" onClick={() => void uploadEntries()} disabled={!browser || busyKey === "upload"}>
+              <Button type="button" size="sm" className="rounded-lg" onClick={() => void uploadEntries()} disabled={!browser || busyKey === "upload" || browserView !== "files"}>
                 {busyKey === "upload" ? <LoaderCircle className="size-4 animate-spin" /> : <Upload className="size-4" />}
                 上传
               </Button>
@@ -580,10 +950,10 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
                 variant="outline"
                 size="sm"
                 className="rounded-lg"
-                onClick={() => void loadBrowser(browser?.currentPath, { forceRefresh: true })}
-                disabled={loading}
+                onClick={() => void (browserView === "files" ? loadBrowser(browser?.currentPath, { forceRefresh: true }) : loadTrash())}
+                disabled={browserView === "files" ? loading : trashLoading}
               >
-                {loading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                {(browserView === "files" ? loading : trashLoading) ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                 刷新
               </Button>
             </div>
@@ -595,7 +965,7 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
               size="sm"
               className="rounded-lg"
               onClick={() => void loadBrowser(browser?.parentPath ?? browser?.rootPath)}
-              disabled={!browser?.parentPath || loading}
+              disabled={browserView !== "files" || !browser?.parentPath || loading}
             >
               返回上级
             </Button>
@@ -603,15 +973,16 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
               className="h-8 flex-1 rounded-lg border-0 bg-muted/60 font-mono text-xs shadow-none"
               value={pathDraft}
               onChange={(event) => setPathDraft(event.target.value)}
-              placeholder="输入远端路径后回车或点击打开"
+              placeholder={browserView === "files" ? "输入远端路径后回车或点击打开" : "回收站视图不支持路径跳转"}
+              disabled={browserView !== "files"}
               onKeyDown={(event) => {
-                if (event.key === "Enter") {
+                if (browserView === "files" && event.key === "Enter") {
                   event.preventDefault()
                   void loadBrowser(pathDraft)
                 }
               }}
             />
-            <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => void loadBrowser(pathDraft)} disabled={!pathDraft.trim() || loading}>
+            <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => void loadBrowser(pathDraft)} disabled={browserView !== "files" || !pathDraft.trim() || loading}>
               打开
             </Button>
             <div className="ml-auto flex items-center gap-2 px-1 py-1">
@@ -622,131 +993,180 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
                 id="show-hidden-files"
                 checked={showHiddenFiles}
                 onCheckedChange={setShowHiddenFiles}
+                disabled={browserView !== "files"}
               />
             </div>
           </div>
         </div>
 
         <div className="min-h-0 flex-1 overflow-hidden">
-          {loading && !browser ? (
+          {browserView === "files" && loading && !browser ? (
             <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
               <LoaderCircle className="size-4 animate-spin" />
               正在连接远端目录…
             </div>
-          ) : browser ? (
+          ) : browserView === "files" && browser ? (
             <div className="flex h-full flex-col">
               <div className="flex items-center justify-between border-b border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
                 <span>{visibleEntries.length} 个项目</span>
                 {loading ? <span>显示缓存内容，正在刷新…</span> : browser.transport === "sftp" ? <span>当前使用 SFTP 回退</span> : <span>helper 已连接</span>}
               </div>
               <div className="min-h-0 flex-1 overflow-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>名称</TableHead>
-                      <TableHead className="w-[84px]">类型</TableHead>
-                      <TableHead className="w-[104px] text-right">大小</TableHead>
-                      <TableHead className="w-[168px]">修改时间</TableHead>
-                      <TableHead className="w-[72px] text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {visibleEntries.length === 0 ? (
+                {displayMode === "cards" ? renderFileCards() : (
+                  <Table>
+                    <TableHeader>
                       <TableRow>
-                        <TableCell colSpan={5} className="h-24 text-center text-sm text-muted-foreground">
-                          {showHiddenFiles ? "当前目录为空" : "当前目录没有可见文件"}
-                        </TableCell>
+                        <TableHead>名称</TableHead>
+                        <TableHead className="w-[84px]">类型</TableHead>
+                        <TableHead className="w-[104px] text-right">大小</TableHead>
+                        <TableHead className="w-[168px]">修改时间</TableHead>
+                        <TableHead className="w-[72px] text-right">操作</TableHead>
                       </TableRow>
-                    ) : (
-                      visibleEntries.map((entry) => (
-                        <TableRow
-                          key={entry.path}
-                          className={cn(browser.focusedPath === entry.path && "bg-muted/40")}
-                        >
-                          <TableCell>
-                            <button
-                              type="button"
-                              className="flex min-w-0 items-center gap-2 text-left"
-                              onClick={() => {
-                                if (entry.type === "directory") {
-                                  void loadBrowser(entry.path)
-                                  return
-                                }
-                                void openTextEditor(entry)
-                              }}
-                            >
-                              {entry.type === "directory" ? (
-                                <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
-                              ) : (
-                                <FileCode2 className="size-4 shrink-0 text-muted-foreground" />
-                              )}
-                              <div className="min-w-0">
-                                <span className="block truncate font-mono text-xs text-foreground">{entry.name}</span>
-                                <span className="block truncate text-[11px] text-muted-foreground">{entry.path}</span>
-                              </div>
-                            </button>
-                          </TableCell>
-                          <TableCell className="text-[11px] text-muted-foreground">
-                            {entry.type === "directory" ? "目录" : entry.type === "symlink" ? "链接" : "文件"}
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-[11px] text-muted-foreground">
-                            {entry.type === "directory" ? "-" : formatFileSize(entry.size)}
-                          </TableCell>
-                          <TableCell className="text-[11px] text-muted-foreground">
-                            {entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString() : "-"}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button type="button" variant="ghost" size="icon" className="size-8 rounded-lg">
-                                  <MoreHorizontal className="size-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    if (entry.type === "directory") {
-                                      void loadBrowser(entry.path)
-                                      return
-                                    }
-                                    void openTextEditor(entry)
-                                  }}
-                                >
-                                  {entry.type === "directory" ? <FolderOpen className="size-4" /> : <FileCode2 className="size-4" />}
-                                  {entry.type === "directory" ? "打开目录" : "编辑文本"}
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => void downloadEntry(entry)}>
-                                  {busyKey === `download:${entry.path}` ? (
-                                    <LoaderCircle className="size-4 animate-spin" />
-                                  ) : (
-                                    <Download className="size-4" />
-                                  )}
-                                  下载
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    setRenameTarget(entry)
-                                    setRenameName(entry.name)
-                                  }}
-                                >
-                                  <Pencil className="size-4" />
-                                  重命名
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  className="text-destructive focus:text-destructive"
-                                  onClick={() => setDeleteTarget(entry)}
-                                >
-                                  <Trash2 className="size-4" />
-                                  删除
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
+                    </TableHeader>
+                    <TableBody>
+                      {visibleEntries.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={5} className="h-24 text-center text-sm text-muted-foreground">
+                            {showHiddenFiles ? "当前目录为空" : "当前目录没有可见文件"}
                           </TableCell>
                         </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
+                      ) : (
+                        visibleEntries.map((entry) => (
+                          <TableRow
+                            key={entry.path}
+                            data-state={selectedPath === entry.path ? "selected" : undefined}
+                            className={cn(browser.focusedPath === entry.path && "bg-muted/40")}
+                            onClick={() => setSelectedPath(entry.path)}
+                            onContextMenu={(event) => {
+                              event.preventDefault()
+                              setSelectedPath(entry.path)
+                              setContextMenuPosition({ x: event.clientX, y: event.clientY })
+                              setContextMenuTarget(entry)
+                            }}
+                          >
+                            <TableCell>
+                              <button
+                                type="button"
+                                className="flex min-w-0 items-center gap-2 text-left"
+                                onDoubleClick={() => void openEntry(entry)}
+                              >
+                                {entry.type === "directory" ? (
+                                  <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
+                                ) : (
+                                  <FileCode2 className="size-4 shrink-0 text-muted-foreground" />
+                                )}
+                                <div className="min-w-0">
+                                  <span className="block truncate font-mono text-xs text-foreground">{entry.name}</span>
+                                  <span className="block truncate text-[11px] text-muted-foreground">{entry.path}</span>
+                                </div>
+                              </button>
+                            </TableCell>
+                            <TableCell className="text-[11px] text-muted-foreground">
+                              {entry.type === "directory" ? "目录" : entry.type === "symlink" ? "链接" : "文件"}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-[11px] text-muted-foreground">
+                              {entry.type === "directory" ? "-" : formatFileSize(entry.size)}
+                            </TableCell>
+                            <TableCell className="text-[11px] text-muted-foreground">
+                              {entry.modifiedAt ? new Date(entry.modifiedAt).toLocaleString() : "-"}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="size-8 rounded-lg"
+                                    onClick={() => setSelectedPath(entry.path)}
+                                  >
+                                    <MoreHorizontal className="size-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  {renderEntryActions(entry)}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+            </div>
+          ) : browserView === "trash" ? (
+            <div className="flex h-full flex-col">
+              <div className="flex items-center justify-between border-b border-border/50 px-4 py-2 text-[11px] text-muted-foreground">
+                <span>{trash?.entries.length ?? 0} 个项目</span>
+                {trashLoading ? <span>正在刷新回收站…</span> : <span>删除项目会先进入这里</span>}
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto">
+                {displayMode === "cards" ? renderTrashCards() : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>名称</TableHead>
+                        <TableHead>原路径</TableHead>
+                        <TableHead className="w-[84px]">类型</TableHead>
+                        <TableHead className="w-[104px] text-right">大小</TableHead>
+                        <TableHead className="w-[168px]">删除时间</TableHead>
+                        <TableHead className="w-[72px] text-right">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {trashLoading && !trash ? (
+                        <TableRow>
+                          <TableCell colSpan={6} className="h-24 text-center text-sm text-muted-foreground">
+                            正在读取回收站…
+                          </TableCell>
+                        </TableRow>
+                      ) : (trash?.entries.length ?? 0) === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={6} className="h-24 text-center text-sm text-muted-foreground">
+                            回收站为空
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        trash!.entries.map((entry) => (
+                          <TableRow key={entry.id}>
+                            <TableCell>
+                              <div className="min-w-0">
+                                <span className="block truncate font-mono text-xs text-foreground">{entry.name}</span>
+                                <span className="block truncate text-[11px] text-muted-foreground">{entry.trashedPath}</span>
+                              </div>
+                            </TableCell>
+                            <TableCell className="font-mono text-[11px] text-muted-foreground">
+                              <span className="block truncate">{entry.originalPath}</span>
+                            </TableCell>
+                            <TableCell className="text-[11px] text-muted-foreground">
+                              {entry.type === "directory" ? "目录" : entry.type === "symlink" ? "链接" : "文件"}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-[11px] text-muted-foreground">
+                              {entry.type === "directory" ? "-" : formatFileSize(entry.size)}
+                            </TableCell>
+                            <TableCell className="text-[11px] text-muted-foreground">
+                              {new Date(entry.deletedAt).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button type="button" variant="ghost" size="icon" className="size-8 rounded-lg">
+                                    <MoreHorizontal className="size-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  {renderTrashActions(entry)}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                )}
               </div>
             </div>
           ) : (
@@ -754,6 +1174,32 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
           )}
         </div>
       </div>
+
+      <DropdownMenu
+        open={Boolean(contextMenuTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setContextMenuTarget(null)
+          }
+        }}
+      >
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-hidden="true"
+            tabIndex={-1}
+            className="fixed h-0 w-0 opacity-0 pointer-events-none"
+            style={{ left: contextMenuPosition.x, top: contextMenuPosition.y }}
+          />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="start"
+          sideOffset={6}
+          onCloseAutoFocus={(event) => event.preventDefault()}
+        >
+          {contextMenuTarget ? renderEntryActions(contextMenuTarget) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       <Dialog open={newFolderOpen} onOpenChange={setNewFolderOpen}>
         <DialogContent className="max-w-md">
@@ -830,7 +1276,7 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
             <AlertDialogDescription>
               <span className="break-all">{deleteTarget?.path}</span>
               <span className="mt-2 block">
-                {deleteTarget?.type === "directory" ? "会递归删除目录中的全部内容。" : "该操作不可撤销。"}
+                {deleteTarget?.type === "directory" ? "会将目录及其内容移入回收站。" : "删除后会先进入回收站，可稍后恢复或彻底删除。"}
               </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -841,7 +1287,36 @@ export function FileBrowserPanel({ selectedConnection }: FileBrowserPanelProps) 
               onClick={() => void removeEntry()}
             >
               {busyKey === `delete:${deleteTarget?.path}` ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-              删除
+              移入回收站
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={Boolean(purgeTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPurgeTarget(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>彻底删除该项目？</AlertDialogTitle>
+            <AlertDialogDescription>
+              <span className="break-all">{purgeTarget?.originalPath}</span>
+              <span className="mt-2 block">该操作会从回收站中永久移除，无法恢复。</span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className={cn("bg-destructive text-destructive-foreground hover:bg-destructive/90")}
+              onClick={() => void purgeTrashEntry()}
+            >
+              {busyKey === `purge:${purgeTarget?.id}` ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              彻底删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

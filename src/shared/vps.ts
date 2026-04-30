@@ -16,6 +16,9 @@ export type VpsConnectionInput = {
   host: string
   port: number
   username: string
+  provider?: string
+  locationLabel?: string
+  expiresAt?: string
   authType: AuthType
   password?: string
   privateKey?: string
@@ -28,6 +31,9 @@ export type VpsConnectionRecord = {
   host: string
   port: number
   username: string
+  provider?: string
+  locationLabel?: string
+  expiresAt?: string
   authType: AuthType
   source?: "manual" | "ssh-config" | "known-hosts"
   status: ConnectionStatus
@@ -53,6 +59,7 @@ export type SshConfigCandidate = {
   source: "ssh-config"
   configPath: string
   identityFilePath?: string
+  privateKey?: string
 }
 
 export type SshConfigMutationInput = {
@@ -91,6 +98,11 @@ export type SshKeySetupResult = {
 
 export type RemoteFileType = "file" | "directory" | "symlink"
 
+export type RemoteFilePermissions = {
+  octal: string
+  symbolic: string
+}
+
 export type RemoteFileEntry = {
   name: string
   path: string
@@ -114,6 +126,15 @@ export type RemoteFileReadResult = {
   content: string
   size: number
   modifiedAt?: string
+}
+
+export type RemoteFileStatResult = {
+  path: string
+  type: RemoteFileType
+  size: number
+  modifiedAt?: string
+  realPath?: string | null
+  permissions?: RemoteFilePermissions
 }
 
 export type RemoteFileMutationResult = {
@@ -313,12 +334,16 @@ export type DigwisApi = {
     deleteConnection: (id: string) => Promise<{ success: true }>
     createAndInstallSshKey: (payload: VpsConnectionInput) => Promise<SshKeySetupResult>
     browseRemoteFiles: (payload: { connectionId: string; path?: string; forceRefresh?: boolean }) => Promise<RemoteFileBrowseResult>
+    statRemoteEntry: (payload: { connectionId: string; path: string }) => Promise<RemoteFileStatResult>
     readRemoteTextFile: (payload: { connectionId: string; path: string }) => Promise<RemoteFileReadResult>
     writeRemoteTextFile: (payload: { connectionId: string; path: string; content: string }) => Promise<RemoteFileMutationResult>
     createRemoteDirectory: (
       payload: { connectionId: string; parentPath: string; directoryName: string },
     ) => Promise<RemoteFileMutationResult>
     renameRemoteEntry: (payload: { connectionId: string; path: string; nextName: string }) => Promise<RemoteFileMutationResult>
+    changeRemotePermissions: (
+      payload: { connectionId: string; path: string; mode: string; recursive?: boolean },
+    ) => Promise<RemoteFileMutationResult>
     deleteRemoteEntry: (payload: { connectionId: string; path: string }) => Promise<RemoteFileMutationResult>
     listRemoteTrash: (payload: { connectionId: string }) => Promise<RemoteTrashListResult>
     restoreRemoteTrashEntry: (payload: { connectionId: string; trashId: string }) => Promise<RemoteFileMutationResult>

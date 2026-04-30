@@ -26,6 +26,7 @@ type VpsOperationLogEntry = {
 
 const LAST_SELECTED_CONNECTION_KEY = "digwis:last-selected-connection-id"
 const INSPECTION_CACHE_KEY = "digwis:inspection-cache"
+const DISMISSED_UPGRADE_PROMPTS_KEY = "digwis:dismissed-upgrade-prompts"
 const INSPECTION_CACHE_TTL_MS = 30 * 60_000
 const INSPECTION_TELEMETRY_FRESH_MS = 20_000
 const UPGRADE_STATUS_TTL_MS = 24 * 60 * 60_000
@@ -47,6 +48,26 @@ function compareConnectionPriority(left: VpsConnectionRecord, right: VpsConnecti
     return left.source === "ssh-config" ? -1 : 1
   }
   return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+}
+
+function mergeConnectionPresentation(
+  preferred: VpsConnectionRecord,
+  group: VpsConnectionRecord[],
+): VpsConnectionRecord {
+  const byRecency = [...group].sort(
+    (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+  )
+  const provider = preferred.provider?.trim() || byRecency.find((item) => item.provider?.trim())?.provider
+  const locationLabel =
+    preferred.locationLabel?.trim() || byRecency.find((item) => item.locationLabel?.trim())?.locationLabel
+  const expiresAt =
+    preferred.expiresAt?.trim() || byRecency.find((item) => item.expiresAt?.trim())?.expiresAt
+  return {
+    ...preferred,
+    provider,
+    locationLabel,
+    expiresAt,
+  }
 }
 
 function collapseConnections(connections: VpsConnectionRecord[]) {
@@ -72,6 +93,9 @@ function collapseConnections(connections: VpsConnectionRecord[]) {
       return false
     }
     return true
+  }).map((connection) => {
+    const group = grouped.get(connectionDisplayKey(connection)) ?? [connection]
+    return mergeConnectionPresentation(connection, group)
   })
 
   return { visibleConnections, preferredByHiddenId, hiddenIds }
@@ -165,6 +189,35 @@ function getCachedInspection(connectionId?: string) {
   return cached ? stripStaleTelemetry(cached) : undefined
 }
 
+function buildUpgradePromptSignature(status: SystemUpgradeCheckResult) {
+  return [status.manager, String(status.upgradableCount), status.indexRefreshed ? "1" : "0"].join(":")
+}
+
+function readDismissedUpgradePrompts() {
+  try {
+    const raw = window.localStorage.getItem(DISMISSED_UPGRADE_PROMPTS_KEY)
+    if (!raw) {
+      return {}
+    }
+    const parsed = JSON.parse(raw) as Record<string, string>
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeDismissedUpgradePrompts(map: Record<string, string>) {
+  try {
+    if (Object.keys(map).length === 0) {
+      window.localStorage.removeItem(DISMISSED_UPGRADE_PROMPTS_KEY)
+      return
+    }
+    window.localStorage.setItem(DISMISSED_UPGRADE_PROMPTS_KEY, JSON.stringify(map))
+  } catch {
+    // Ignore storage errors in desktop renderer.
+  }
+}
+
 function appendOperationLog(
   items: VpsOperationLogEntry[],
   entry: VpsOperationLogEntry,
@@ -208,11 +261,13 @@ type VpsState = {
   upgradePromptForConnectionId?: string
   upgradeStatusMap: Record<string, SystemUpgradeCheckResult>
   upgradeStatusCheckedAtMap: Record<string, string>
+  dismissedUpgradePromptMap: Record<string, string>
   operationLogs: VpsOperationLogEntry[]
   info?: string
   lastTestResult?: ConnectionTestResult
   error?: string
   loadConnections: () => Promise<void>
+  prewarmInspectionCache: (connectionIds?: string[]) => Promise<void>
   loadDiscoveredHosts: () => Promise<void>
   loadSshConfigCandidates: () => Promise<void>
   loadRawSshConfig: () => Promise<RawSshConfigFile | undefined>
@@ -222,7 +277,10 @@ type VpsState = {
   deleteSshConfigCandidate: (payload: { configPath: string; originalName: string }) => Promise<SshConfigCandidate[]>
   saveConnection: (payload: VpsConnectionInput) => Promise<VpsConnectionRecord>
   testConnection: (payload: VpsConnectionInput) => Promise<ConnectionTestResult>
-  inspectConnection: (payload: VpsConnectionInput, options?: { forceRefresh?: boolean }) => Promise<VpsInspection>
+  inspectConnection: (
+    payload: VpsConnectionInput,
+    options?: { forceRefresh?: boolean; backgroundRefresh?: boolean },
+  ) => Promise<VpsInspection>
   installDependency: (
     payload: VpsConnectionInput,
     dependencyId: string,
@@ -241,6 +299,7 @@ type VpsState = {
   ) => Promise<DependencyInstallResult>
   checkSystemUpgradesAfterInspect: (payload: VpsConnectionInput) => Promise<void>
   checkAllConnectionsUpgrades: () => Promise<void>
+  reopenUpgradePrompt: (connectionId: string) => void
   dismissUpgradePrompt: () => void
   applyRemoteSystemUpgrade: (
     payload: VpsConnectionInput,
@@ -281,6 +340,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
   upgradePromptForConnectionId: undefined,
   upgradeStatusMap: {},
   upgradeStatusCheckedAtMap: {},
+  dismissedUpgradePromptMap: readDismissedUpgradePrompts(),
   operationLogs: [],
   info: undefined,
   error: undefined,
@@ -307,6 +367,27 @@ export const useVpsStore = create<VpsState>((set, get) => ({
         isLoading: false,
         error: error instanceof Error ? error.message : "连接列表加载失败",
       })
+    }
+  },
+  prewarmInspectionCache: async (connectionIds) => {
+    const selectedConnectionId = get().selectedConnectionId
+    const targets = get().connections.filter((connection) => {
+      if (connection.id === selectedConnectionId) {
+        return false
+      }
+      if (connectionIds && connectionIds.length > 0 && !connectionIds.includes(connection.id)) {
+        return false
+      }
+      return !getCachedInspection(connection.id)
+    })
+
+    for (const connection of targets) {
+      try {
+        const inspection = await getDesktopApi().vps.inspectConnection(connection)
+        writeInspectionCache(connection.id, inspection)
+      } catch {
+        // Ignore background prewarm errors.
+      }
     }
   },
   loadDiscoveredHosts: async () => {
@@ -454,6 +535,36 @@ export const useVpsStore = create<VpsState>((set, get) => ({
     }
   },
   inspectConnection: async (payload, options) => {
+    const cachedInspection =
+      options?.backgroundRefresh && payload.id ? getCachedInspection(payload.id) : undefined
+    if (cachedInspection && cachedInspection.connectionId === payload.id) {
+      set({
+        isInspecting: false,
+        error: undefined,
+        info: undefined,
+        inspection: cachedInspection,
+        upgradePrompt: undefined,
+        upgradePromptForConnectionId: undefined,
+      })
+      void (async () => {
+        try {
+          const inspection = await getDesktopApi().vps.inspectConnection(payload, { forceRefresh: true })
+          if (payload.id) {
+            writeInspectionCache(payload.id, inspection)
+          }
+          if (get().selectedConnectionId === payload.id) {
+            set({ inspection })
+          }
+          if (payload.id) {
+            await get().loadConnections()
+          }
+        } catch {
+          // Keep showing the cached inspection when silent revalidation fails.
+        }
+      })()
+      return cachedInspection
+    }
+
     set({
       isInspecting: true,
       error: undefined,
@@ -661,11 +772,16 @@ export const useVpsStore = create<VpsState>((set, get) => ({
     if (!payload.id) {
       return
     }
+    const shouldShowPrompt = (status: SystemUpgradeCheckResult) =>
+      status.supported &&
+      status.upgradableCount > 0 &&
+      get().dismissedUpgradePromptMap[payload.id!] !== buildUpgradePromptSignature(status)
+
     const cachedStatus = get().upgradeStatusMap[payload.id]
     const cachedCheckedAt = get().upgradeStatusCheckedAtMap[payload.id]
     if (cachedStatus && isUpgradeStatusFresh(cachedCheckedAt)) {
       if (payload.id === get().selectedConnectionId) {
-        if (cachedStatus.supported && cachedStatus.upgradableCount > 0) {
+        if (shouldShowPrompt(cachedStatus)) {
           set({
             upgradePrompt: cachedStatus,
             upgradePromptForConnectionId: payload.id,
@@ -696,7 +812,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       if (payload.id !== get().selectedConnectionId) {
         return
       }
-      if (result.supported && result.upgradableCount > 0) {
+      if (shouldShowPrompt(result)) {
         set({
           upgradePrompt: result,
           upgradePromptForConnectionId: payload.id,
@@ -749,8 +865,34 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       isCheckingAllUpgrades: false,
     })
   },
+  reopenUpgradePrompt: (connectionId) => {
+    const status = get().upgradeStatusMap[connectionId]
+    if (!status?.supported || status.upgradableCount <= 0) {
+      return
+    }
+    set({
+      upgradePrompt: status,
+      upgradePromptForConnectionId: connectionId,
+    })
+  },
   dismissUpgradePrompt: () =>
-    set({ upgradePrompt: undefined, upgradePromptForConnectionId: undefined }),
+    set((state) => {
+      const connectionId = state.upgradePromptForConnectionId
+      const status = state.upgradePrompt
+      if (!connectionId || !status) {
+        return { upgradePrompt: undefined, upgradePromptForConnectionId: undefined }
+      }
+      const nextDismissedMap = {
+        ...state.dismissedUpgradePromptMap,
+        [connectionId]: buildUpgradePromptSignature(status),
+      }
+      writeDismissedUpgradePrompts(nextDismissedMap)
+      return {
+        upgradePrompt: undefined,
+        upgradePromptForConnectionId: undefined,
+        dismissedUpgradePromptMap: nextDismissedMap,
+      }
+    }),
   applyRemoteSystemUpgrade: async (payload, options) => {
     set({ isApplyingUpgrade: true, error: undefined, info: undefined })
     try {
@@ -758,6 +900,11 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       if (!result.ok) {
         set({ isApplyingUpgrade: false, error: result.message })
         return result
+      }
+      const nextDismissedMap = { ...get().dismissedUpgradePromptMap }
+      if (payload.id) {
+        delete nextDismissedMap[payload.id]
+        writeDismissedUpgradePrompts(nextDismissedMap)
       }
       set({
         isApplyingUpgrade: false,
@@ -771,6 +918,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
           ...get().upgradeStatusCheckedAtMap,
           [payload.id ?? ""]: new Date().toISOString(),
         },
+        dismissedUpgradePromptMap: nextDismissedMap,
         info: result.message,
       })
       return result
@@ -818,6 +966,8 @@ export const useVpsStore = create<VpsState>((set, get) => ({
         : {}
     const { [id]: _removed, ...restStatusMap } = get().upgradeStatusMap
     const { [id]: _removedCheckedAt, ...restCheckedAtMap } = get().upgradeStatusCheckedAtMap
+    const { [id]: _removedDismissed, ...restDismissedMap } = get().dismissedUpgradePromptMap
+    writeDismissedUpgradePrompts(restDismissedMap)
     set({
       connections: rest,
       selectedConnectionId:
@@ -825,6 +975,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       inspection: get().inspection?.connectionId === id ? undefined : get().inspection,
       upgradeStatusMap: restStatusMap,
       upgradeStatusCheckedAtMap: restCheckedAtMap,
+      dismissedUpgradePromptMap: restDismissedMap,
       ...clearUpgrade,
     })
     writeLastSelectedConnectionId(

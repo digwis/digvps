@@ -11,11 +11,17 @@ import type {
   ProjectDeployInput,
   ProjectDeployLogEvent,
   ProjectEnvInput,
+  ProjectOperationLogAppendInput,
+  ProjectScaffoldProgressEvent,
+  ProjectRuntimeModulesUpdateInput,
   ProjectMigrationInput,
+  ProjectLocalPathUpdateInput,
   ProjectRemoteDetailsInput,
   ProjectEnvUpdateInput,
   ProjectInitializeInput,
+  ProjectDeleteInput,
   ProjectRemoteStateInput,
+  ProjectScaffoldInput,
   ProjectSiteSettingsInput,
 } from "../shared/projects"
 
@@ -23,9 +29,29 @@ const api: DigwisApi = {
   projects: {
     listProjects: () => ipcRenderer.invoke("projects:list"),
     addProjectFromPath: (payload: LocalProjectInput) => ipcRenderer.invoke("projects:add", payload),
-    deleteProject: (id: string) => ipcRenderer.invoke("projects:delete", id),
+    createProjectScaffold: (payload: ProjectScaffoldInput) => ipcRenderer.invoke("projects:create-scaffold", payload),
+    onScaffoldProgress: (handler: (event: ProjectScaffoldProgressEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: ProjectScaffoldProgressEvent) => {
+        handler(payload)
+      }
+      ipcRenderer.on("projects:scaffold-progress", listener)
+      return () => {
+        ipcRenderer.removeListener("projects:scaffold-progress", listener)
+      }
+    },
+    updateProjectLocalPath: (payload: ProjectLocalPathUpdateInput) =>
+      ipcRenderer.invoke("projects:update-local-path", payload),
+    getProjectConfig: (projectId: string) => ipcRenderer.invoke("projects:get-config", projectId),
+    setProjectRuntimeModules: (payload: ProjectRuntimeModulesUpdateInput) =>
+      ipcRenderer.invoke("projects:set-runtime-modules", payload),
+    deleteProject: (payload: ProjectDeleteInput) => ipcRenderer.invoke("projects:delete", payload),
     pickProjectDirectory: () => ipcRenderer.invoke("projects:pick-directory"),
     listNpmScripts: (projectId: string) => ipcRenderer.invoke("projects:list-npm-scripts", projectId),
+    getProjectLocalPreview: (projectId: string) => ipcRenderer.invoke("projects:get-local-preview", projectId),
+    openProjectLocalPreview: (projectId: string) => ipcRenderer.invoke("projects:open-local-preview", projectId),
+    openProjectLocalAdmin: (projectId: string) => ipcRenderer.invoke("projects:open-local-admin", projectId),
+    startProjectLocalDev: (projectId: string) => ipcRenderer.invoke("projects:start-local-dev", projectId),
+    startProjectLocalAdminService: (projectId: string) => ipcRenderer.invoke("projects:start-local-admin-service", projectId),
     getDeployProfile: (projectId: string) => ipcRenderer.invoke("projects:get-deploy-profile", projectId),
     getProjectRemoteState: (payload: ProjectRemoteStateInput) => ipcRenderer.invoke("projects:get-remote-state", payload),
     getProjectRemoteDetails: (payload: ProjectRemoteDetailsInput) =>
@@ -47,6 +73,8 @@ const api: DigwisApi = {
     migrateProject: (payload: ProjectMigrationInput) => ipcRenderer.invoke("projects:migrate", payload),
     listOperationLogs: (payload?: { limit?: number }) =>
       ipcRenderer.invoke("projects:list-operation-logs", payload),
+    appendProjectOperationLog: (payload: ProjectOperationLogAppendInput) =>
+      ipcRenderer.invoke("projects:append-operation-log", payload),
     onDeployLog: (handler: (event: ProjectDeployLogEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ProjectDeployLogEvent) => {
         handler(payload)
@@ -95,6 +123,8 @@ const api: DigwisApi = {
       ipcRenderer.invoke("vps:create-and-install-ssh-key", payload),
     browseRemoteFiles: (payload: { connectionId: string; path?: string; forceRefresh?: boolean }) =>
       ipcRenderer.invoke("vps:files:browse", payload),
+    statRemoteEntry: (payload: { connectionId: string; path: string }) =>
+      ipcRenderer.invoke("vps:files:stat", payload),
     readRemoteTextFile: (payload: { connectionId: string; path: string }) =>
       ipcRenderer.invoke("vps:files:read-text", payload),
     writeRemoteTextFile: (payload: { connectionId: string; path: string; content: string }) =>
@@ -103,6 +133,8 @@ const api: DigwisApi = {
       ipcRenderer.invoke("vps:files:create-directory", payload),
     renameRemoteEntry: (payload: { connectionId: string; path: string; nextName: string }) =>
       ipcRenderer.invoke("vps:files:rename", payload),
+    changeRemotePermissions: (payload: { connectionId: string; path: string; mode: string; recursive?: boolean }) =>
+      ipcRenderer.invoke("vps:files:chmod", payload),
     deleteRemoteEntry: (payload: { connectionId: string; path: string }) =>
       ipcRenderer.invoke("vps:files:delete", payload),
     listRemoteTrash: (payload: { connectionId: string }) =>

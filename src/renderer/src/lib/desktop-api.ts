@@ -1,13 +1,24 @@
 import type { DigwisApi, DigwisIpcError } from "../../../shared/vps"
 
+function requireMethod<T extends (...args: any[]) => any>(
+  method: T | undefined,
+  featureName: string,
+): T {
+  if (typeof method !== "function") {
+    throw new Error(`当前桌面进程还未加载${featureName}，请重启 Digwis Panel 后重试。`)
+  }
+  return method
+}
+
 function parseDigwisError(error: unknown): DigwisIpcError | null {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : ""
   const prefix = "DIGWIS_IPC_ERROR:"
-  if (!message.startsWith(prefix)) {
+  const start = message.indexOf(prefix)
+  if (start < 0) {
     return null
   }
   try {
-    return JSON.parse(message.slice(prefix.length)) as DigwisIpcError
+    return JSON.parse(message.slice(start + prefix.length)) as DigwisIpcError
   } catch {
     return null
   }
@@ -35,9 +46,27 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
     projects: {
       listProjects: () => wrapInvoke(() => api.projects.listProjects()),
       addProjectFromPath: (payload) => wrapInvoke(() => api.projects.addProjectFromPath(payload)),
-      deleteProject: (id) => wrapInvoke(() => api.projects.deleteProject(id)),
+      createProjectScaffold: (payload) => wrapInvoke(() => api.projects.createProjectScaffold(payload)),
+      onScaffoldProgress: (handler) => api.projects.onScaffoldProgress(handler),
+      getProjectConfig: (projectId) =>
+        wrapInvoke(() => requireMethod(api.projects.getProjectConfig, "项目配置读取接口")(projectId)),
+      setProjectRuntimeModules: (payload) =>
+        wrapInvoke(() => requireMethod(api.projects.setProjectRuntimeModules, "项目模块切换接口")(payload)),
+      updateProjectLocalPath: (payload) =>
+        wrapInvoke(() => requireMethod(api.projects.updateProjectLocalPath, "新版本地目录重新匹配接口")(payload)),
+      deleteProject: (payload) => wrapInvoke(() => api.projects.deleteProject(payload)),
       pickProjectDirectory: () => wrapInvoke(() => api.projects.pickProjectDirectory()),
       listNpmScripts: (projectId) => wrapInvoke(() => api.projects.listNpmScripts(projectId)),
+      getProjectLocalPreview: (projectId) =>
+        wrapInvoke(() => requireMethod(api.projects.getProjectLocalPreview, "本地预览地址接口")(projectId)),
+      openProjectLocalPreview: (projectId) =>
+        wrapInvoke(() => requireMethod(api.projects.openProjectLocalPreview, "打开本地预览接口")(projectId)),
+      openProjectLocalAdmin: (projectId) =>
+        wrapInvoke(() => requireMethod(api.projects.openProjectLocalAdmin, "打开本地管理端接口")(projectId)),
+      startProjectLocalDev: (projectId) =>
+        wrapInvoke(() => requireMethod(api.projects.startProjectLocalDev, "启动本地开发接口")(projectId)),
+      startProjectLocalAdminService: (projectId) =>
+        wrapInvoke(() => requireMethod(api.projects.startProjectLocalAdminService, "启动本地管理服务接口")(projectId)),
       getDeployProfile: (projectId) => wrapInvoke(() => api.projects.getDeployProfile(projectId)),
       getProjectRemoteState: (payload) => wrapInvoke(() => api.projects.getProjectRemoteState(payload)),
       getProjectRemoteDetails: (payload) => wrapInvoke(() => api.projects.getProjectRemoteDetails(payload)),
@@ -55,6 +84,7 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
       runProjectBackup: (payload) => wrapInvoke(() => api.projects.runProjectBackup(payload)),
       migrateProject: (payload) => wrapInvoke(() => api.projects.migrateProject(payload)),
       listOperationLogs: (payload) => wrapInvoke(() => api.projects.listOperationLogs(payload)),
+      appendProjectOperationLog: (payload) => wrapInvoke(() => api.projects.appendProjectOperationLog(payload)),
       onDeployLog: (handler) => api.projects.onDeployLog(handler),
     },
     vps: {
@@ -82,10 +112,14 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
       deleteConnection: (id) => wrapInvoke(() => api.vps.deleteConnection(id)),
       createAndInstallSshKey: (payload) => wrapInvoke(() => api.vps.createAndInstallSshKey(payload)),
       browseRemoteFiles: (payload) => wrapInvoke(() => api.vps.browseRemoteFiles(payload)),
+      statRemoteEntry: (payload) =>
+        wrapInvoke(() => requireMethod(api.vps.statRemoteEntry, "新版文件权限读取接口")(payload)),
       readRemoteTextFile: (payload) => wrapInvoke(() => api.vps.readRemoteTextFile(payload)),
       writeRemoteTextFile: (payload) => wrapInvoke(() => api.vps.writeRemoteTextFile(payload)),
       createRemoteDirectory: (payload) => wrapInvoke(() => api.vps.createRemoteDirectory(payload)),
       renameRemoteEntry: (payload) => wrapInvoke(() => api.vps.renameRemoteEntry(payload)),
+      changeRemotePermissions: (payload) =>
+        wrapInvoke(() => requireMethod(api.vps.changeRemotePermissions, "新版文件权限修改接口")(payload)),
       deleteRemoteEntry: (payload) => wrapInvoke(() => api.vps.deleteRemoteEntry(payload)),
       listRemoteTrash: (payload) => wrapInvoke(() => api.vps.listRemoteTrash(payload)),
       restoreRemoteTrashEntry: (payload) => wrapInvoke(() => api.vps.restoreRemoteTrashEntry(payload)),

@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { getDesktopApi } from "@/lib/desktop-api"
 import type {
+  ProjectDeleteInput,
   LocalProjectInput,
   LocalProjectRecord,
   ProjectDeployInput,
@@ -23,7 +24,7 @@ type ProjectStoreState = {
   loadProjects: () => Promise<void>
   importFromPicker: () => Promise<void>
   addProject: (payload: LocalProjectInput) => Promise<void>
-  deleteProject: (id: string) => Promise<void>
+  deleteProject: (payload: ProjectDeleteInput) => Promise<void>
   initializeProject: (payload: ProjectInitializeInput) => Promise<void>
   deployProject: (payload: ProjectDeployInput) => Promise<void>
   appendDeployLog: (projectId: string, chunk: string) => void
@@ -88,12 +89,16 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
       throw error
     }
   },
-  deleteProject: async (id) => {
+  deleteProject: async (payload) => {
     set({ error: undefined, info: undefined })
     try {
-      await getDesktopApi().projects.deleteProject(id)
+      const result = await getDesktopApi().projects.deleteProject(payload)
       await get().loadProjects()
-      set({ info: "已移除项目" })
+      set({
+        info: result.removedLocalDirectory
+          ? `已移除项目并删除本地目录：${result.localPath ?? ""}`.trim()
+          : "已移除项目",
+      })
     } catch (error) {
       set({
         error: error instanceof Error ? error.message : "移除失败",

@@ -1,4 +1,4 @@
-export const REMOTE_FILE_HELPER_VERSION = "2026-04-25.1"
+export const REMOTE_FILE_HELPER_VERSION = "2026-04-28.1"
 
 export const REMOTE_FILE_HELPER_SCRIPT = String.raw`#!/usr/bin/env python3
 import concurrent.futures
@@ -46,6 +46,13 @@ def stat_type(st):
     if stat.S_ISLNK(mode):
         return "symlink"
     return "file"
+
+def format_permissions(st_mode):
+    permission_bits = stat.S_IMODE(st_mode)
+    return {
+        "octal": format(permission_bits, "03o"),
+        "symbolic": stat.filemode(st_mode),
+    }
 
 def cached_realpath(path_value):
     normalized = normalize_path(path_value)
@@ -227,6 +234,7 @@ def handle_stat(params):
         "size": int(st.st_size),
         "modifiedAt": iso_time(st.st_mtime),
         "realPath": cached_realpath(target_path),
+        "permissions": format_permissions(st.st_mode),
     }
 
 def handle_read_text(params):
@@ -278,6 +286,34 @@ def handle_rename(params):
     invalidate(next_path)
     return {"ok": True, "path": next_path, "message": "名称已更新"}
 
+def apply_permissions(target_path, mode_value, recursive=False):
+    st = os.lstat(target_path)
+    os.chmod(target_path, mode_value)
+    if recursive and stat.S_ISDIR(st.st_mode):
+        for root, dirnames, filenames in os.walk(target_path, topdown=True, followlinks=False):
+            for dirname in dirnames:
+                os.chmod(os.path.join(root, dirname), mode_value)
+            for filename in filenames:
+                file_path = os.path.join(root, filename)
+                try:
+                    file_st = os.lstat(file_path)
+                except OSError:
+                    continue
+                if stat.S_ISLNK(file_st.st_mode):
+                    continue
+                os.chmod(file_path, mode_value)
+
+def handle_chmod(params):
+    target_path = normalize_path(params.get("path"))
+    raw_mode = str(params.get("mode", "")).strip()
+    recursive = bool(params.get("recursive"))
+    if not raw_mode or any(ch not in "01234567" for ch in raw_mode) or len(raw_mode) not in (3, 4):
+        raise RuntimeError("权限必须是 3 到 4 位八进制数字")
+    mode_value = int(raw_mode, 8)
+    apply_permissions(target_path, mode_value, recursive)
+    invalidate(target_path)
+    return {"ok": True, "path": target_path, "message": "权限已更新"}
+
 def handle_delete(params):
     target_path = normalize_path(params.get("path"))
     st = os.lstat(target_path)
@@ -307,6 +343,8 @@ def dispatch(method, params):
         return handle_mkdir(params)
     if method == "rename":
         return handle_rename(params)
+    if method == "chmod":
+        return handle_chmod(params)
     if method == "delete":
         return handle_delete(params)
     raise RuntimeError("unsupported_method")

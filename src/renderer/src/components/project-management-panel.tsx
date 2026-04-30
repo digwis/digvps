@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react"
 import {
   Archive,
   ArrowRightLeft,
+  Blocks,
+  Check,
   CircleStop,
   ExternalLink,
   FileText,
@@ -10,6 +12,7 @@ import {
   Globe,
   HelpCircle,
   LoaderCircle,
+  Plus,
   RefreshCw,
   Rocket,
   Server,
@@ -49,11 +52,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { useProjectStore } from "@/store/project-store"
 import { toast } from "@/hooks/use-toast"
 import type {
+  DigwisProjectConfig,
   LocalProjectRecord,
   ProjectActionKind,
   ProjectActionHint,
@@ -64,6 +69,12 @@ import type {
   ProjectOperationLogEntry,
   ProjectRemoteDetails,
   ProjectRemoteState,
+  ProjectScaffoldDatabase,
+  ProjectScaffoldProgressEvent,
+  ProjectScaffoldInput,
+  ProjectScaffoldTemplate,
+  ProjectRuntimeModule,
+  ProjectServiceModule,
 } from "../../../shared/projects"
 import type { VpsConnectionRecord } from "../../../shared/vps"
 
@@ -81,6 +92,95 @@ type DeployScriptOption = {
 }
 
 type ProjectLogFilter = "all" | "init" | "deploy" | "backup" | "error"
+
+type ActiveScaffoldState = ProjectScaffoldProgressEvent & {
+  lines: string[]
+}
+
+const scaffoldTemplateOptions: Array<{ value: ProjectScaffoldTemplate; label: string; detail: string }> = [
+  {
+    value: "next-core",
+    label: "Next Core",
+    detail: "只生成 Next 主应用、共享包占位和面板项目协议。",
+  },
+  {
+    value: "next-payload",
+    label: "Next + Payload",
+    detail: "声明 Payload 作为 CMS 契约，并保留后续补全 collections/admin 的位置。",
+  },
+  {
+    value: "next-directus",
+    label: "Next + Directus",
+    detail: "声明 Directus 作为外部 CMS 服务，并为服务目录与协议留位。",
+  },
+]
+
+const scaffoldDatabaseOptions: Array<{ value: ProjectScaffoldDatabase; label: string; detail: string }> = [
+  {
+    value: "postgresql",
+    label: "PostgreSQL",
+    detail: "默认主库选择，适合多项目与多服务共享。",
+  },
+  {
+    value: "sqlite",
+    label: "SQLite",
+    detail: "适合本地实验或单机轻量项目，不建议作为平台默认值。",
+  },
+]
+
+const runtimeModuleOptions: Array<{ value: ProjectRuntimeModule; label: string; detail: string }> = [
+  { value: "auth", label: "Auth", detail: "统一登录、会话和权限入口。" },
+  { value: "dashboard", label: "Dashboard", detail: "保留控制台/运营后台骨架。" },
+  { value: "docs", label: "Docs", detail: "预留文档与帮助中心模块。" },
+  { value: "blog", label: "Blog", detail: "预留文章与内容列表模块。" },
+  { value: "i18n", label: "i18n", detail: "预留多语言路由与文案管理。" },
+  { value: "search", label: "Search", detail: "预留站内搜索与索引能力。" },
+  { value: "queue", label: "Queue", detail: "为异步任务和后台处理留位。" },
+  { value: "payments", label: "Payments", detail: "预留支付与账单模块。" },
+  { value: "multi-tenant", label: "Multi-tenant", detail: "预留站点/租户隔离能力。" },
+]
+
+const lightRuntimeModuleOptions = runtimeModuleOptions.filter((option) =>
+  ["docs", "dashboard", "blog", "i18n"].includes(option.value),
+)
+
+const serviceModuleOptions: Array<{ value: ProjectServiceModule; label: string; detail: string }> = [
+  { value: "python-ai", label: "Python AI", detail: "FastAPI worker，适合 AI 推理与编排。" },
+  { value: "python-data", label: "Python Data", detail: "FastAPI worker，适合数据分析与报表。" },
+  { value: "go-worker", label: "Go Worker", detail: "高并发或常驻 worker 的占位服务。" },
+  { value: "rust-worker", label: "Rust Worker", detail: "极致性能或本地核心模块的占位服务。" },
+]
+
+function toProjectSlug(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+}
+
+async function checkUrlReachable(url: string): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), 2500)
+    const response = await fetch(url, {
+      method: "GET",
+      signal: controller.signal,
+      cache: "no-store",
+    })
+    window.clearTimeout(timer)
+    const ok = response.status > 0 && response.status < 600
+    return {
+      ok,
+      detail: ok ? `HTTP ${response.status}` : `HTTP ${response.status}`,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : "request failed",
+    }
+  }
+}
 
 function formatFileSize(size: number) {
   if (size < 1024) {
@@ -324,6 +424,31 @@ function deployStatusMeta(project: LocalProjectRecord) {
   }
 }
 
+function scaffoldStatusTone(status: ActiveScaffoldState["status"]) {
+  if (status === "success") {
+    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+  }
+  if (status === "warning") {
+    return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+  }
+  if (status === "error") {
+    return "border-destructive/30 bg-destructive/10 text-destructive"
+  }
+  return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200"
+}
+
+function scaffoldStageLabel(stage: ActiveScaffoldState["stage"]) {
+  if (stage === "prepare") return "准备目录"
+  if (stage === "template") return "写入模板"
+  if (stage === "register") return "加入面板"
+  if (stage === "install") return "安装依赖"
+  if (stage === "start") return "启动预览"
+  if (stage === "admin") return "启动后台"
+  if (stage === "done") return "创建完成"
+  if (stage === "failed") return "创建失败"
+  return stage
+}
+
 function ProjectDeployCard({
   project,
   connections,
@@ -338,8 +463,9 @@ function ProjectDeployCard({
   onDelete,
   actionHints,
   backupSchedule,
-  recentLogs,
   fullLogs,
+  scaffoldProgress,
+  onAppendOperationLog,
   onProjectStateRefresh,
   onOpenRemoteDirectory,
 }: {
@@ -358,11 +484,12 @@ function ProjectDeployCard({
     remoteParentPath?: string
     npmScript?: string
   }) => void
-  onDelete: () => void
+  onDelete: (options: { removeLocalDirectory: boolean }) => void
   actionHints?: ProjectActionHint[]
   backupSchedule?: ProjectBackupScheduleState
-  recentLogs?: ProjectOperationLogEntry[]
   fullLogs?: ProjectOperationLogEntry[]
+  scaffoldProgress?: ActiveScaffoldState
+  onAppendOperationLog: (entry: ProjectOperationLogEntry) => void
   onProjectStateRefresh: () => Promise<void>
   onOpenRemoteDirectory?: (payload: { connectionId: string; path: string; projectId: string }) => void
 }) {
@@ -390,16 +517,33 @@ function ProjectDeployCard({
   const [siteSaving, setSiteSaving] = useState(false)
   const [siteError, setSiteError] = useState<string>()
   const [siteSettingsOpen, setSiteSettingsOpen] = useState(false)
+  const [manageOpen, setManageOpen] = useState(false)
+  const [modulesOpen, setModulesOpen] = useState(false)
   const [remoteInfoOpen, setRemoteInfoOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
   const [logFilter, setLogFilter] = useState<ProjectLogFilter>("all")
   const [logQuery, setLogQuery] = useState("")
   const [deleteConfirmText, setDeleteConfirmText] = useState("")
+  const [removeLocalDirectory, setRemoveLocalDirectory] = useState(false)
   const [stoppingService, setStoppingService] = useState(false)
   const [runningBackup, setRunningBackup] = useState(false)
   const [migrateOpen, setMigrateOpen] = useState(false)
   const [migrating, setMigrating] = useState(false)
   const [migrationTargetId, setMigrationTargetId] = useState("")
+  const [relinkingLocalPath, setRelinkingLocalPath] = useState(false)
+  const [openingPreview, setOpeningPreview] = useState(false)
+  const [openingAdmin, setOpeningAdmin] = useState(false)
+  const [startingLocalDev, setStartingLocalDev] = useState(false)
+  const [autoFixingLocal, setAutoFixingLocal] = useState(false)
+  const [projectConfig, setProjectConfig] = useState<DigwisProjectConfig | null>(null)
+  const [moduleDraft, setModuleDraft] = useState<ProjectRuntimeModule[]>([])
+  const [loadingModules, setLoadingModules] = useState(false)
+  const [savingModules, setSavingModules] = useState(false)
+  const [previewUrl, setPreviewUrl] = useState("http://localhost:3000")
+  const [adminUrl, setAdminUrl] = useState("http://localhost:3000/admin")
+  const [previewAlive, setPreviewAlive] = useState(false)
+  const [adminAlive, setAdminAlive] = useState(false)
+  const [healthChecking, setHealthChecking] = useState(false)
   const hintByAction = useMemo(() => {
     const map = new Map<string, ProjectActionHint>()
     for (const item of actionHints ?? []) {
@@ -479,6 +623,28 @@ function ProjectDeployCard({
       cancelled = true
     }
   }, [project.id])
+
+  useEffect(() => {
+    let cancelled = false
+    void getDesktopApi()
+      .projects.getProjectConfig(project.id)
+      .then((config) => {
+        if (cancelled) {
+          return
+        }
+        setProjectConfig(config)
+        setModuleDraft(config?.runtimeModules ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProjectConfig(null)
+          setModuleDraft([])
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [project.id, scaffoldProgress?.at])
 
   useEffect(() => {
     if (!connectionId || !deployProfile?.canInitialize) {
@@ -598,7 +764,7 @@ function ProjectDeployCard({
       ? "服务运行中"
       : "服务未启动"
     : "未配置远端服务"
-  const deployBadge = deployStatusMeta(project)
+  const boundConnectionLabel = connectionLabel(connections, connectionId || project.lastConnectionId) || "未关联服务器"
   const needsAttention =
     failed ||
     Boolean(remoteState?.runtimeIssues.length) ||
@@ -612,8 +778,31 @@ function ProjectDeployCard({
   const canOpenRemoteDirectory = Boolean(connectionId && effectiveRemoteAppDir && onOpenRemoteDirectory)
   const latestInitLog = latestMatchingLog(fullLogs, isInitLog)
   const latestActionLog = latestMatchingLog(fullLogs, (entry) => !isInitLog(entry) && !isConfigLog(entry))
-  const initSummary = latestInitLog ? summarizeProjectLog(latestInitLog) : null
   const actionSummary = latestActionLog ? summarizeProjectLog(latestActionLog) : null
+  const primaryScriptAction = useMemo(() => {
+    if (!npmScripts.length) {
+      return undefined
+    }
+    return (
+      npmScripts.find((item) => item.action === "code") ??
+      npmScripts.find((item) => item.action === "data") ??
+      npmScripts[0]
+    )
+  }, [npmScripts])
+  const secondaryScriptActions = useMemo(
+    () =>
+      npmScripts.filter((item) => item.value !== primaryScriptAction?.value).map((item) => ({
+        ...item,
+        shortLabel:
+          item.action === "data"
+            ? "同步数据库"
+            : item.action === "uploads"
+              ? "同步文件"
+              : item.label,
+      })),
+    [npmScripts, primaryScriptAction],
+  )
+  const remoteAccessLabel = remoteDetails?.publicUrl ?? (remoteDetails?.site.domain ? `https://${remoteDetails.site.domain}` : "未配置")
   const filteredLogs = useMemo(
     () =>
       (fullLogs ?? []).filter((entry) => {
@@ -638,27 +827,6 @@ function ProjectDeployCard({
     }),
     [fullLogs],
   )
-  const overviewBadges = [
-    {
-      label: deployBadge.label,
-      className: deployBadge.className,
-    },
-    remoteDetails?.service.configured
-      ? {
-          label: remoteDetails.service.active ? "服务运行中" : "服务未启动",
-          className: remoteDetails.service.active
-            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
-            : "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-200",
-        }
-      : null,
-    remoteDetails?.publicUrl
-      ? {
-          label: remoteDetails.site.mode === "domain" ? "域名入口" : "端口预览",
-          className: "border-border/70 bg-muted/70 text-foreground",
-        }
-      : null,
-  ].filter(Boolean) as Array<{ label: string; className: string }>
-
   const refreshRemoteDetails = async () => {
     if (!effectiveRemoteAppDir || !connectionId) {
       return
@@ -700,6 +868,267 @@ function ProjectDeployCard({
       })
     } finally {
       setBrowserLoading(false)
+    }
+  }
+
+  const relinkLocalProjectPath = async () => {
+    setRelinkingLocalPath(true)
+    try {
+      const picked = await getDesktopApi().projects.pickProjectDirectory()
+      if (!picked) {
+        return
+      }
+      await getDesktopApi().projects.updateProjectLocalPath({
+        projectId: project.id,
+        localPath: picked,
+      })
+      await onProjectStateRefresh()
+      toast({
+        title: `${project.displayName} 已重新匹配`,
+        description: "本地项目目录已更新。",
+      })
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 重新匹配失败`,
+        description: error instanceof Error ? error.message : "无法更新本地项目目录",
+      })
+    } finally {
+      setRelinkingLocalPath(false)
+    }
+  }
+
+  const openRuntimeModulesDialog = async () => {
+    setModulesOpen(true)
+    setLoadingModules(true)
+    try {
+      const config = await getDesktopApi().projects.getProjectConfig(project.id)
+      setProjectConfig(config)
+      setModuleDraft(config?.runtimeModules ?? [])
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 模块读取失败`,
+        description: error instanceof Error ? error.message : "无法读取项目模块配置",
+      })
+      setModulesOpen(false)
+    } finally {
+      setLoadingModules(false)
+    }
+  }
+
+  const toggleLightModuleDraft = (moduleId: ProjectRuntimeModule, enabled: boolean) => {
+    setModuleDraft((current) => {
+      const base = current.filter((item) => item !== moduleId)
+      return enabled ? [...base, moduleId] : base
+    })
+  }
+
+  const saveRuntimeModules = async () => {
+    if (!projectConfig) {
+      return
+    }
+    const preservedModules = projectConfig.runtimeModules.filter(
+      (moduleId) => !lightRuntimeModuleOptions.some((option) => option.value === moduleId),
+    )
+    const nextRuntimeModules = [...new Set([...preservedModules, ...moduleDraft])]
+    setSavingModules(true)
+    try {
+      const result = await getDesktopApi().projects.setProjectRuntimeModules({
+        projectId: project.id,
+        runtimeModules: nextRuntimeModules,
+      })
+      setProjectConfig(result.contract)
+      setModuleDraft(result.contract.runtimeModules)
+      setModulesOpen(false)
+      toast({
+        title: `${project.displayName} 模块已更新`,
+        description:
+          result.warnings[0]
+          ?? result.message,
+      })
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 模块更新失败`,
+        description: error instanceof Error ? error.message : "无法保存模块配置",
+      })
+    } finally {
+      setSavingModules(false)
+    }
+  }
+
+  const refreshLocalHealth = async () => {
+    setHealthChecking(true)
+    try {
+      const preview = await getDesktopApi().projects.getProjectLocalPreview(project.id)
+      const nextPreview = preview.url
+      const nextAdmin = preview.adminUrl ?? `${preview.url.replace(/\/$/, "")}/admin`
+      setPreviewUrl(nextPreview)
+      setAdminUrl(nextAdmin)
+      const [previewOk, adminOk] = await Promise.all([
+        checkUrlReachable(nextPreview),
+        checkUrlReachable(nextAdmin),
+      ])
+      setPreviewAlive(previewOk.ok)
+      setAdminAlive(adminOk.ok)
+    } finally {
+      setHealthChecking(false)
+    }
+  }
+
+  const openLocalPreview = async () => {
+    setOpeningPreview(true)
+    try {
+      const preview = await getDesktopApi().projects.openProjectLocalPreview(project.id)
+      setPreviewUrl(preview.url)
+      if (preview.adminUrl) {
+        setAdminUrl(preview.adminUrl)
+      }
+      toast({
+        title: `${project.displayName} 预览已打开`,
+        description: preview.url,
+      })
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 预览打开失败`,
+        description: error instanceof Error ? error.message : "无法打开本地预览",
+      })
+    } finally {
+      setOpeningPreview(false)
+    }
+  }
+
+  const openLocalAdmin = async () => {
+    setOpeningAdmin(true)
+    try {
+      const preview = await getDesktopApi().projects.openProjectLocalAdmin(project.id)
+      const url = preview.adminUrl ?? `${preview.url.replace(/\/$/, "")}/admin`
+      setPreviewUrl(preview.url)
+      setAdminUrl(url)
+      toast({
+        title: `${project.displayName} 管理端已打开`,
+        description: url,
+      })
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 管理端打开失败`,
+        description: error instanceof Error ? error.message : "无法打开本地管理端",
+      })
+    } finally {
+      setOpeningAdmin(false)
+    }
+  }
+
+  const startLocalDev = async () => {
+    setStartingLocalDev(true)
+    try {
+      const result = await getDesktopApi().projects.startProjectLocalDev(project.id)
+      toast({
+        title: `${project.displayName} 已启动本地开发服务`,
+        description: `${result.previewUrl}${result.pid ? ` (pid ${result.pid})` : ""}`,
+      })
+      setTimeout(() => {
+        void refreshLocalHealth()
+      }, 2500)
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 启动失败`,
+        description: error instanceof Error ? error.message : "无法启动本地开发服务",
+      })
+    } finally {
+      setStartingLocalDev(false)
+    }
+  }
+
+  const autoFixLocalAccess = async () => {
+    setAutoFixingLocal(true)
+    const appendLocalLog = async (stream: "stdout" | "stderr" | "system", chunk: string) => {
+      const entry = await getDesktopApi().projects.appendProjectOperationLog({
+        projectId: project.id,
+        stream,
+        chunk,
+      })
+      onAppendOperationLog(entry)
+    }
+    try {
+      const result = await getDesktopApi().projects.startProjectLocalDev(project.id)
+      setPreviewUrl(result.previewUrl)
+      const previewMeta = await getDesktopApi().projects.getProjectLocalPreview(project.id)
+      const expectedAdmin = previewMeta.adminUrl ?? `${previewMeta.url.replace(/\/$/, "")}/admin`
+      const shouldWaitForAdmin = expectedAdmin.includes(":8055")
+      await appendLocalLog(
+        "system",
+        `[local-fix] start preview=${result.previewUrl} admin=${expectedAdmin} waitForAdmin=${shouldWaitForAdmin}\n`,
+      )
+      if (shouldWaitForAdmin) {
+        await getDesktopApi().projects.startProjectLocalAdminService(project.id)
+      }
+      const startedAt = Date.now()
+      let ok = false
+      let lastPreviewDetail = "not checked"
+      let lastAdminDetail = "not checked"
+      while (Date.now() - startedAt < 45_000) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500))
+        const preview = await getDesktopApi().projects.getProjectLocalPreview(project.id)
+        const nextPreview = preview.url
+        const nextAdmin = preview.adminUrl ?? `${preview.url.replace(/\/$/, "")}/admin`
+        setPreviewUrl(nextPreview)
+        setAdminUrl(nextAdmin)
+        const previewResult = await checkUrlReachable(nextPreview)
+        lastPreviewDetail = `${nextPreview} (${previewResult.detail})`
+        setPreviewAlive(previewResult.ok)
+        if (previewResult.ok) {
+          const adminResult = await checkUrlReachable(nextAdmin)
+          lastAdminDetail = `${nextAdmin} (${adminResult.detail})`
+          setAdminAlive(adminResult.ok)
+          if (!shouldWaitForAdmin || adminResult.ok) {
+            ok = true
+            break
+          }
+        }
+      }
+      if (ok) {
+        await appendLocalLog(
+          "system",
+          shouldWaitForAdmin
+            ? `[local-fix] success preview=${result.previewUrl} admin=${expectedAdmin}\n`
+            : `[local-fix] success preview=${result.previewUrl}\n`,
+        )
+        toast({
+          title: `${project.displayName} 自动修复完成`,
+          description: shouldWaitForAdmin ? `预览与管理端均可访问：${result.previewUrl}` : `本地预览已可访问：${result.previewUrl}`,
+        })
+      } else {
+        await appendLocalLog(
+          "stderr",
+          shouldWaitForAdmin
+            ? `[local-fix] failed preview=${lastPreviewDetail}; admin=${lastAdminDetail}\n`
+            : `[local-fix] failed preview=${lastPreviewDetail}\n`,
+        )
+        toast({
+          variant: "destructive",
+          title: `${project.displayName} 自动修复未完成`,
+          description: shouldWaitForAdmin
+            ? `45 秒内未同时可达。预览：${lastPreviewDetail}；管理端：${lastAdminDetail}`
+            : `45 秒内未检测到预览可达。${lastPreviewDetail}`,
+        })
+      }
+    } catch (error) {
+      await appendLocalLog(
+        "stderr",
+        `[local-fix] error ${error instanceof Error ? error.message : "unknown error"}\n`,
+      ).catch(() => undefined)
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 自动修复失败`,
+        description: error instanceof Error ? error.message : "无法自动修复本地访问",
+      })
+    } finally {
+      setAutoFixingLocal(false)
     }
   }
 
@@ -907,343 +1336,688 @@ function ProjectDeployCard({
     await openRemoteBrowser(parentPath || browserDetails.remoteAppDir)
   }
 
+  useEffect(() => {
+    let cancelled = false
+    const run = async () => {
+      if (cancelled) {
+        return
+      }
+      await refreshLocalHealth()
+    }
+    void run()
+    const timer = window.setInterval(() => {
+      void run()
+    }, 12000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [project.id])
+
   return (
     <>
       <Card
         id={`project-card-${project.id}`}
         className={cn(
-          "overflow-visible rounded-2xl border border-border/70 bg-card shadow-sm transition",
+          "overflow-visible rounded-3xl border border-border/70 bg-background shadow-sm transition dark:border-white/10 dark:bg-white/[0.02]",
           success && "border-emerald-500/30",
-          highlighted && "border-primary/40 bg-primary/[0.04] ring-2 ring-primary/20",
+          highlighted && "border-primary/40 ring-2 ring-primary/20",
         )}
       >
-        <CardHeader className="space-y-2 px-5 py-5 pb-3">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <CardTitle className="truncate text-base font-semibold">{project.displayName}</CardTitle>
-                {effectiveRemoteAppDir ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="size-7 rounded-md text-muted-foreground"
-                    disabled={!connectionId}
-                    onClick={() => setRemoteInfoOpen(true)}
-                  >
-                    <HelpCircle className="size-4" />
-                  </Button>
-                ) : null}
+        <CardHeader className="space-y-0 px-6 py-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <div className="grid size-11 place-items-center rounded-2xl bg-muted text-muted-foreground dark:bg-white/10">
+                <Blocks className="size-5" />
               </div>
-              <p className="mt-1 truncate text-[11px] text-muted-foreground">{project.localPath}</p>
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {overviewBadges.map((item) => (
-                  <Badge key={item.label} variant="outline" className={cn("h-5 rounded-md px-2 font-normal shadow-none", item.className)}>
-                    {item.label}
-                  </Badge>
-                ))}
-                {needsAttention ? (
-                  <Badge variant="outline" className="h-5 rounded-md border-amber-500/30 bg-amber-500/10 px-2 font-normal text-amber-700 shadow-none dark:text-amber-200">
-                    需要关注
-                  </Badge>
-                ) : null}
-              </div>
+              <CardTitle className="mt-7 truncate text-[2rem] font-semibold leading-tight tracking-tight">{project.displayName}</CardTitle>
             </div>
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
+            <div className="flex shrink-0 flex-col items-end gap-3">
+              {(needsAttention || remoteDetails?.service.active || success) ? (
+                <span className="inline-flex items-center">
+                  <span
+                    className={cn(
+                      "inline-block size-2 rounded-full",
+                      needsAttention
+                        ? "bg-amber-500"
+                        : remoteDetails?.service.active
+                          ? "bg-emerald-500"
+                          : "bg-border",
+                    )}
+                  />
+                </span>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.06]"
+                onClick={() => setManageOpen(true)}
+              >
+                <Settings2 className="size-4" />
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="px-6 pb-6 pt-0">
+          <div className="flex min-h-[180px] flex-col">
+            <div className="mt-auto space-y-4">
+              {scaffoldProgress ? (
+                <div className="rounded-2xl border border-sky-500/20 bg-sky-500/5 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-foreground">创建进度：{scaffoldStageLabel(scaffoldProgress.stage)}</p>
+                      <p className="truncate text-xs text-muted-foreground">{scaffoldProgress.message}</p>
+                    </div>
+                    <Badge className={cn("shrink-0 border", scaffoldStatusTone(scaffoldProgress.status))}>
+                      {scaffoldProgress.percent}%
+                    </Badge>
+                  </div>
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted/70 dark:bg-white/10">
+                    <div
+                      className={cn(
+                        "h-full rounded-full transition-all duration-500",
+                        scaffoldProgress.status === "error"
+                          ? "bg-destructive"
+                          : scaffoldProgress.status === "warning"
+                            ? "bg-amber-500"
+                            : scaffoldProgress.status === "success"
+                              ? "bg-emerald-500"
+                              : "bg-sky-500",
+                      )}
+                      style={{ width: `${Math.max(6, Math.min(scaffoldProgress.percent, 100))}%` }}
+                    />
+                  </div>
+                  {scaffoldProgress.detail ? (
+                    <p className="mt-3 text-xs text-muted-foreground">{scaffoldProgress.detail}</p>
+                  ) : null}
+                  {scaffoldProgress.lines.length > 0 ? (
+                    <div className="mt-3 rounded-xl bg-background/80 px-3 py-2 dark:bg-black/20">
+                      {scaffoldProgress.lines.slice(-3).map((line, index) => (
+                        <p key={`${scaffoldProgress.at}-${index}`} className="truncate text-[11px] text-muted-foreground">
+                          {line}
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="rounded-2xl bg-muted/20 px-4 py-3 dark:bg-white/[0.03]">
+                <p className="truncate text-sm text-muted-foreground">{nextAction.detail}</p>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3">
                 <Button
                   type="button"
                   variant="outline"
-                  className="h-8 shrink-0 rounded-lg border-destructive/20 px-2.5 text-xs text-destructive shadow-none hover:bg-destructive/5 hover:text-destructive"
-                  disabled={busy}
+                  className="h-9 w-full rounded-2xl text-sm shadow-none"
+                  disabled={startingLocalDev}
+                  onClick={() => void startLocalDev()}
                 >
-                  <Trash2 className="size-4" />
-                  移除
+                  {startingLocalDev ? (
+                    <>
+                      <LoaderCircle className="size-4 animate-spin" />
+                      启动中…
+                    </>
+                  ) : (
+                    <>
+                      <Server className="size-4" />
+                      启动本地开发
+                    </>
+                  )}
                 </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>从面板移除此项目？</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    只会把项目从当前面板列表中移除，不会删除本地项目文件，也不会删除远端 VPS 上的目录和数据。请输入项目名 <span className="font-medium text-foreground">{project.displayName}</span> 以确认。
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <Input
-                  className="h-9 rounded-lg"
-                  placeholder={`输入 ${project.displayName} 确认`}
-                  value={deleteConfirmText}
-                  onChange={(event) => setDeleteConfirmText(event.target.value)}
-                />
-                <AlertDialogFooter>
-                  <AlertDialogCancel onClick={() => setDeleteConfirmText("")}>取消</AlertDialogCancel>
-                  <AlertDialogAction
-                    disabled={deleteConfirmText.trim() !== project.displayName}
-                    onClick={() => {
-                      setDeleteConfirmText("")
-                      onDelete()
-                    }}
-                  >
-                    确认移除
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4 px-5 pb-5 pt-0">
-          <div className="grid gap-2 rounded-xl border border-border/60 bg-muted/[0.06] px-3 py-3 text-[11px] text-muted-foreground sm:grid-cols-2">
-            <p className="truncate">
-              最近部署
-              <span className="ml-1 text-foreground">
-                {project.lastDeployAt ? new Date(project.lastDeployAt).toLocaleString() : "尚无记录"}
-              </span>
-            </p>
-            <p className="truncate">
-              远端目录
-              {canOpenRemoteDirectory ? (
-                <button
-                  type="button"
-                  className="ml-1 inline-flex max-w-full items-center gap-1 truncate text-foreground underline-offset-4 hover:text-primary hover:underline"
-                  onClick={() =>
-                    onOpenRemoteDirectory?.({
-                      connectionId,
-                      path: effectiveRemoteAppDir as string,
-                      projectId: project.id,
-                    })
-                  }
-                  title={`打开 ${effectiveRemoteAppDir} 到文件浏览`}
-                >
-                  <span className="truncate">{effectiveRemoteAppDir}</span>
-                  <ExternalLink className="size-3 shrink-0" />
-                </button>
-              ) : (
-                <span className="ml-1 text-foreground">{effectiveRemoteAppDir ?? "未配置"}</span>
-              )}
-            </p>
-            <p className="truncate">
-              代码状态
-              <span className="ml-1 text-foreground">{formatActionSummary(hintByAction.get("code"))}</span>
-            </p>
-            <p className="truncate">
-              备份计划
-              <span className="ml-1 text-foreground">{backupScheduleLabel(backupSchedule?.schedule)}</span>
-            </p>
-          </div>
-          <div className="flex items-start gap-2 rounded-xl border border-border/60 bg-background px-3 py-2.5">
-            <span className={cn("mt-0.5 rounded-full px-2 py-0.5 text-[11px] font-medium", nextAction.tone)}>
-              {nextAction.label}
-            </span>
-            <p className="min-w-0 flex-1 text-[11px] leading-5 text-muted-foreground">
-              {nextAction.detail}
-            </p>
-          </div>
-          <div className="space-y-2 rounded-xl border border-border/60 bg-muted/[0.05] px-3 py-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[11px] text-muted-foreground">最近执行</p>
-                <div className="mt-1 flex min-w-0 items-center gap-2">
-                  <span className={cn("shrink-0 text-[12px] font-medium", actionSummary?.tone ?? "text-foreground")}>
-                    {actionSummary?.title ?? "暂无记录"}
-                  </span>
-                  <span className="truncate text-[11px] text-muted-foreground">
-                    {actionSummary?.detail ?? "尚未记录部署、同步或备份结果。"}
-                  </span>
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <span className="text-[10px] text-muted-foreground">
-                  {latestActionLog ? new Date(latestActionLog.at).toLocaleTimeString() : "暂无"}
-                </span>
                 <Button
                   type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 rounded-lg px-2 text-[11px] text-muted-foreground hover:text-foreground"
-                  disabled={!fullLogs?.length}
-                  onClick={() => setLogsOpen(true)}
+                  variant="outline"
+                  className="h-9 w-full rounded-2xl text-sm shadow-none"
+                  disabled={openingPreview}
+                  onClick={() => void openLocalPreview()}
                 >
-                  <FileText className="size-3.5" />
-                  日志
+                  {openingPreview ? (
+                    <>
+                      <LoaderCircle className="size-4 animate-spin" />
+                      打开中…
+                    </>
+                  ) : (
+                    <>
+                      <ExternalLink className="size-4" />
+                      本地预览
+                    </>
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 w-full rounded-2xl text-sm shadow-none"
+                  disabled={openingAdmin}
+                  onClick={() => void openLocalAdmin()}
+                >
+                  {openingAdmin ? (
+                    <>
+                      <LoaderCircle className="size-4 animate-spin" />
+                      打开中…
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="size-4" />
+                      CMS/Admin
+                    </>
+                  )}
                 </Button>
               </div>
-            </div>
-            <div className="flex items-center justify-between gap-3 border-t border-border/50 pt-2">
-              <div className="min-w-0">
-                <p className="text-[11px] text-muted-foreground">初始化</p>
-                <p className="mt-1 truncate text-[11px] text-muted-foreground">
-                  {initSummary?.detail ?? "尚未执行初始化"}
-                </p>
-              </div>
-              <span className="shrink-0 text-[10px] text-muted-foreground">
-                {latestInitLog ? new Date(latestInitLog.at).toLocaleTimeString() : "暂无"}
-              </span>
-            </div>
-          </div>
-          {hasScriptActions ? null : (
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">远端父目录（可选）</Label>
-              <Input
-                className="h-9 rounded-xl font-mono text-xs"
-                placeholder="例如 /var/www 或 ~/sites（可选）"
-                value={remoteParent}
-                onChange={(e) => setRemoteParent(e.target.value)}
-                disabled={busy || bootstrapping}
-              />
-            </div>
-          )}
-          <div className={cn("grid gap-2", hasScriptActions ? "grid-cols-2" : "sm:grid-cols-3")}>
-            {shouldShowInitializeButton ? (
-              <AlertDialog open={initDialogOpen} onOpenChange={setInitDialogOpen}>
-                <AlertDialogTrigger asChild>
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                <span
+                  className={cn(
+                    "inline-flex items-center rounded-full border px-2 py-1",
+                    previewAlive
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                      : "border-border/70 bg-muted/40 text-muted-foreground",
+                  )}
+                >
+                  本地预览：{previewAlive ? "可达" : healthChecking ? "检查中" : "未启动"}
+                </span>
+                <span
+                  className={cn(
+                    "inline-flex items-center rounded-full border px-2 py-1",
+                    adminAlive
+                      ? "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                      : "border-border/70 bg-muted/40 text-muted-foreground",
+                  )}
+                >
+                  CMS/Admin：{adminAlive ? "可达" : healthChecking ? "检查中" : "未启动"}
+                </span>
+                <span className="truncate text-muted-foreground">{previewUrl}</span>
+                {!previewAlive ? (
                   <Button
                     type="button"
                     variant="outline"
-                    className="h-9 w-full rounded-xl text-xs shadow-none"
-                    disabled={bootstrapping || busy || !connectionId}
+                    className="h-7 rounded-xl px-2 text-[11px] shadow-none"
+                    disabled={autoFixingLocal || startingLocalDev}
+                    onClick={() => void autoFixLocalAccess()}
                   >
-                    {bootstrapping ? (
+                    {autoFixingLocal ? (
+                      <>
+                        <LoaderCircle className="size-3 animate-spin" />
+                        自动修复中…
+                      </>
+                    ) : (
+                      "自动修复"
+                    )}
+                  </Button>
+                ) : null}
+              </div>
+              <div className={cn("grid gap-2", hasScriptActions ? "sm:grid-cols-1" : "sm:grid-cols-1")}>
+                {hasScriptActions && primaryScriptAction ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-10 w-full rounded-2xl text-sm shadow-none"
+                    disabled={busy || bootstrapping || !connectionId}
+                    onClick={() => executeScriptAction(primaryScriptAction)}
+                  >
+                    {busy && npmScript === primaryScriptAction.value ? (
                       <>
                         <LoaderCircle className="size-4 animate-spin" />
-                        正在初始化…
+                        正在执行…
                       </>
                     ) : (
                       <>
-                        <Settings2 className="size-4" />
-                        初始化远端
+                        <Rocket className="size-4" />
+                        {primaryScriptAction.label}
                       </>
                     )}
                   </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-10 w-full rounded-2xl text-sm shadow-none"
+                    disabled={busy || bootstrapping || !connectionId}
+                    onClick={() =>
+                      onDeploy({
+                        connectionId,
+                        strategy,
+                        remoteParentPath: remoteParent.trim() || undefined,
+                      })
+                    }
+                  >
+                    {busy ? (
+                      <>
+                        <LoaderCircle className="size-4 animate-spin" />
+                        正在部署代码…
+                      </>
+                    ) : (
+                      <>
+                        <Rocket className="size-4" />
+                        部署代码
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
+              {hasScriptActions && secondaryScriptActions.length ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {secondaryScriptActions.slice(0, 2).map((item) => {
+                    const running = busy && npmScript === item.value
+                    return (
+                      <Button
+                        key={item.value}
+                        type="button"
+                        variant="outline"
+                        className="h-9 w-full rounded-2xl text-sm shadow-none"
+                        disabled={busy || bootstrapping || !connectionId}
+                        onClick={() => executeScriptAction(item)}
+                      >
+                        {running ? (
+                          <>
+                            <LoaderCircle className="size-4 animate-spin" />
+                            正在执行…
+                          </>
+                        ) : (
+                          item.shortLabel
+                        )}
+                      </Button>
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+        <DialogContent className="max-w-4xl rounded-3xl border-border/80 bg-card p-0">
+          <DialogHeader className="border-b border-border/70 px-6 py-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1 text-left">
+                <DialogTitle className="text-2xl">{project.displayName}</DialogTitle>
+                <DialogDescription className="text-sm text-muted-foreground">{boundConnectionLabel}</DialogDescription>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 rounded-2xl px-3 text-xs shadow-none"
+                  onClick={() => void openRuntimeModulesDialog()}
+                >
+                  <Blocks className="size-4" />
+                  模块
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 rounded-2xl px-3 text-xs shadow-none"
+                  disabled={!connectionId || connections.filter((item) => item.id !== connectionId).length === 0}
+                  onClick={() => setMigrateOpen(true)}
+                >
+                  <ArrowRightLeft className="size-4" />
+                  迁移
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 rounded-2xl px-3 text-xs shadow-none"
+                  disabled={!connectionId}
+                  onClick={() => setRemoteInfoOpen(true)}
+                >
+                  <HelpCircle className="size-4" />
+                  远端概览
+                </Button>
+              </div>
+            </div>
+          </DialogHeader>
+
+          <div className="grid gap-4 px-6 py-5">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-3xl border border-border/60 bg-muted/[0.08] px-4 py-4 dark:border-white/10 dark:bg-white/[0.03]">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-medium text-foreground">本地</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-muted-foreground">{hasScriptActions ? "脚本部署" : "目录同步"}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 rounded-xl px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                      disabled={relinkingLocalPath || busy || bootstrapping}
+                      onClick={() => void relinkLocalProjectPath()}
+                    >
+                      {relinkingLocalPath ? (
+                        <LoaderCircle className="size-3.5 animate-spin" />
+                      ) : (
+                        <FolderOpen className="size-3.5" />
+                      )}
+                      重新匹配
+                    </Button>
+                  </div>
+                </div>
+                <div className="mt-4 space-y-3 text-[11px] text-muted-foreground">
+                  <p className="truncate text-sm text-foreground">{project.localPath}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {(projectConfig?.runtimeModules ?? []).map((moduleId) => (
+                      <Badge key={moduleId} variant="secondary" className="h-5 rounded-md px-2 font-normal shadow-none">
+                        {runtimeModuleOptions.find((option) => option.value === moduleId)?.label ?? moduleId}
+                      </Badge>
+                    ))}
+                    {projectConfig?.runtimeModules?.length ? null : (
+                      <span className="text-[11px] text-muted-foreground">尚未声明运行时模块</span>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-x-6 gap-y-2">
+                    <p>
+                      代码
+                      <span className="ml-2 text-sm text-foreground">{formatActionSummary(hintByAction.get("code"))}</span>
+                    </p>
+                    <p>
+                      备份
+                      <span className="ml-2 text-sm text-foreground">{backupScheduleLabel(backupSchedule?.schedule)}</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-border/60 bg-muted/[0.08] px-4 py-4 dark:border-white/10 dark:bg-white/[0.03]">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-medium text-foreground">远端</p>
+                  <span className="text-[11px] text-muted-foreground">{remoteRuntimeHint}</span>
+                </div>
+                <div className="mt-4 space-y-3 text-[11px] text-muted-foreground">
+                  <div className="flex flex-wrap gap-x-6 gap-y-2">
+                    <p>
+                      服务器
+                      <span className="ml-2 text-sm text-foreground">{boundConnectionLabel}</span>
+                    </p>
+                    <p>
+                      部署
+                      <span className="ml-2 text-sm text-foreground">
+                        {project.lastDeployAt ? new Date(project.lastDeployAt).toLocaleDateString() : "尚无记录"}
+                      </span>
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p>目录</p>
+                    {canOpenRemoteDirectory ? (
+                      <button
+                        type="button"
+                        className="mt-1 inline-flex max-w-full items-center gap-1 truncate text-sm text-foreground underline-offset-4 hover:text-primary hover:underline"
+                        onClick={() =>
+                          onOpenRemoteDirectory?.({
+                            connectionId,
+                            path: effectiveRemoteAppDir as string,
+                            projectId: project.id,
+                          })
+                        }
+                      >
+                        <span className="truncate">{effectiveRemoteAppDir}</span>
+                        <ExternalLink className="size-3 shrink-0" />
+                      </button>
+                    ) : (
+                      <p className="mt-1 truncate text-sm text-foreground">{effectiveRemoteAppDir ?? "未配置"}</p>
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    <p>入口</p>
+                    <p className="truncate text-sm text-foreground">{remoteAccessLabel}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-border/60 bg-background px-4 py-3 dark:border-white/10 dark:bg-white/[0.02]">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm text-foreground">{actionSummary?.title ?? nextAction.label}</p>
+                  <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                    {actionSummary?.detail ?? nextAction.detail}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span className="text-[10px] text-muted-foreground">
+                    {latestActionLog
+                      ? new Date(latestActionLog.at).toLocaleTimeString()
+                      : latestInitLog
+                        ? new Date(latestInitLog.at).toLocaleTimeString()
+                        : "暂无"}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 rounded-xl px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    disabled={!fullLogs?.length}
+                    onClick={() => setLogsOpen(true)}
+                  >
+                    <FileText className="size-3.5" />
+                    日志
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {hasScriptActions ? null : (
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">远端目录</Label>
+                <Input
+                  className="h-10 rounded-2xl font-mono text-xs"
+                  placeholder="例如 /var/www 或 ~/sites"
+                  value={remoteParent}
+                  onChange={(e) => setRemoteParent(e.target.value)}
+                  disabled={busy || bootstrapping}
+                />
+              </div>
+            )}
+
+            <div className="grid gap-2 sm:grid-cols-1">
+              {shouldShowInitializeButton ? (
+                <AlertDialog open={initDialogOpen} onOpenChange={setInitDialogOpen}>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-10 w-full rounded-2xl text-xs shadow-none"
+                      disabled={bootstrapping || busy || !connectionId}
+                    >
+                      {bootstrapping ? (
+                        <>
+                          <LoaderCircle className="size-4 animate-spin" />
+                          正在初始化…
+                        </>
+                      ) : (
+                        <>
+                          <Settings2 className="size-4" />
+                          初始化远端
+                        </>
+                      )}
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>需要初始化以下远端项目</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        {remoteState?.missingItems.length ? remoteState.missingItems.join("、") : "将执行远端初始化。"}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>取消</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={() => {
+                          setInitDialogOpen(false)
+                          onInitialize({ connectionId })
+                        }}
+                      >
+                        开始初始化
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              ) : (
+                <div className="hidden" />
+              )}
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-2xl text-xs shadow-none"
+                disabled={!connectionId || runningBackup || busy || bootstrapping}
+                onClick={() => void runManualBackup()}
+              >
+                {runningBackup ? (
+                  <>
+                    <LoaderCircle className="size-4 animate-spin" />
+                    备份中…
+                  </>
+                ) : (
+                  <>
+                    <Archive className="size-4" />
+                    立即备份
+                  </>
+                )}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-2xl text-xs shadow-none"
+                disabled={!connectionId || stoppingService || !remoteDetails?.service.configured}
+                onClick={() => void stopRemoteService()}
+              >
+                {stoppingService ? (
+                  <>
+                    <LoaderCircle className="size-4 animate-spin" />
+                    停止中…
+                  </>
+                ) : (
+                  <>
+                    <CircleStop className="size-4" />
+                    停止项目
+                  </>
+                )}
+              </Button>
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-8 rounded-xl px-2 text-xs text-destructive hover:bg-destructive/5 hover:text-destructive"
+                    disabled={busy}
+                  >
+                    <Trash2 className="size-3.5" />
+                    从面板移除
+                  </Button>
                 </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>需要初始化以下远端项目</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      {remoteState?.missingItems.length ? remoteState.missingItems.join("、") : "将执行远端初始化。"}
+                <AlertDialogContent className="rounded-3xl border-border/80 bg-card p-6 shadow-2xl">
+                  <AlertDialogHeader className="space-y-3">
+                    <AlertDialogTitle className="text-xl">从面板移除此项目？</AlertDialogTitle>
+                    <AlertDialogDescription className="leading-6">
+                      {removeLocalDirectory
+                        ? <>将删除面板记录，并移除本地目录 <span className="font-medium text-foreground">{project.localPath}</span>。不会删除远端 VPS 上的目录和数据。请输入项目名 <span className="font-medium text-foreground">{project.displayName}</span> 以确认。</>
+                        : <>默认只会删除当前面板里的项目记录，不会删除本地项目目录，也不会删除远端 VPS 上的目录和数据。请输入项目名 <span className="font-medium text-foreground">{project.displayName}</span> 以确认。</>}
                     </AlertDialogDescription>
                   </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>取消</AlertDialogCancel>
-                    <AlertDialogAction
+                  <Input
+                    className="mt-1 h-10 rounded-2xl"
+                    placeholder={`输入 ${project.displayName} 确认`}
+                    value={deleteConfirmText}
+                    onChange={(event) => setDeleteConfirmText(event.target.value)}
+                  />
+                  <label className="mt-3 flex items-start gap-3 rounded-2xl border border-border/70 bg-muted/30 px-4 py-3 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4 rounded border-border"
+                      checked={removeLocalDirectory}
+                      onChange={(event) => setRemoveLocalDirectory(event.target.checked)}
+                    />
+                    <span>
+                      <span className="block font-medium text-foreground">同时删除本地项目文件夹</span>
+                      <span className="mt-1 block text-muted-foreground">
+                        将一并移除 <span className="font-medium text-foreground">{project.localPath}</span> 整个目录。此操作不可撤销。
+                      </span>
+                    </span>
+                  </label>
+                  <AlertDialogFooter className="mt-2">
+                    <AlertDialogCancel
+                      className="rounded-2xl"
                       onClick={() => {
-                        setInitDialogOpen(false)
-                        onInitialize({ connectionId })
+                        setDeleteConfirmText("")
+                        setRemoveLocalDirectory(false)
                       }}
                     >
-                      开始初始化
+                      取消
+                    </AlertDialogCancel>
+                    <AlertDialogAction
+                      className="rounded-2xl bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      disabled={deleteConfirmText.trim() !== project.displayName}
+                      onClick={() => {
+                        const nextRemoveLocalDirectory = removeLocalDirectory
+                        setDeleteConfirmText("")
+                        setRemoveLocalDirectory(false)
+                        onDelete({ removeLocalDirectory: nextRemoveLocalDirectory })
+                      }}
+                    >
+                      {removeLocalDirectory ? "确认移除并删目录" : "确认移除"}
                     </AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={modulesOpen} onOpenChange={setModulesOpen}>
+        <DialogContent className="max-w-2xl rounded-3xl">
+          <DialogHeader>
+            <DialogTitle>扩展运行时模块</DialogTitle>
+            <DialogDescription>
+              这一步只管理轻模块：`Docs / Dashboard / Blog / i18n`。关闭时保留文件，但会从项目契约中停用对应路由。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            {loadingModules ? (
+              <div className="flex items-center gap-2 rounded-2xl border border-border/70 bg-muted/20 px-4 py-4 text-sm text-muted-foreground">
+                <LoaderCircle className="size-4 animate-spin" />
+                正在读取当前模块配置…
+              </div>
             ) : (
-              hasScriptActions ? null : <div className="hidden sm:block" />
-            )}
-            {hasScriptActions ? (
-              <>
-                {npmScripts.map((item) => {
-                  const running = busy && npmScript === item.value
-                  return (
-                    <Button
-                      key={item.value}
-                      type="button"
-                      variant={item.value === npmScript && running ? "default" : "outline"}
-                      className="h-10 w-full rounded-xl text-sm shadow-none"
-                      disabled={busy || bootstrapping || !connectionId}
-                      onClick={() => executeScriptAction(item)}
-                    >
-                      {running ? (
-                        <>
-                          <LoaderCircle className="size-4 animate-spin" />
-                          正在执行…
-                        </>
-                      ) : (
-                        <>
-                          <Rocket className="size-4" />
-                          {item.label}
-                        </>
-                      )}
-                    </Button>
-                  )
-                })}
-              </>
-            ) : (
-              <Button
-                type="button"
-                className="h-9 w-full rounded-xl text-xs"
-                disabled={busy || bootstrapping || !connectionId}
-                onClick={() =>
-                  onDeploy({
-                    connectionId,
-                    strategy,
-                    remoteParentPath: remoteParent.trim() || undefined,
-                  })
-                }
-              >
-                {busy ? (
-                  <>
-                    <LoaderCircle className="size-4 animate-spin" />
-                    正在部署代码…
-                  </>
-                ) : (
-                  <>
-                    <Rocket className="size-4" />
-                    部署代码
-                  </>
-                )}
-              </Button>
+              lightRuntimeModuleOptions.map((option) => {
+                const checked = moduleDraft.includes(option.value)
+                return (
+                  <label
+                    key={option.value}
+                    className="flex items-start justify-between gap-4 rounded-2xl border border-border/70 bg-muted/20 px-4 py-4"
+                  >
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">{option.label}</p>
+                      <p className="text-xs text-muted-foreground">{option.detail}</p>
+                    </div>
+                    <Switch
+                      checked={checked}
+                      disabled={savingModules}
+                      onCheckedChange={(enabled) => toggleLightModuleDraft(option.value, enabled)}
+                    />
+                  </label>
+                )
+              })
             )}
           </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <Button
-              type="button"
-              variant="outline"
-              className="h-9 rounded-xl text-xs shadow-none"
-              disabled={!connectionId || runningBackup || busy || bootstrapping}
-              onClick={() => void runManualBackup()}
-            >
-              {runningBackup ? (
-                <>
-                  <LoaderCircle className="size-4 animate-spin" />
-                  备份中…
-                </>
-              ) : (
-                <>
-                  <Archive className="size-4" />
-                  立即备份
-                </>
-              )}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-9 rounded-xl text-xs shadow-none"
-              disabled={!connectionId || stoppingService || !remoteDetails?.service.configured}
-              onClick={() => void stopRemoteService()}
-            >
-              {stoppingService ? (
-                <>
-                  <LoaderCircle className="size-4 animate-spin" />
-                  停止中…
-                </>
-              ) : (
-                <>
-                  <CircleStop className="size-4" />
-                  停止项目
-                </>
-              )}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-9 rounded-xl text-xs shadow-none"
-              disabled={!connectionId || connections.filter((item) => item.id !== connectionId).length === 0}
-              onClick={() => setMigrateOpen(true)}
-            >
-              <ArrowRightLeft className="size-4" />
-              一键迁移
-            </Button>
+          <div className="rounded-2xl border border-border/70 bg-muted/20 px-4 py-3 text-[11px] text-muted-foreground">
+            新启用的模块会补齐占位页面与运行时配置；已存在的自定义文件不会被重写。
           </div>
-        </CardContent>
-      </Card>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={savingModules} onClick={() => setModulesOpen(false)}>
+              取消
+            </Button>
+            <Button type="button" disabled={loadingModules || savingModules} onClick={() => void saveRuntimeModules()}>
+              {savingModules ? <LoaderCircle className="size-4 animate-spin" /> : <Blocks className="size-4" />}
+              保存模块配置
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={browserOpen} onOpenChange={setBrowserOpen}>
         <DialogContent className="max-w-4xl">
@@ -1686,7 +2460,19 @@ export function ProjectManagementPanel({
   } = useProjectStore()
   const [actionHintsByProject, setActionHintsByProject] = useState<Record<string, ProjectActionHint[]>>({})
   const [backupScheduleByProject, setBackupScheduleByProject] = useState<Record<string, ProjectBackupScheduleState>>({})
-  const [statusFilter, setStatusFilter] = useState<"all" | "attention" | "failed" | "linked">("all")
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [creatingScaffold, setCreatingScaffold] = useState(false)
+  const [scaffoldDisplayName, setScaffoldDisplayName] = useState("")
+  const [scaffoldSlug, setScaffoldSlug] = useState("")
+  const [scaffoldLocalPath, setScaffoldLocalPath] = useState("")
+  const [slugManuallyEdited, setSlugManuallyEdited] = useState(false)
+  const [pathManuallyEdited, setPathManuallyEdited] = useState(false)
+  const [scaffoldTemplate, setScaffoldTemplate] = useState<ProjectScaffoldTemplate>("next-core")
+  const [scaffoldDatabase, setScaffoldDatabase] = useState<ProjectScaffoldDatabase>("postgresql")
+  const [scaffoldRuntimeModules, setScaffoldRuntimeModules] = useState<ProjectRuntimeModule[]>(["auth", "dashboard"])
+  const [scaffoldServiceModules, setScaffoldServiceModules] = useState<ProjectServiceModule[]>([])
+  const [useFullTemplatePull, setUseFullTemplatePull] = useState(false)
+  const [activeScaffold, setActiveScaffold] = useState<ActiveScaffoldState | null>(null)
   const fullLogsByProject = useMemo(() => {
     const map: Record<string, ProjectOperationLogEntry[]> = {}
     for (const entry of operationLogs) {
@@ -1696,18 +2482,44 @@ export function ProjectManagementPanel({
     }
     return map
   }, [operationLogs])
-  const recentLogsByProject = useMemo(() => {
-    const map: Record<string, ProjectOperationLogEntry[]> = {}
-    for (const entry of operationLogs) {
-      const current = map[entry.projectId] ?? []
-      current.push(entry)
-      map[entry.projectId] = current.slice(-8)
-    }
-    return map
-  }, [operationLogs])
 
   useEffect(() => {
     void loadProjects()
+  }, [loadProjects])
+
+  useEffect(() => {
+    const unsubscribe = getDesktopApi().projects.onScaffoldProgress((event) => {
+      let shouldLoadProjects = false
+      setActiveScaffold((current) => {
+        if (event.projectId && current?.projectId !== event.projectId) {
+          shouldLoadProjects = true
+        }
+        const baseLines =
+          current && current.localPath === event.localPath
+            ? current.lines
+            : []
+        const nextLine = [event.message, event.detail].filter(Boolean).join(" - ")
+        const nextLines = nextLine ? [...baseLines, nextLine].slice(-8) : baseLines
+        return {
+          ...event,
+          lines: nextLines,
+        }
+      })
+      if (shouldLoadProjects) {
+        void loadProjects()
+      }
+      if (event.stage === "done" || event.stage === "failed") {
+        window.setTimeout(() => {
+          setActiveScaffold((current) => {
+            if (!current || current.localPath !== event.localPath) {
+              return current
+            }
+            return event.stage === "done" && current.status !== "error" ? current : null
+          })
+        }, event.stage === "done" ? 20_000 : 0)
+      }
+    })
+    return unsubscribe
   }, [loadProjects])
 
   useEffect(() => {
@@ -1797,6 +2609,131 @@ export function ProjectManagementPanel({
     target.scrollIntoView({ behavior: "smooth", block: "center" })
   }, [highlightedProjectId, projects])
 
+  useEffect(() => {
+    if (scaffoldTemplate === "next-payload" && useFullTemplatePull && scaffoldDatabase !== "postgresql") {
+      setScaffoldDatabase("postgresql")
+    }
+  }, [scaffoldTemplate, useFullTemplatePull, scaffoldDatabase])
+
+  const toggleRuntimeModule = (value: ProjectRuntimeModule) => {
+    setScaffoldRuntimeModules((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    )
+  }
+
+  const toggleServiceModule = (value: ProjectServiceModule) => {
+    setScaffoldServiceModules((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    )
+  }
+
+  const openCreateDialog = () => {
+    setScaffoldDisplayName("")
+    setScaffoldSlug("")
+    setScaffoldLocalPath("")
+    setSlugManuallyEdited(false)
+    setPathManuallyEdited(false)
+    setScaffoldTemplate("next-core")
+    setScaffoldDatabase("postgresql")
+    setScaffoldRuntimeModules(["auth", "dashboard"])
+    setScaffoldServiceModules([])
+    setUseFullTemplatePull(false)
+    setCreateDialogOpen(true)
+  }
+
+  const pickScaffoldDirectory = async () => {
+    const picked = await getDesktopApi().projects.pickProjectDirectory()
+    if (picked) {
+      setScaffoldLocalPath(picked)
+      setPathManuallyEdited(true)
+    }
+  }
+
+  const createScaffold = async () => {
+    const payload: ProjectScaffoldInput = {
+      displayName: scaffoldDisplayName.trim(),
+      slug: scaffoldSlug.trim(),
+      localPath: scaffoldLocalPath.trim(),
+      packageManager: "pnpm",
+      monorepo: true,
+      template: scaffoldTemplate,
+      database: scaffoldDatabase,
+      runtimeModules: scaffoldRuntimeModules,
+      serviceModules: scaffoldServiceModules,
+      autoInstall: true,
+      autoStart: true,
+      fullTemplatePull: scaffoldTemplate === "next-payload" ? useFullTemplatePull : false,
+    }
+    setCreatingScaffold(true)
+    setActiveScaffold({
+      stage: "prepare",
+      status: "running",
+      percent: 1,
+      message: "已提交创建任务",
+      detail: "面板正在准备模板与安装流程。",
+      localPath: payload.localPath,
+      displayName: payload.displayName,
+      at: new Date().toISOString(),
+      lines: ["已提交创建任务"],
+    })
+    try {
+      const result = await getDesktopApi().projects.createProjectScaffold(payload)
+      await loadProjects()
+      setActiveScaffold((current) =>
+        current && current.localPath === result.localPath
+          ? {
+              ...current,
+              stage: "done",
+              status: result.warnings.length > 0 ? "warning" : "success",
+              percent: 100,
+              message: result.warnings.length > 0 ? "项目已创建，但仍有后续步骤" : "项目已创建完成",
+              detail: result.warnings[0],
+              projectId: result.project.id,
+              at: new Date().toISOString(),
+            }
+          : current,
+      )
+      const previewHint = result.bootstrap?.startOk && result.bootstrap.previewUrl
+        ? ` 已自动启动，可直接访问：${result.bootstrap.previewUrl}`
+        : ""
+      const directusAdminReady = result.bootstrap?.healthChecks.some(
+        (item) => item.name === "directus-admin" && item.ok,
+      )
+      const adminHint = directusAdminReady && result.contract.panel.adminUrl
+        ? ` Directus 管理端：${result.contract.panel.adminUrl}`
+        : ""
+      toast({
+        title: "项目骨架已生成",
+        description:
+          result.warnings[0] ??
+          `${result.project.displayName} 已加入项目列表。Next.js 主应用目录：${result.contract.apps.web.path === "." ? result.localPath : `${result.localPath}/${result.contract.apps.web.path}`}.${previewHint}${adminHint}`,
+      })
+      setCreateDialogOpen(false)
+    } catch (error) {
+      setActiveScaffold((current) =>
+        current
+          ? {
+              ...current,
+              stage: "failed",
+              status: "error",
+              percent: 100,
+              message: "项目创建失败",
+              detail: error instanceof Error ? error.message : "创建失败",
+              at: new Date().toISOString(),
+              lines: [...current.lines, error instanceof Error ? error.message : "创建失败"].slice(-8),
+            }
+          : current,
+      )
+      toast({
+        variant: "destructive",
+        title: "无法生成项目骨架",
+        description: error instanceof Error ? error.message : "创建失败",
+      })
+    } finally {
+      setCreatingScaffold(false)
+    }
+  }
+
   const refreshProjectMeta = async () => {
     const latestProjects = await getDesktopApi().projects.listProjects()
     await loadOperationLogs(400)
@@ -1837,78 +2774,278 @@ export function ProjectManagementPanel({
     })
     return copy
   }, [projects])
-  const filteredProjects = useMemo(() => {
-    return sorted.filter((project) => {
-      if (statusFilter === "failed") {
-        return project.lastDeployStatus === "failed"
-      }
-      if (statusFilter === "linked") {
-        return Boolean(selectedConnectionId && project.lastConnectionId === selectedConnectionId)
-      }
-      if (statusFilter === "attention") {
-        const hints = actionHintsByProject[project.id] ?? []
-        return (
-          project.lastDeployStatus === "failed" ||
-          hints.some((item) => item.needsAttention)
-        )
-      }
-      return true
-    })
-  }, [actionHintsByProject, selectedConnectionId, sorted, statusFilter])
-  const summary = useMemo(
-    () => ({
-      total: projects.length,
-      success: projects.filter((item) => item.lastDeployStatus === "success").length,
-      failed: projects.filter((item) => item.lastDeployStatus === "failed").length,
-      linked: projects.filter((item) => item.lastConnectionId === selectedConnectionId).length,
-      attention: projects.filter((project) => {
-        const hints = actionHintsByProject[project.id] ?? []
-        return project.lastDeployStatus === "failed" || hints.some((item) => item.needsAttention)
-      }).length,
-    }),
-    [actionHintsByProject, projects, selectedConnectionId],
-  )
-
+  const visibleProjects = useMemo(() => {
+    if (!selectedConnectionId) {
+      return sorted
+    }
+    return sorted.filter((project) => project.lastConnectionId === selectedConnectionId)
+  }, [selectedConnectionId, sorted])
+  const visibleScaffoldCard = activeScaffold && !activeScaffold.projectId ? activeScaffold : null
+  const createDisabled =
+    creatingScaffold || !scaffoldDisplayName.trim() || !scaffoldSlug.trim() || !scaffoldLocalPath.trim()
+  const missingFields: string[] = []
+  if (!scaffoldDisplayName.trim()) {
+    missingFields.push("项目名")
+  }
+  if (!scaffoldSlug.trim()) {
+    missingFields.push("slug")
+  }
+  if (!scaffoldLocalPath.trim()) {
+    missingFields.push("项目目录")
+  }
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-lg font-semibold tracking-tight text-foreground">项目管理</h3>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              {summary.total} 个项目
-            </span>
+    <div className="flex min-h-0 flex-1 flex-col gap-6">
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent className="max-h-[88vh] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>创建平台项目</DialogTitle>
+            <DialogDescription>
+              生成一个以 Next.js 为中心、可挂接 Python、Go、Rust 服务的项目骨架，并自动加入当前面板。默认 Next 应用会放在
+              <code className="mx-1">apps/web</code>。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-6 py-2">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <Label htmlFor="scaffold-display-name">项目名</Label>
+                <Input
+                  id="scaffold-display-name"
+                  value={scaffoldDisplayName}
+                  onChange={(event) => {
+                    const nextName = event.target.value
+                    setScaffoldDisplayName(nextName)
+                    const nextSlug = toProjectSlug(nextName)
+                    if (!slugManuallyEdited) {
+                      setScaffoldSlug(nextSlug)
+                    }
+                    if (!pathManuallyEdited && nextSlug) {
+                      setScaffoldLocalPath(`/Users/zhao/Documents/Projects/${nextSlug}`)
+                    }
+                  }}
+                  placeholder="Digwis Platform"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="scaffold-slug">slug</Label>
+                <Input
+                  id="scaffold-slug"
+                  value={scaffoldSlug}
+                  onChange={(event) => {
+                    const nextSlug = toProjectSlug(event.target.value)
+                    setSlugManuallyEdited(true)
+                    setScaffoldSlug(nextSlug)
+                    if (!pathManuallyEdited && nextSlug) {
+                      setScaffoldLocalPath(`/Users/zhao/Documents/Projects/${nextSlug}`)
+                    }
+                  }}
+                  placeholder="digwis-platform"
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="scaffold-local-path">项目目录</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="scaffold-local-path"
+                  value={scaffoldLocalPath}
+                  onChange={(event) => {
+                    setPathManuallyEdited(true)
+                    setScaffoldLocalPath(event.target.value)
+                  }}
+                  placeholder="/Users/zhao/Documents/Projects/my-project"
+                />
+                <Button type="button" variant="outline" onClick={() => void pickScaffoldDirectory()}>
+                  <FolderOpen className="size-4" />
+                  选择目录
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">当前第一版会在目标目录生成 monorepo 结构，建议选择新目录或空目录。</p>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-2">
+                <Label>模板</Label>
+                <div className="grid gap-2">
+                  {scaffoldTemplateOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => {
+                        setScaffoldTemplate(option.value)
+                        if (option.value === "next-payload") {
+                          setUseFullTemplatePull(true)
+                        } else {
+                          setUseFullTemplatePull(false)
+                        }
+                      }}
+                      className={cn(
+                        "flex items-start justify-between rounded-lg border px-4 py-3 text-left transition-colors",
+                        scaffoldTemplate === option.value
+                          ? "border-sky-500 bg-sky-500/10"
+                          : "border-border/70 bg-muted/20 hover:bg-muted/40",
+                      )}
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-foreground">{option.label}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{option.detail}</p>
+                      </div>
+                      {scaffoldTemplate === option.value ? <Check className="mt-0.5 size-4 text-sky-400" /> : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid gap-2">
+                <Label>数据库</Label>
+                <div className="grid gap-2">
+                  {scaffoldDatabaseOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setScaffoldDatabase(option.value)}
+                      className={cn(
+                        "flex items-start justify-between rounded-lg border px-4 py-3 text-left transition-colors",
+                        scaffoldDatabase === option.value
+                          ? "border-sky-500 bg-sky-500/10"
+                          : "border-border/70 bg-muted/20 hover:bg-muted/40",
+                      )}
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-foreground">{option.label}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{option.detail}</p>
+                      </div>
+                      {scaffoldDatabase === option.value ? <Check className="mt-0.5 size-4 text-sky-400" /> : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {scaffoldTemplate === "next-payload" || scaffoldTemplate === "next-directus" ? (
+              <div className="rounded-lg border border-border/70 bg-muted/20 px-4 py-3">
+                <label className="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={useFullTemplatePull}
+                    onChange={(event) => setUseFullTemplatePull(event.target.checked)}
+                  />
+                  <span className="text-sm text-foreground">
+                    {scaffoldTemplate === "next-payload"
+                      ? "拉取 Payload 官方 Website Template（最新、最完整、单体项目结构，推荐配合 PostgreSQL）"
+                      : "生成 Directus 完整 sidecar（含 docker-compose，可直接启动）"}
+                  </span>
+                </label>
+              </div>
+            ) : null}
+
+            <div className="grid gap-2">
+              <Label>运行时模块</Label>
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {runtimeModuleOptions.map((option) => {
+                  const active = scaffoldRuntimeModules.includes(option.value)
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => toggleRuntimeModule(option.value)}
+                      className={cn(
+                        "rounded-lg border px-4 py-3 text-left transition-colors",
+                        active ? "border-emerald-500 bg-emerald-500/10" : "border-border/70 bg-muted/20 hover:bg-muted/40",
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium text-foreground">{option.label}</p>
+                        {active ? <Check className="size-4 text-emerald-400" /> : null}
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">{option.detail}</p>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>专项服务模块</Label>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {serviceModuleOptions.map((option) => {
+                  const active = scaffoldServiceModules.includes(option.value)
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => toggleServiceModule(option.value)}
+                      className={cn(
+                        "rounded-lg border px-4 py-3 text-left transition-colors",
+                        active ? "border-violet-500 bg-violet-500/10" : "border-border/70 bg-muted/20 hover:bg-muted/40",
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium text-foreground">{option.label}</p>
+                        {active ? <Check className="size-4 text-violet-400" /> : null}
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">{option.detail}</p>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {creatingScaffold && activeScaffold ? (
+              <div className="rounded-2xl border border-sky-500/20 bg-sky-500/5 px-4 py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">正在{scaffoldStageLabel(activeScaffold.stage)}</p>
+                    <p className="text-xs text-muted-foreground">{activeScaffold.message}</p>
+                  </div>
+                  <Badge className={cn("border", scaffoldStatusTone(activeScaffold.status))}>
+                    {activeScaffold.percent}%
+                  </Badge>
+                </div>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted/70 dark:bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-sky-500 transition-all duration-500"
+                    style={{ width: `${Math.max(6, Math.min(activeScaffold.percent, 100))}%` }}
+                  />
+                </div>
+                {activeScaffold.detail ? (
+                  <p className="mt-3 text-xs text-muted-foreground">{activeScaffold.detail}</p>
+                ) : null}
+              </div>
+            ) : null}
           </div>
-          <div className="flex flex-wrap gap-2 pt-1">
-            {[
-              { key: "all", label: "全部", count: summary.total },
-              { key: "attention", label: "需关注", count: summary.attention },
-              { key: "failed", label: "失败", count: summary.failed },
-              ...(selectedConnectionId ? [{ key: "linked", label: "当前服务器", count: summary.linked }] : []),
-            ].map((item) => (
-              <Button
-                key={item.key}
-                type="button"
-                variant="outline"
-                className={cn(
-                  "h-8 rounded-full px-3 text-[11px] shadow-none",
-                  statusFilter === item.key
-                    ? "border-primary/40 bg-primary/[0.06] text-foreground"
-                    : "text-muted-foreground",
-                )}
-                onClick={() => setStatusFilter(item.key as typeof statusFilter)}
-              >
-                {item.label}
-                <span className="rounded-full bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                  {item.count}
-                </span>
-              </Button>
-            ))}
-          </div>
-        </div>
+          <DialogFooter>
+            {createDisabled ? (
+              <p className="mr-auto text-xs text-amber-600">
+                还缺少必填项：{missingFields.join("、")}
+              </p>
+            ) : (
+              <p className="mr-auto text-xs text-muted-foreground">配置已完整，可以直接生成项目。</p>
+            )}
+            <Button type="button" variant="outline" disabled={creatingScaffold} onClick={() => setCreateDialogOpen(false)}>
+              取消
+            </Button>
+            <Button type="button" disabled={createDisabled} onClick={() => void createScaffold()}>
+              {creatingScaffold ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}
+              生成项目
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <div className="flex justify-end gap-2">
         <Button
           type="button"
-          className="shrink-0 rounded-lg"
+          className="h-10 shrink-0 rounded-2xl bg-foreground px-4 text-background shadow-none hover:bg-foreground/90"
+          onClick={openCreateDialog}
+        >
+          <Plus className="size-4" />
+          创建平台项目
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-10 shrink-0 rounded-2xl border-border/80 bg-muted/30 text-foreground shadow-none hover:bg-muted/50 focus-visible:ring-border dark:border-white/10 dark:bg-white/[0.04] dark:hover:bg-white/[0.08] dark:focus-visible:ring-white/20"
           onClick={() => void importFromPicker()}
           disabled={isImporting}
         >
@@ -1927,23 +3064,74 @@ export function ProjectManagementPanel({
       </div>
 
       {isLoading ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/80 py-20">
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-3xl border border-dashed border-border/70 bg-muted/[0.06] py-20 dark:border-white/10 dark:bg-white/[0.02]">
           <LoaderCircle className="size-7 animate-spin text-muted-foreground" />
           <p className="text-sm text-muted-foreground">加载项目列表…</p>
         </div>
-      ) : sorted.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/10 px-8 py-16 text-center">
-          <p className="text-base font-medium text-foreground">还没有登记任何本地项目</p>
-          <p className="max-w-md text-sm text-muted-foreground">点击「导入本地项目」选择仓库根目录。</p>
-        </div>
-      ) : filteredProjects.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/10 px-8 py-16 text-center">
-          <p className="text-base font-medium text-foreground">当前筛选下没有项目</p>
-          <p className="max-w-md text-sm text-muted-foreground">切换上方筛选即可查看其他项目。</p>
+      ) : visibleProjects.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-3xl border border-dashed border-border/70 bg-muted/[0.06] px-8 py-16 text-center dark:border-white/10 dark:bg-white/[0.02]">
+          <p className="text-base font-medium text-foreground">
+            {selectedConnectionId ? "当前服务器下还没有可管理的项目" : "还没有登记任何本地项目"}
+          </p>
+          <p className="max-w-md text-sm text-muted-foreground">
+            {selectedConnectionId
+              ? "这台服务器目前还没有绑定过项目。项目只有在明确关联到当前服务器后，才会出现在这里。"
+              : "可以先点「创建平台项目」生成新的 Next 中心骨架，也可以点「导入本地项目」接入现有仓库。"}
+          </p>
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {filteredProjects.map((project: LocalProjectRecord) => (
+          {visibleScaffoldCard ? (
+            <Card className="rounded-3xl border border-sky-500/30 bg-sky-500/5 shadow-sm dark:bg-sky-500/5">
+              <CardHeader className="px-6 py-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="grid size-11 place-items-center rounded-2xl bg-sky-500/10 text-sky-600 dark:text-sky-300">
+                      <LoaderCircle className="size-5 animate-spin" />
+                    </div>
+                    <CardTitle className="mt-7 truncate text-[2rem] font-semibold leading-tight tracking-tight">
+                      {visibleScaffoldCard.displayName}
+                    </CardTitle>
+                  </div>
+                  <Badge className={cn("border", scaffoldStatusTone(visibleScaffoldCard.status))}>
+                    {visibleScaffoldCard.percent}%
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="px-6 pb-6 pt-0">
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-sky-500/20 bg-background/70 px-4 py-3 dark:bg-black/20">
+                    <p className="text-sm font-medium text-foreground">
+                      正在{scaffoldStageLabel(visibleScaffoldCard.stage)}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">{visibleScaffoldCard.message}</p>
+                    {visibleScaffoldCard.detail ? (
+                      <p className="mt-1 text-xs text-muted-foreground">{visibleScaffoldCard.detail}</p>
+                    ) : null}
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-muted/70 dark:bg-white/10">
+                    <div
+                      className="h-full rounded-full bg-sky-500 transition-all duration-500"
+                      style={{ width: `${Math.max(6, Math.min(visibleScaffoldCard.percent, 100))}%` }}
+                    />
+                  </div>
+                  <div className="rounded-2xl bg-muted/20 px-4 py-3 dark:bg-white/[0.03]">
+                    <p className="truncate text-xs text-muted-foreground">{visibleScaffoldCard.localPath}</p>
+                  </div>
+                  {visibleScaffoldCard.lines.length > 0 ? (
+                    <div className="rounded-2xl bg-muted/20 px-4 py-3 dark:bg-white/[0.03]">
+                      {visibleScaffoldCard.lines.slice(-4).map((line, index) => (
+                        <p key={`${visibleScaffoldCard.at}-${index}`} className="truncate text-xs text-muted-foreground">
+                          {line}
+                        </p>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+          ) : null}
+          {visibleProjects.map((project: LocalProjectRecord) => (
             <ProjectDeployCard
               key={project.id}
               project={project}
@@ -1969,11 +3157,16 @@ export function ProjectManagementPanel({
                   npmScript: args.npmScript,
                 })
               }}
-              onDelete={() => void deleteProject(project.id)}
+              onDelete={(options) =>
+                void deleteProject({
+                  projectId: project.id,
+                  removeLocalDirectory: options.removeLocalDirectory,
+                })}
               actionHints={actionHintsByProject[project.id]}
               backupSchedule={backupScheduleByProject[project.id]}
-              recentLogs={recentLogsByProject[project.id]}
               fullLogs={fullLogsByProject[project.id]}
+              scaffoldProgress={activeScaffold?.projectId === project.id ? activeScaffold : undefined}
+              onAppendOperationLog={appendOperationLog}
               onProjectStateRefresh={refreshProjectMeta}
               onOpenRemoteDirectory={onOpenRemoteDirectory}
             />

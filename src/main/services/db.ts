@@ -18,6 +18,9 @@ type ConnectionRow = {
   host: string
   port: number
   username: string
+  provider: string | null
+  location_label: string | null
+  expires_at: string | null
   auth_type: "password" | "privateKey"
   source: "manual" | "ssh-config"
   password: string | null
@@ -28,6 +31,10 @@ type ConnectionRow = {
   last_connected_at: string | null
   created_at: string
   updated_at: string
+}
+
+type DuplicateConnectionPick = ConnectionRow & {
+  project_count: number
 }
 
 let db: Database.Database | null = null
@@ -64,6 +71,123 @@ function getDbFile(userDataPath: string) {
   return path.join(userDataPath, "digwis-panel.sqlite")
 }
 
+function normalizeConnectionIdentity(value: string) {
+  return value.trim().toLowerCase()
+}
+
+function normalizeDuplicateConnections(database: Database.Database) {
+  const duplicates = database
+    .prepare(
+      `
+      SELECT host, port, username, COUNT(*) AS duplicate_count
+      FROM vps_connections
+      GROUP BY lower(trim(host)), port, lower(trim(username))
+      HAVING COUNT(*) > 1
+      `,
+    )
+    .all() as Array<{ host: string; port: number; username: string; duplicate_count: number }>
+
+  if (duplicates.length === 0) {
+    return
+  }
+
+  const tx = database.transaction(() => {
+    for (const duplicate of duplicates) {
+      const rows = database
+        .prepare(
+          `
+          SELECT
+            vc.*,
+            (
+              SELECT COUNT(*)
+              FROM local_projects lp
+              WHERE lp.last_connection_id = vc.id
+            ) AS project_count
+          FROM vps_connections vc
+          WHERE lower(trim(vc.host)) = ?
+            AND vc.port = ?
+            AND lower(trim(vc.username)) = ?
+          ORDER BY project_count DESC, created_at ASC, updated_at DESC
+          `,
+        )
+        .all(
+          normalizeConnectionIdentity(duplicate.host),
+          duplicate.port,
+          normalizeConnectionIdentity(duplicate.username),
+        ) as DuplicateConnectionPick[]
+
+      const canonical = rows[0]
+      if (!canonical) {
+        continue
+      }
+
+      const latest = [...rows].sort((left, right) => {
+        const byUpdated = new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()
+        if (byUpdated !== 0) {
+          return byUpdated
+        }
+        return new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+      })[0] ?? canonical
+
+      database
+        .prepare(
+          `
+          UPDATE vps_connections
+          SET
+            name = @name,
+            host = @host,
+            port = @port,
+            username = @username,
+            provider = @provider,
+            location_label = @locationLabel,
+            expires_at = @expiresAt,
+            auth_type = @authType,
+            source = @source,
+            password = @password,
+            private_key = @privateKey,
+            passphrase = @passphrase,
+            status = @status,
+            last_error = @lastError,
+            last_connected_at = @lastConnectedAt,
+            updated_at = @updatedAt
+          WHERE id = @id
+          `,
+        )
+        .run({
+          id: canonical.id,
+          name: latest.name,
+          host: latest.host,
+          port: latest.port,
+          username: latest.username,
+          provider: latest.provider,
+          locationLabel: latest.location_label,
+          expiresAt: latest.expires_at,
+          authType: latest.auth_type,
+          source: latest.source,
+          password: latest.password,
+          privateKey: latest.private_key,
+          passphrase: latest.passphrase,
+          status: latest.status,
+          lastError: latest.last_error,
+          lastConnectedAt: latest.last_connected_at,
+          updatedAt: latest.updated_at,
+        })
+
+      const duplicateIds = rows.map((row) => row.id).filter((id) => id !== canonical.id)
+      for (const duplicateId of duplicateIds) {
+        database
+          .prepare("UPDATE local_projects SET last_connection_id = ? WHERE last_connection_id = ?")
+          .run(canonical.id, duplicateId)
+        database
+          .prepare("DELETE FROM vps_connections WHERE id = ?")
+          .run(duplicateId)
+      }
+    }
+  })
+
+  tx()
+}
+
 export function initializeDatabase(userDataPath: string) {
   if (db) {
     return db
@@ -78,6 +202,9 @@ export function initializeDatabase(userDataPath: string) {
       host TEXT NOT NULL,
       port INTEGER NOT NULL,
       username TEXT NOT NULL,
+      provider TEXT,
+      location_label TEXT,
+      expires_at TEXT,
       auth_type TEXT NOT NULL,
       source TEXT NOT NULL DEFAULT 'manual',
       password TEXT,
@@ -93,6 +220,15 @@ export function initializeDatabase(userDataPath: string) {
   const columns = db.prepare("PRAGMA table_info(vps_connections)").all() as Array<{ name: string }>
   if (!columns.some((column) => column.name === "source")) {
     db.exec("ALTER TABLE vps_connections ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';")
+  }
+  if (!columns.some((column) => column.name === "provider")) {
+    db.exec("ALTER TABLE vps_connections ADD COLUMN provider TEXT;")
+  }
+  if (!columns.some((column) => column.name === "location_label")) {
+    db.exec("ALTER TABLE vps_connections ADD COLUMN location_label TEXT;")
+  }
+  if (!columns.some((column) => column.name === "expires_at")) {
+    db.exec("ALTER TABLE vps_connections ADD COLUMN expires_at TEXT;")
   }
 
   db.exec(`
@@ -116,6 +252,8 @@ export function initializeDatabase(userDataPath: string) {
     db.exec("ALTER TABLE local_projects ADD COLUMN last_deploy_kind TEXT;")
   }
 
+  normalizeDuplicateConnections(db)
+
   return db
 }
 
@@ -126,6 +264,9 @@ function mapRecord(row: ConnectionRow): VpsConnectionRecord {
     host: row.host,
     port: row.port,
     username: row.username,
+    provider: row.provider ?? undefined,
+    locationLabel: row.location_label ?? undefined,
+    expiresAt: row.expires_at ?? undefined,
     authType: row.auth_type,
     source: row.source,
     status: row.status,
@@ -158,25 +299,46 @@ export function listConnections() {
 
 export function saveConnection(record: VpsConnectionInput & { id: string }) {
   const now = new Date().toISOString()
+  const sameIdentity = db!
+    .prepare(
+      `
+      SELECT id, created_at
+      FROM vps_connections
+      WHERE lower(trim(host)) = ?
+        AND port = ?
+        AND lower(trim(username)) = ?
+      ORDER BY created_at ASC
+      LIMIT 1
+      `,
+    )
+    .get(
+      normalizeConnectionIdentity(record.host),
+      record.port,
+      normalizeConnectionIdentity(record.username),
+    ) as { id: string; created_at: string } | undefined
+  const targetId = sameIdentity?.id ?? record.id
   const existing = db!
     .prepare("SELECT created_at FROM vps_connections WHERE id = ?")
-    .get(record.id) as { created_at: string } | undefined
+    .get(targetId) as { created_at: string } | undefined
 
   db!
     .prepare(
       `
       INSERT INTO vps_connections (
-        id, name, host, port, username, auth_type, password, private_key, passphrase,
-        source, status, last_error, last_connected_at, created_at, updated_at
+        id, name, host, port, username, provider, location_label, auth_type, password, private_key, passphrase,
+        expires_at, source, status, last_error, last_connected_at, created_at, updated_at
       ) VALUES (
-        @id, @name, @host, @port, @username, @authType, @password, @privateKey, @passphrase,
-        @source, 'idle', NULL, NULL, @createdAt, @updatedAt
+        @id, @name, @host, @port, @username, @provider, @locationLabel, @authType, @password, @privateKey, @passphrase,
+        @expiresAt, @source, 'idle', NULL, NULL, @createdAt, @updatedAt
       )
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         host = excluded.host,
         port = excluded.port,
         username = excluded.username,
+        provider = excluded.provider,
+        location_label = excluded.location_label,
+        expires_at = excluded.expires_at,
         auth_type = excluded.auth_type,
         source = excluded.source,
         password = excluded.password,
@@ -186,11 +348,14 @@ export function saveConnection(record: VpsConnectionInput & { id: string }) {
       `,
     )
     .run({
-      id: record.id,
+      id: targetId,
       name: record.name,
       host: record.host,
       port: record.port,
       username: record.username,
+      provider: record.provider?.trim() || null,
+      locationLabel: record.locationLabel?.trim() || null,
+      expiresAt: record.expiresAt?.trim() || null,
       authType: record.authType,
       source: "source" in record && record.source ? record.source : "manual",
       password: encryptSecret(record.password),
@@ -202,7 +367,7 @@ export function saveConnection(record: VpsConnectionInput & { id: string }) {
 
   const row = db!
     .prepare("SELECT * FROM vps_connections WHERE id = ?")
-    .get(record.id) as ConnectionRow
+    .get(targetId) as ConnectionRow
 
   return mapRecord(row)
 }
@@ -274,6 +439,9 @@ export function getVpsConnectionInput(id: string): VpsConnectionInput | null {
     host: row.host,
     port: row.port,
     username: row.username,
+    provider: row.provider ?? undefined,
+    locationLabel: row.location_label ?? undefined,
+    expiresAt: row.expires_at ?? undefined,
     authType: row.auth_type,
     password: secrets?.password,
     privateKey: secrets?.privateKey,
@@ -374,6 +542,61 @@ export function addLocalProjectFromPath(payload: LocalProjectInput): LocalProjec
   }
 
   return getLocalProject(id)!
+}
+
+export function updateLocalProjectPath(
+  payload: {
+    projectId: string
+    localPath: string
+  },
+): LocalProjectRecord {
+  const current = getLocalProject(payload.projectId)
+  if (!current) {
+    throw new Error("项目不存在或已被删除")
+  }
+
+  const resolved = path.resolve(payload.localPath.trim())
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(resolved)
+  } catch {
+    throw new Error("本地路径不存在或无法访问")
+  }
+  if (!stat.isDirectory()) {
+    throw new Error("请选择文件夹（目录）作为项目根路径")
+  }
+
+  const duplicated = db!
+    .prepare("SELECT id FROM local_projects WHERE local_path = ? AND id != ?")
+    .get(resolved, payload.projectId) as { id: string } | undefined
+  if (duplicated) {
+    throw new Error("该本地路径已在项目管理中")
+  }
+
+  const currentBaseName = path.basename(current.localPath)
+  const nextBaseName = path.basename(resolved)
+  const nextDisplayName =
+    current.displayName === currentBaseName ? nextBaseName.slice(0, 200) : current.displayName
+
+  db!
+    .prepare(
+      `
+      UPDATE local_projects
+      SET
+        display_name = @displayName,
+        local_path = @localPath,
+        updated_at = @updatedAt
+      WHERE id = @id
+      `,
+    )
+    .run({
+      id: payload.projectId,
+      displayName: nextDisplayName,
+      localPath: resolved,
+      updatedAt: new Date().toISOString(),
+    })
+
+  return getLocalProject(payload.projectId)!
 }
 
 export function deleteLocalProject(id: string) {

@@ -72,14 +72,14 @@ export function InspectionServiceBrowser({ services }: Props) {
   const failedCount = services.filter((service) => service.active === "failed").length
 
   return (
-    <div className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
+    <div className="rounded-3xl bg-card/95 px-5 py-5 shadow-sm dark:bg-[#181818]">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <p className="text-sm font-medium text-foreground">服务浏览</p>
           <p className="mt-1 text-xs text-muted-foreground">基于 VPS 当前 `systemd` 服务清单，显示真实 active / sub 状态。</p>
         </div>
         <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-          <span className="rounded-full bg-muted px-2 py-1">总计 {services.length}</span>
+          <span className="rounded-full bg-muted px-2.5 py-1 dark:bg-white/[0.06]">总计 {services.length}</span>
           <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-emerald-700 dark:text-emerald-300">
             运行中 {runningCount}
           </span>
@@ -102,12 +102,12 @@ export function InspectionServiceBrowser({ services }: Props) {
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            className="h-9 rounded-lg pl-9"
+            className="h-10 rounded-xl pl-9 dark:bg-white/[0.03]"
             placeholder="筛选 service 名称或描述"
           />
         </div>
 
-        <div className="overflow-hidden rounded-xl border border-border/70">
+        <div className="overflow-hidden rounded-2xl bg-background/40 dark:bg-white/[0.02]">
           <Table>
             <TableHeader>
               <TableRow>

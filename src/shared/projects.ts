@@ -28,6 +28,171 @@ export type LocalProjectInput = {
   category?: LocalProjectCategory
 }
 
+export type ProjectScaffoldTemplate = "next-core" | "next-payload" | "next-directus"
+export type ProjectScaffoldDatabase = "postgresql" | "sqlite"
+export type ProjectPackageManager = "pnpm"
+export type ProjectRuntimeModule =
+  | "auth"
+  | "docs"
+  | "dashboard"
+  | "blog"
+  | "i18n"
+  | "search"
+  | "queue"
+  | "payments"
+  | "multi-tenant"
+export type ProjectServiceModule = "python-ai" | "python-data" | "go-worker" | "rust-worker"
+
+export type ProjectScaffoldInput = {
+  displayName: string
+  slug: string
+  localPath: string
+  packageManager: ProjectPackageManager
+  monorepo: boolean
+  template: ProjectScaffoldTemplate
+  database: ProjectScaffoldDatabase
+  runtimeModules: ProjectRuntimeModule[]
+  serviceModules: ProjectServiceModule[]
+  autoInstall?: boolean
+  autoStart?: boolean
+  fullTemplatePull?: boolean
+}
+
+export type ProjectRuntimeModulesUpdateInput = {
+  projectId: string
+  runtimeModules: ProjectRuntimeModule[]
+}
+
+export type ProjectScaffoldBootstrap = {
+  attempted: boolean
+  installOk: boolean
+  startOk: boolean
+  previewUrl?: string
+  healthChecks: Array<{
+    name: string
+    ok: boolean
+    detail?: string
+  }>
+}
+
+export type ProjectScaffoldProgressStage =
+  | "prepare"
+  | "template"
+  | "register"
+  | "install"
+  | "start"
+  | "admin"
+  | "done"
+  | "failed"
+
+export type ProjectScaffoldProgressEvent = {
+  stage: ProjectScaffoldProgressStage
+  status: "running" | "success" | "warning" | "error"
+  percent: number
+  message: string
+  detail?: string
+  localPath: string
+  displayName: string
+  projectId?: string
+  at: string
+}
+
+export type DigwisProjectAppContract = {
+  path: string
+  devCommand: string
+  buildCommand: string
+  startCommand: string
+  port?: number
+}
+
+export type DigwisProjectServiceContract = {
+  enabled: boolean
+  path: string
+  devCommand?: string
+  runtime?: "node" | "python" | "go" | "rust"
+}
+
+export type DigwisProjectConfig = {
+  version: 1
+  projectType: "next-platform"
+  template: ProjectScaffoldTemplate
+  packageManager: ProjectPackageManager
+  monorepo: boolean
+  database: ProjectScaffoldDatabase
+  runtimeModules: ProjectRuntimeModule[]
+  serviceModules: ProjectServiceModule[]
+  apps: {
+    web: DigwisProjectAppContract
+  }
+  services: {
+    cms?: (DigwisProjectServiceContract & {
+      type: "payload" | "directus"
+    })
+    pythonAi?: DigwisProjectServiceContract
+    pythonData?: DigwisProjectServiceContract
+    goWorker?: DigwisProjectServiceContract
+    rustWorker?: DigwisProjectServiceContract
+  }
+  panel: {
+    previewUrl: string
+    adminUrl: string
+  }
+}
+
+export type ProjectScaffoldResult = {
+  ok: boolean
+  message: string
+  project: LocalProjectRecord
+  localPath: string
+  createdFiles: string[]
+  warnings: string[]
+  contract: DigwisProjectConfig
+  bootstrap?: ProjectScaffoldBootstrap
+}
+
+export type ProjectRuntimeModulesUpdateResult = {
+  ok: boolean
+  message: string
+  contract: DigwisProjectConfig
+  createdFiles: string[]
+  warnings: string[]
+}
+
+export type ProjectLocalPreview = {
+  url: string
+  webPath: string
+  adminUrl?: string
+}
+
+export type ProjectLocalDevStartResult = {
+  ok: boolean
+  message: string
+  pid?: number
+  previewUrl: string
+}
+
+export type ProjectLocalAdminStartResult = {
+  ok: boolean
+  message: string
+  adminUrl: string
+}
+
+export type ProjectLocalPathUpdateInput = {
+  projectId: string
+  localPath: string
+}
+
+export type ProjectDeleteInput = {
+  projectId: string
+  removeLocalDirectory?: boolean
+}
+
+export type ProjectDeleteResult = {
+  success: true
+  removedLocalDirectory: boolean
+  localPath?: string
+}
+
 export type ProjectPanelDeployConfig = {
   version: 1
   deploy?: {
@@ -196,6 +361,12 @@ export type ProjectOperationLogEntry = {
   at: string
 }
 
+export type ProjectOperationLogAppendInput = {
+  projectId: string
+  stream: "stdout" | "stderr" | "system"
+  chunk: string
+}
+
 export type ProjectActionKind = "code" | "data" | "uploads" | "backup"
 export type ProjectBackupSchedule = "off" | "daily" | "weekly" | "monthly"
 
@@ -235,9 +406,19 @@ export type ProjectMigrationResult = ProjectOperationResult & {
 export type ManagedProjectsApi = {
   listProjects: () => Promise<LocalProjectRecord[]>
   addProjectFromPath: (payload: LocalProjectInput) => Promise<LocalProjectRecord>
-  deleteProject: (id: string) => Promise<{ success: true }>
+  createProjectScaffold: (payload: ProjectScaffoldInput) => Promise<ProjectScaffoldResult>
+  onScaffoldProgress: (handler: (event: ProjectScaffoldProgressEvent) => void) => () => void
+  getProjectConfig: (projectId: string) => Promise<DigwisProjectConfig | null>
+  setProjectRuntimeModules: (payload: ProjectRuntimeModulesUpdateInput) => Promise<ProjectRuntimeModulesUpdateResult>
+  updateProjectLocalPath: (payload: ProjectLocalPathUpdateInput) => Promise<LocalProjectRecord>
+  deleteProject: (payload: ProjectDeleteInput) => Promise<ProjectDeleteResult>
   pickProjectDirectory: () => Promise<string | null>
   listNpmScripts: (projectId: string) => Promise<string[]>
+  getProjectLocalPreview: (projectId: string) => Promise<ProjectLocalPreview>
+  openProjectLocalPreview: (projectId: string) => Promise<ProjectLocalPreview>
+  openProjectLocalAdmin: (projectId: string) => Promise<ProjectLocalPreview>
+  startProjectLocalDev: (projectId: string) => Promise<ProjectLocalDevStartResult>
+  startProjectLocalAdminService: (projectId: string) => Promise<ProjectLocalAdminStartResult>
   getDeployProfile: (projectId: string) => Promise<ProjectDeployProfile>
   getProjectRemoteState: (payload: ProjectRemoteStateInput) => Promise<ProjectRemoteState>
   getProjectRemoteDetails: (payload: ProjectRemoteDetailsInput) => Promise<ProjectRemoteDetails>
@@ -257,5 +438,6 @@ export type ManagedProjectsApi = {
   runProjectBackup: (payload: ProjectEnvInput) => Promise<ProjectOperationResult>
   migrateProject: (payload: ProjectMigrationInput) => Promise<ProjectMigrationResult>
   listOperationLogs: (payload?: { limit?: number }) => Promise<ProjectOperationLogEntry[]>
+  appendProjectOperationLog: (payload: ProjectOperationLogAppendInput) => Promise<ProjectOperationLogEntry>
   onDeployLog: (handler: (event: ProjectDeployLogEvent) => void) => () => void
 }

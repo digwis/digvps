@@ -1,13 +1,11 @@
 import { useEffect, useState } from "react"
 import {
-  Boxes,
   LoaderCircle,
   Play,
   Power,
   RefreshCw,
   Settings2,
   Trash2,
-  Wrench,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -38,26 +36,7 @@ const DESCRIPTIONS: Record<string, string> = {
 }
 
 const DAEMON_IDS = new Set(["docker", "nginx", "postgresql", "pm2"])
-const RECOMMENDED_STACKS = [
-  {
-    id: "node-web",
-    title: "Node 站点",
-    description: "Nginx + Node.js + PM2",
-    dependencies: ["nginx", "nodejs", "pm2"],
-  },
-  {
-    id: "python-web",
-    title: "Python 站点",
-    description: "Nginx + Python3",
-    dependencies: ["nginx", "python3"],
-  },
-  {
-    id: "data-service",
-    title: "数据库主机",
-    description: "PostgreSQL",
-    dependencies: ["postgresql"],
-  },
-] as const
+const OPTIONAL_DEPENDENCY_IDS = new Set(["docker", "pm2"])
 
 function supportNotes(item: RemotePackageStatus): string[] {
   switch (item.id) {
@@ -86,40 +65,40 @@ function actionLabel(action: DependencyServiceAction): string {
 
 function badgeFor(item: RemotePackageStatus): { label: string; className: string } {
   if (!item.installed) {
-    return { label: "未安装", className: "border-border bg-muted/80 text-muted-foreground" }
+    return { label: "未安装", className: "border-border/70 bg-background text-muted-foreground dark:border-white/10 dark:bg-white/[0.02]" }
   }
   if (!DAEMON_IDS.has(item.id)) {
     return {
       label: "已就绪",
-      className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200",
+      className: "border-border/70 bg-background text-foreground dark:border-white/10 dark:bg-white/[0.02]",
     }
   }
   if (item.running === true) {
     return {
       label: "运行中",
-      className: "border-emerald-500/35 bg-emerald-500/15 text-emerald-800 dark:text-emerald-200",
+      className: "border-border/70 bg-background text-foreground dark:border-white/10 dark:bg-white/[0.02]",
     }
   }
   if (item.running === false) {
     return {
-      label: "已安装 · 未运行",
+      label: "未运行",
       className: "border-amber-500/35 bg-amber-500/10 text-amber-900 dark:text-amber-100",
     }
   }
   return {
     label: "已安装",
-    className: "border-border bg-secondary/80 text-secondary-foreground",
+    className: "border-border/70 bg-background text-foreground dark:border-white/10 dark:bg-white/[0.02]",
   }
 }
 
 function cardTone(item: RemotePackageStatus): string {
   if (!item.installed) {
-    return "border-border/80 bg-muted/20 text-muted-foreground"
+    return "border-border/70 bg-background text-foreground hover:border-border hover:bg-muted/20 dark:border-white/10 dark:bg-white/[0.02] dark:hover:bg-white/[0.05]"
   }
-  if (DAEMON_IDS.has(item.id) && item.running === true) {
-    return "border-emerald-500/25 bg-gradient-to-br from-emerald-500/[0.07] to-card text-foreground"
+  if (DAEMON_IDS.has(item.id) && item.running === false) {
+    return "border-amber-500/25 bg-amber-500/[0.04] text-foreground dark:border-[#4c3c1d] dark:bg-[#2b261d]"
   }
-  return "border-border/80 bg-card/90 text-foreground"
+  return "border-border/70 bg-background text-foreground hover:border-border hover:bg-muted/20 dark:border-white/10 dark:bg-white/[0.02] dark:hover:bg-white/[0.05]"
 }
 
 export type DependencyCardsProps = {
@@ -136,14 +115,6 @@ export type DependencyCardsProps = {
   installingDependencyId?: string
   isDependencyServicePending: boolean
   dependencyServicePendingKey?: string
-  operationLogs: Array<{
-    id: string
-    at: string
-    level: "info" | "error"
-    title: string
-    detail: string
-  }>
-  clearOperationLogs: () => void
 }
 
 export function DependencyCards({
@@ -157,38 +128,12 @@ export function DependencyCards({
   installingDependencyId,
   isDependencyServicePending,
   dependencyServicePendingKey,
-  operationLogs,
-  clearOperationLogs,
 }: DependencyCardsProps) {
-  const [installingStackId, setInstallingStackId] = useState<string>()
   const [settingsTarget, setSettingsTarget] = useState<RemotePackageStatus | null>(null)
   const [uninstallTarget, setUninstallTarget] = useState<RemotePackageStatus | null>(null)
   const [usageReport, setUsageReport] = useState<DependencyUsageReport | null>(null)
   const [isUsageLoading, setIsUsageLoading] = useState(false)
-  const installedCount = packages.filter((item) => item.installed).length
-  const runningDaemons = packages.filter((item) => DAEMON_IDS.has(item.id) && item.running === true).length
-  const daemonCount = packages.filter((item) => DAEMON_IDS.has(item.id)).length
-  const missingCount = packages.filter((item) => !item.installed).length
-  const latestOperationAt = operationLogs.length > 0 ? operationLogs[operationLogs.length - 1]?.at : undefined
-
-  const installRecommendedStack = async (stackId: string) => {
-    const stack = RECOMMENDED_STACKS.find((item) => item.id === stackId)
-    if (!stack) {
-      return
-    }
-    setInstallingStackId(stackId)
-    try {
-      for (const dependencyId of stack.dependencies) {
-        const dependency = packages.find((item) => item.id === dependencyId)
-        if (!dependency || dependency.installed) {
-          continue
-        }
-        await installDependency(connection, dependencyId)
-      }
-    } finally {
-      setInstallingStackId(undefined)
-    }
-  }
+  const visiblePackages = packages.filter((item) => item.installed || !OPTIONAL_DEPENDENCY_IDS.has(item.id))
 
   const runQuickAction = async (item: RemotePackageStatus, action: DependencyServiceAction) => {
     try {
@@ -261,264 +206,186 @@ export function DependencyCards({
   return (
     <>
       <div className="flex flex-col gap-4">
-      <section className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="grid size-9 place-items-center rounded-xl bg-muted text-muted-foreground">
-              <Boxes className="size-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-foreground">运行环境依赖</p>
-              <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                <span className="rounded-full bg-muted px-2 py-1">已安装 {installedCount}/{packages.length}</span>
-                <span className="rounded-full bg-muted px-2 py-1">运行中服务 {runningDaemons}/{daemonCount}</span>
-                <span className="rounded-full bg-muted px-2 py-1">待安装 {missingCount}</span>
-                {latestOperationAt ? (
-                  <span className="rounded-full bg-muted px-2 py-1">
-                    最近操作 {new Date(latestOperationAt).toLocaleTimeString()}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-          </div>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          {visiblePackages.map((item) => {
+            const badge = badgeFor(item)
+            const isDaemon = DAEMON_IDS.has(item.id)
+            const pendingKey = (action: DependencyServiceAction) => `${item.id}-${action}`
+            const showService =
+              item.installed &&
+              isDaemon &&
+              (item.id === "pm2" || item.id === "docker" || item.id === "nginx" || item.id === "postgresql")
+            const installingThis = isInstallingDependency && installingDependencyId === item.id
+            const servicePendingThis =
+              isDependencyServicePending &&
+              dependencyServicePendingKey != null &&
+              dependencyServicePendingKey.startsWith(`${item.id}-`)
 
-          <div className="flex min-w-0 items-start gap-3 xl:max-w-[56%]">
-            <div className="grid size-9 place-items-center rounded-xl bg-muted text-muted-foreground">
-              <Wrench className="size-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-foreground">推荐安装组</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {RECOMMENDED_STACKS.map((stack) => (
-                  <Button
-                    key={stack.id}
-                    type="button"
-                    variant="outline"
-                    className="h-auto min-h-9 rounded-xl px-3 py-2 text-left shadow-none"
-                    disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending}
-                    onClick={() => void installRecommendedStack(stack.id)}
-                  >
-                    {installingStackId === stack.id ? <LoaderCircle className="size-4 animate-spin" /> : <Wrench className="size-4" />}
-                    <span className="flex flex-col items-start">
-                      <span className="text-xs font-medium">{stack.title}</span>
-                      <span className="text-[11px] text-muted-foreground">{stack.description}</span>
-                    </span>
-                  </Button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="rounded-2xl border border-border/70 bg-card px-4 py-4 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-sm font-medium text-foreground">最近操作</p>
-            <p className="mt-1 text-xs text-muted-foreground">安装与服务动作的最近结果</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="text-xs text-muted-foreground">{operationLogs.length} 条</div>
-            {operationLogs.length > 0 ? (
-              <Button
+            return (
+              <button
+                key={item.id}
                 type="button"
-                size="sm"
-                variant="ghost"
-                className="h-8 rounded-lg px-2 text-xs text-muted-foreground"
-                onClick={clearOperationLogs}
+                onClick={() => setSettingsTarget(item)}
+                className={cn(
+                  "relative min-h-[250px] rounded-3xl border p-6 text-left transition",
+                  cardTone(item),
+                  (installingThis || servicePendingThis) && "ring-2 ring-primary/20",
+                )}
               >
-                <Trash2 className="size-3.5" />
-                清空
-              </Button>
-            ) : null}
-          </div>
-        </div>
-        <div className="mt-3 grid gap-2">
-          {operationLogs.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border/70 px-3 py-3 text-sm text-muted-foreground">
-              还没有依赖操作记录
-            </div>
-          ) : (
-            operationLogs.slice(-4).reverse().map((entry) => (
-              <div key={entry.id} className="flex items-start justify-between gap-3 rounded-xl border border-border/70 px-3 py-3">
-                <div className="min-w-0">
-                  <p className={cn("text-sm font-medium", entry.level === "error" ? "text-destructive" : "text-foreground")}>
-                    {entry.title}
-                  </p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">{entry.detail}</p>
-                </div>
-                <span className="shrink-0 text-[11px] text-muted-foreground">
-                  {new Date(entry.at).toLocaleTimeString()}
-                </span>
-              </div>
-            ))
-          )}
-        </div>
-      </section>
-
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-        {packages.map((item) => {
-          const badge = badgeFor(item)
-          const isDaemon = DAEMON_IDS.has(item.id)
-          const pendingKey = (action: DependencyServiceAction) => `${item.id}-${action}`
-          const showService =
-            item.installed &&
-            isDaemon &&
-            (item.id === "pm2" || item.id === "docker" || item.id === "nginx" || item.id === "postgresql")
-          const installingThis = isInstallingDependency && installingDependencyId === item.id
-          const servicePendingThis =
-            isDependencyServicePending &&
-            dependencyServicePendingKey != null &&
-            dependencyServicePendingKey.startsWith(`${item.id}-`)
-
-          return (
-            <div
-              key={item.id}
-              className={cn(
-                "rounded-2xl border p-4 shadow-sm transition-colors",
-                cardTone(item),
-                (installingThis || servicePendingThis) && "ring-2 ring-primary/20",
-              )}
-            >
-              <div className="flex flex-col gap-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-[15px] font-semibold tracking-tight">{item.name}</p>
-                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                      {DESCRIPTIONS[item.id] ?? "远程环境依赖项。"}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end gap-2">
-                    <Badge variant="outline" className={cn("border", badge.className)}>
-                      {badge.label}
-                    </Badge>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
-                        title={`${item.name} 设置`}
-                        onClick={() => setSettingsTarget(item)}
-                      >
-                        <Settings2 className="size-4" />
-                      </Button>
-                      {item.installed ? (
+                <div className="flex h-full flex-col gap-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 pt-1">
+                      <p className="text-[2rem] font-semibold leading-none tracking-tight text-foreground">{item.name}</p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-2">
+                      <Badge variant="outline" className={cn("rounded-full px-2.5 py-0.5 text-[11px] font-normal shadow-none", badge.className)}>
+                        {badge.label}
+                      </Badge>
+                      <div className="flex items-center gap-1.5">
                         <Button
                           type="button"
                           size="icon"
                           variant="ghost"
-                          className="h-8 w-8 rounded-full text-muted-foreground hover:text-destructive"
-                          title={`卸载 ${item.name}`}
-                          disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending}
-                          onClick={() => setUninstallTarget(item)}
+                          className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted/70 hover:text-foreground dark:hover:bg-white/[0.06]"
+                          title={`${item.name} 设置`}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setSettingsTarget(item)
+                          }}
                         >
-                          {installingThis ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                          <Settings2 className="size-4" />
                         </Button>
+                        {item.installed ? (
+                          <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8 rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          title={`卸载 ${item.name}`}
+                          disabled={isInstallingDependency || isDependencyServicePending}
+                          onClick={(event) => {
+                              event.stopPropagation()
+                              setUninstallTarget(item)
+                            }}
+                          >
+                            {installingThis ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                          </Button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+
+                  {item.installed && item.running === true ? (
+                    <div className="inline-flex items-center gap-2 text-[11px] text-emerald-600 dark:text-emerald-300">
+                      <span className="inline-block size-2 rounded-full bg-emerald-500" />
+                      正常运行
+                    </div>
+                  ) : null}
+
+                  <div className="space-y-2 text-sm">
+                    <p className="font-mono text-[15px] leading-snug text-foreground/90">
+                      {item.version || "未检测到版本"}
+                    </p>
+                    <div className="space-y-1.5 rounded-2xl bg-muted/20 px-4 py-3 text-[11px] text-muted-foreground dark:bg-white/[0.03]">
+                      {item.portHint ? (
+                        <p>
+                          端口 <span className="font-medium text-foreground/80">{item.portHint}</span>
+                        </p>
+                      ) : null}
+                      {typeof item.detail === "string" && item.detail !== "—" ? (
+                        <p className="line-clamp-2 leading-5">{item.detail}</p>
                       ) : null}
                     </div>
                   </div>
-                </div>
 
-                <div className="space-y-1.5 text-sm">
-                  <p className="font-mono text-[13px] leading-snug text-foreground/90">
-                    {item.version || "未检测到版本"}
-                  </p>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                    {item.portHint ? (
-                      <span>
-                        端口 <span className="font-medium text-foreground/80">{item.portHint}</span>
-                      </span>
-                    ) : null}
-                    {typeof item.detail === "string" && item.detail !== "—" ? (
-                      <span className="min-w-0 flex-1">{item.detail}</span>
-                    ) : null}
-                  </div>
-                  <p className="font-mono text-[11px] text-muted-foreground/90">{item.command}</p>
-                </div>
-
-                {!item.installed ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="mt-1 w-full rounded-lg"
-                    disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending}
-                    onClick={() => void installDependency(connection, item.id)}
-                  >
-                    {installingThis ? (
-                      <>
-                        <LoaderCircle className="size-4 animate-spin" />
-                        正在安装…
-                      </>
-                    ) : (
-                      "安装"
-                    )}
-                  </Button>
-                ) : showService ? (
-                  <div
-                    className={cn(
-                      "mt-1 grid gap-2",
-                      item.running === true ? "grid-cols-2" : "grid-cols-3",
-                    )}
-                  >
-                    {item.running !== true ? (
+                  <div className="mt-auto">
+                    {!item.installed ? (
                       <Button
                         type="button"
                         size="sm"
-                        variant="outline"
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg"
-                        disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending}
-                        title="启动服务"
-                        onClick={() => void runQuickAction(item, "start")}
+                        className="w-full rounded-xl"
+                        disabled={isInstallingDependency || isDependencyServicePending}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void installDependency(connection, item.id)
+                        }}
                       >
-                        {isDependencyServicePending && dependencyServicePendingKey === pendingKey("start") ? (
-                          <LoaderCircle className="size-3.5 animate-spin" />
+                        {installingThis ? (
+                          <>
+                            <LoaderCircle className="size-4 animate-spin" />
+                            正在安装…
+                          </>
                         ) : (
-                          <Play className="size-3.5" />
+                          "安装"
                         )}
-                        启动
                       </Button>
-                    ) : null}
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="inline-flex items-center justify-center gap-1.5 rounded-lg text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending || item.running === false}
-                      title={item.running === false ? "服务未在运行" : "停止服务"}
-                      onClick={() => void runQuickAction(item, "stop")}
-                    >
-                      {isDependencyServicePending && dependencyServicePendingKey === pendingKey("stop") ? (
-                        <LoaderCircle className="size-3.5 animate-spin" />
-                      ) : (
-                        <Power className="size-3.5" />
-                      )}
-                      停止
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="inline-flex items-center justify-center gap-1.5 rounded-lg"
-                      disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending}
-                      onClick={() => void runQuickAction(item, "restart")}
-                    >
-                      {isDependencyServicePending && dependencyServicePendingKey === pendingKey("restart") ? (
-                        <LoaderCircle className="size-3.5 animate-spin" />
-                      ) : (
-                        <RefreshCw className="size-3.5" />
-                      )}
-                      重启
-                    </Button>
+                    ) : showService ? (
+                      <div
+                        className={cn(
+                          "grid gap-2",
+                          item.running === true ? "grid-cols-2" : "grid-cols-3",
+                        )}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {item.running !== true ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="inline-flex items-center justify-center gap-1.5 rounded-xl"
+                            disabled={isInstallingDependency || isDependencyServicePending}
+                            title="启动服务"
+                            onClick={() => void runQuickAction(item, "start")}
+                          >
+                            {isDependencyServicePending && dependencyServicePendingKey === pendingKey("start") ? (
+                              <LoaderCircle className="size-3.5 animate-spin" />
+                            ) : (
+                              <Play className="size-3.5" />
+                            )}
+                            启动
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="inline-flex items-center justify-center gap-1.5 rounded-xl text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          disabled={isInstallingDependency || isDependencyServicePending || item.running === false}
+                          title={item.running === false ? "服务未在运行" : "停止服务"}
+                          onClick={() => void runQuickAction(item, "stop")}
+                        >
+                          {isDependencyServicePending && dependencyServicePendingKey === pendingKey("stop") ? (
+                            <LoaderCircle className="size-3.5 animate-spin" />
+                          ) : (
+                            <Power className="size-3.5" />
+                          )}
+                          停止
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          className="inline-flex items-center justify-center gap-1.5 rounded-xl"
+                          disabled={isInstallingDependency || isDependencyServicePending}
+                          onClick={() => void runQuickAction(item, "restart")}
+                        >
+                          {isDependencyServicePending && dependencyServicePendingKey === pendingKey("restart") ? (
+                            <LoaderCircle className="size-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCw className="size-3.5" />
+                          )}
+                          重启
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="text-center text-xs text-muted-foreground">运行环境已就绪，无独立服务需管理</p>
+                    )}
                   </div>
-                ) : (
-                  <p className="mt-1 text-center text-xs text-muted-foreground">运行环境已就绪，无独立服务需管理</p>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+                </div>
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       <Dialog open={Boolean(settingsTarget)} onOpenChange={(open) => !open && setSettingsTarget(null)}>
@@ -597,7 +464,7 @@ export function DependencyCards({
                           type="button"
                           variant="outline"
                           className="rounded-lg"
-                          disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending}
+                          disabled={isInstallingDependency || isDependencyServicePending}
                           onClick={() => void runQuickAction(settingsTarget, "start")}
                         >
                           {isDependencyServicePending && dependencyServicePendingKey === `${settingsTarget.id}-start` ? (
@@ -612,7 +479,7 @@ export function DependencyCards({
                         type="button"
                         variant="outline"
                         className="rounded-lg text-destructive hover:bg-destructive/10 hover:text-destructive"
-                        disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending || settingsTarget.running === false}
+                        disabled={isInstallingDependency || isDependencyServicePending || settingsTarget.running === false}
                         onClick={() => void runQuickAction(settingsTarget, "stop")}
                       >
                         {isDependencyServicePending && dependencyServicePendingKey === `${settingsTarget.id}-stop` ? (
@@ -626,7 +493,7 @@ export function DependencyCards({
                         type="button"
                         variant="secondary"
                         className="rounded-lg"
-                        disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending}
+                        disabled={isInstallingDependency || isDependencyServicePending}
                         onClick={() => void runQuickAction(settingsTarget, "restart")}
                       >
                         {isDependencyServicePending && dependencyServicePendingKey === `${settingsTarget.id}-restart` ? (
@@ -647,7 +514,7 @@ export function DependencyCards({
                     type="button"
                     variant="outline"
                     className="rounded-lg text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending}
+                    disabled={isInstallingDependency || isDependencyServicePending}
                     onClick={() => setUninstallTarget(settingsTarget)}
                   >
                     <Trash2 className="size-4" />
@@ -738,7 +605,7 @@ export function DependencyCards({
                   type="button"
                   variant="destructive"
                   className="rounded-lg"
-                  disabled={Boolean(installingStackId) || isInstallingDependency || isDependencyServicePending || isUsageLoading}
+                  disabled={isInstallingDependency || isDependencyServicePending || isUsageLoading}
                   onClick={() => void confirmUninstall()}
                 >
                   {isInstallingDependency && installingDependencyId === uninstallTarget.id ? (

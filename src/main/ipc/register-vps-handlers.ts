@@ -4,6 +4,7 @@ import {
 } from "../services/ssh-key-setup"
 import {
   browseRemoteFiles,
+  changeRemotePermissions,
   createRemoteDirectory,
   deleteRemoteEntry,
   downloadRemoteEntry,
@@ -13,6 +14,7 @@ import {
   readRemoteTextFile,
   renameRemoteEntry,
   restoreRemoteTrashEntry,
+  statRemoteEntry,
   writeRemoteTextFile,
 } from "../services/remote-files"
 import {
@@ -48,6 +50,7 @@ import {
   remoteBrowseSchema,
   remoteCreateDirectorySchema,
   remoteDownloadSchema,
+  remotePermissionSchema,
   remoteReadSchema,
   remoteRenameSchema,
   remoteTrashEntrySchema,
@@ -130,6 +133,12 @@ export function registerVpsHandlers() {
     return await readRemoteTextFile(connection, payload.path)
   })
 
+  registerIpcHandle("vps:files:stat", async (_event, payload: { connectionId: string; path: string }) => {
+    payload = parseOrThrow(remoteReadSchema, payload)
+    const connection = requireResolvedConnection(payload.connectionId)
+    return await statRemoteEntry(connection, payload.path)
+  })
+
   registerIpcHandle(
     "vps:files:write-text",
     async (_event, payload: { connectionId: string; path: string; content: string }) => {
@@ -154,6 +163,15 @@ export function registerVpsHandlers() {
       payload = parseOrThrow(remoteRenameSchema, payload)
       const connection = requireResolvedConnection(payload.connectionId)
       return await renameRemoteEntry(connection, payload.path, payload.nextName)
+    },
+  )
+
+  registerIpcHandle(
+    "vps:files:chmod",
+    async (_event, payload: { connectionId: string; path: string; mode: string; recursive?: boolean }) => {
+      payload = parseOrThrow(remotePermissionSchema, payload)
+      const connection = requireResolvedConnection(payload.connectionId)
+      return await changeRemotePermissions(connection, payload.path, payload.mode, payload.recursive)
     },
   )
 

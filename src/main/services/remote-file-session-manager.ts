@@ -4,6 +4,7 @@ import type {
   RemoteFileBrowseResult,
   RemoteFileMutationResult,
   RemoteFileReadResult,
+  RemoteFileStatResult,
   VpsConnectionInput,
 } from "../../shared/vps"
 import { REMOTE_FILE_HELPER_SCRIPT, REMOTE_FILE_HELPER_VERSION } from "./remote-file-helper-script"
@@ -15,7 +16,7 @@ const HELPER_VERSION_FILE = "remote-file-helper.version"
 const SESSION_IDLE_TIMEOUT_MS = 90_000
 const BROWSE_CACHE_TTL_MS = 10_000
 
-type HelperMethod = "ping" | "version" | "browse" | "readText" | "writeText" | "mkdir" | "rename" | "delete"
+type HelperMethod = "ping" | "version" | "browse" | "stat" | "readText" | "writeText" | "mkdir" | "rename" | "chmod" | "delete"
 
 type RpcEnvelope = {
   id: number | string | null
@@ -342,6 +343,11 @@ export async function readTextViaRemoteHelper(connection: VpsConnectionInput, re
   return (await requestRpc(session, "readText", { path: remotePath })) as RemoteFileReadResult
 }
 
+export async function statViaRemoteHelper(connection: VpsConnectionInput, remotePath: string) {
+  const session = await getOrCreateSession(connection)
+  return (await requestRpc(session, "stat", { path: remotePath })) as RemoteFileStatResult
+}
+
 export async function writeTextViaRemoteHelper(connection: VpsConnectionInput, remotePath: string, content: string) {
   const session = await getOrCreateSession(connection)
   const result = (await requestRpc(session, "writeText", {
@@ -374,6 +380,22 @@ export async function renameViaRemoteHelper(connection: VpsConnectionInput, remo
   })) as RemoteFileMutationResult
   invalidateBrowseCache(session, remotePath)
   invalidateBrowseCache(session, result.path)
+  return result
+}
+
+export async function chmodViaRemoteHelper(
+  connection: VpsConnectionInput,
+  remotePath: string,
+  mode: string,
+  recursive?: boolean,
+) {
+  const session = await getOrCreateSession(connection)
+  const result = (await requestRpc(session, "chmod", {
+    path: remotePath,
+    mode,
+    recursive,
+  })) as RemoteFileMutationResult
+  invalidateBrowseCache(session, remotePath)
   return result
 }
 

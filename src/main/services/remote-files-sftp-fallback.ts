@@ -2,11 +2,13 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
 import type {
+  RemoteFilePermissions,
   RemoteFileBrowseResult,
   RemoteFileDownloadInput,
   RemoteFileEntry,
   RemoteFileMutationResult,
   RemoteFileReadResult,
+  RemoteFileStatResult,
   RemoteTrashEntry,
   RemoteTrashListResult,
   RemoteFileType,
@@ -57,6 +59,38 @@ function asIsoTime(rawValue: unknown) {
   }
   const millis = rawValue > 1_000_000_000_000 ? rawValue : rawValue * 1000
   return new Date(millis).toISOString()
+}
+
+function formatPermissions(mode?: number): RemoteFilePermissions | undefined {
+  if (typeof mode !== "number" || !Number.isFinite(mode)) {
+    return undefined
+  }
+  const permissionBits = mode & 0o7777
+  const toTriplet = (value: number) => {
+    const flags = [
+      value & 0o4 ? "r" : "-",
+      value & 0o2 ? "w" : "-",
+      value & 0o1 ? "x" : "-",
+    ]
+    return flags.join("")
+  }
+  const special = (permissionBits >> 9) & 0o7
+  let owner = toTriplet((permissionBits >> 6) & 0o7)
+  let group = toTriplet((permissionBits >> 3) & 0o7)
+  let others = toTriplet(permissionBits & 0o7)
+  if (special & 0o4) {
+    owner = owner.slice(0, 2) + (owner[2] === "x" ? "s" : "S")
+  }
+  if (special & 0o2) {
+    group = group.slice(0, 2) + (group[2] === "x" ? "s" : "S")
+  }
+  if (special & 0o1) {
+    others = others.slice(0, 2) + (others[2] === "x" ? "t" : "T")
+  }
+  return {
+    octal: permissionBits.toString(8).padStart(special ? 4 : 3, "0"),
+    symbolic: `-${owner}${group}${others}`,
+  }
 }
 
 export function mapRemoteType(
@@ -406,6 +440,34 @@ export async function readRemoteTextFileViaSftp(
   })
 }
 
+export async function statRemoteEntryViaSftp(
+  connection: VpsConnectionInput,
+  remotePath: string,
+): Promise<RemoteFileStatResult> {
+  return await withSftp(connection, async (sftp) => {
+    const resolvedPath = await resolveBrowsePath(sftp, remotePath)
+    const stat = await sftp.stat(resolvedPath)
+    const type = mapRemoteType(
+      (stat as { type?: string }).type,
+      (stat as { longname?: string }).longname,
+      stat as {
+        isDirectory?: boolean
+        isSymbolicLink?: boolean
+        isFile?: boolean
+        mode?: number
+      },
+    )
+    return {
+      path: resolvedPath,
+      type,
+      size: Number((stat as { size?: number }).size ?? 0),
+      modifiedAt: asIsoTime((stat as { modifyTime?: number; mtime?: number }).modifyTime ?? (stat as { mtime?: number }).mtime),
+      realPath: await getRealRemotePath(sftp, resolvedPath),
+      permissions: formatPermissions((stat as { mode?: number }).mode),
+    }
+  })
+}
+
 export async function writeRemoteTextFileViaSftp(
   connection: VpsConnectionInput,
   remotePath: string,
@@ -462,6 +524,62 @@ export async function renameRemoteEntryViaSftp(
       ok: true,
       path: nextPath,
       message: "名称已更新",
+    }
+  })
+}
+
+export async function chmodRemoteEntryViaSftp(
+  connection: VpsConnectionInput,
+  remotePath: string,
+  mode: string,
+  recursive?: boolean,
+): Promise<RemoteFileMutationResult> {
+  if (!/^[0-7]{3,4}$/.test(mode.trim())) {
+    throw new Error("权限必须是 3 到 4 位八进制数字")
+  }
+  const modeValue = Number.parseInt(mode.trim(), 8)
+  return await withSftp(connection, async (sftp) => {
+    const resolvedPath = await resolveBrowsePath(sftp, remotePath)
+    const applyMode = async (targetPath: string) => {
+      await sftp.chmod(targetPath, modeValue)
+    }
+    await applyMode(resolvedPath)
+    if (recursive) {
+      const rootType = await getPathType(sftp, resolvedPath)
+      if (rootType === "directory") {
+        const walk = async (directoryPath: string) => {
+          const entries = await sftp.list(directoryPath)
+          for (const entry of entries) {
+            if (!entry.name || entry.name === "." || entry.name === "..") {
+              continue
+            }
+            const childPath = joinRemotePath(directoryPath, entry.name)
+            const childType = mapRemoteType(
+              (entry as { type?: string }).type,
+              (entry as { longname?: string }).longname,
+              entry as {
+                isDirectory?: boolean
+                isSymbolicLink?: boolean
+                isFile?: boolean
+                mode?: number
+              },
+            )
+            if (childType === "symlink") {
+              continue
+            }
+            await applyMode(childPath)
+            if (childType === "directory") {
+              await walk(childPath)
+            }
+          }
+        }
+        await walk(resolvedPath)
+      }
+    }
+    return {
+      ok: true,
+      path: resolvedPath,
+      message: "权限已更新",
     }
   })
 }

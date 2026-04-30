@@ -4,6 +4,35 @@ import type { ConnectionTestResult, VpsConnectionInput } from "../../shared/vps"
 import { resolveSshConnectConfig } from "./ssh-auth"
 import { connectSftpClient, connectSshClient, execOnClient } from "./ssh-runtime"
 
+function humanizeConnectionTestError(payload: VpsConnectionInput, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? "未知错误")
+
+  if (message.includes("All configured authentication methods failed")) {
+    const accountHint =
+      payload.username.trim() === "root"
+        ? "当前填写的是 root，很多云主机会默认禁用 root 密码登录。"
+        : "当前账号或认证方式没有被服务器接受。"
+
+    return new Error(
+      `SSH 认证失败。${accountHint} 请检查密码是否正确、服务器是否关闭了 PasswordAuthentication，或是否只允许私钥登录。`,
+    )
+  }
+
+  if (
+    message.includes("Timed out while waiting for handshake") ||
+    message.includes("connect ETIMEDOUT") ||
+    message.includes("Connection timed out")
+  ) {
+    return new Error(`无法连接到 ${payload.host}:${payload.port}，请检查服务器是否在线、防火墙/安全组是否已放行 SSH 端口。`)
+  }
+
+  if (message.includes("connect ECONNREFUSED")) {
+    return new Error(`目标 ${payload.host}:${payload.port} 拒绝连接，请检查 SSH 服务是否已启动，或端口是否填错。`)
+  }
+
+  return error instanceof Error ? error : new Error(message)
+}
+
 async function executeProbe(payload: VpsConnectionInput, config: ConnectConfig) {
   const start = Date.now()
   let fingerprint = ""
@@ -46,7 +75,12 @@ async function executeProbe(payload: VpsConnectionInput, config: ConnectConfig) 
 export async function testConnection(
   payload: VpsConnectionInput,
 ): Promise<ConnectionTestResult> {
-  const result = await executeProbe(payload, resolveSshConnectConfig(payload))
+  let result: Awaited<ReturnType<typeof executeProbe>>
+  try {
+    result = await executeProbe(payload, resolveSshConnectConfig(payload))
+  } catch (error) {
+    throw humanizeConnectionTestError(payload, error)
+  }
 
   return {
     success: true,

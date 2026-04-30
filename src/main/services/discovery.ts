@@ -257,6 +257,7 @@ export function listSshConfigCandidates(): SshConfigCandidate[] {
         source: "ssh-config" as const,
         configPath: item.configPath,
         identityFilePath: item.identityFile,
+        privateKey: readPrivateKey(item.identityFile),
       },
     ]
   })

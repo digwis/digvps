@@ -1,10 +1,14 @@
-import { BrowserWindow, dialog, type OpenDialogOptions } from "electron"
+import { BrowserWindow, dialog, shell, type OpenDialogOptions } from "electron"
+import fs from "node:fs"
+import path from "node:path"
+import { execFileSync, spawn } from "node:child_process"
 import {
   addLocalProjectFromPath,
   deleteLocalProject,
   getLocalProject,
   getVpsConnectionInput,
   listLocalProjects,
+  updateLocalProjectPath,
   updateLocalProjectDeployResult,
 } from "../services/db"
 import { readProjectDeployConfig, readProjectDeployProfile } from "../services/project-deploy-profile"
@@ -29,29 +33,42 @@ import {
   setProjectBackupSchedule,
 } from "../services/project-action-state"
 import { appendOperationLog, listOperationLogs } from "../services/project-operation-log"
+import { repairProjectNativeModules } from "../services/project-native-module-fix"
+import { readProjectLocalRuntime, writeProjectLocalRuntime } from "../services/project-local-runtime"
 import { runProjectRemoteBackup } from "../services/project-backup"
 import { migrateProjectBetweenServers } from "../services/project-migration"
+import { createProjectScaffold, getProjectConfig, setProjectRuntimeModules } from "../services/project-scaffold"
 import { buildProjectScriptEnv, resolveActionKindFromScript, resolveStoredPayload } from "./helpers"
 import { registerIpcHandle } from "./ipc-error"
 import {
   localProjectInputSchema,
+  operationLogAppendSchema,
   operationLogsQuerySchema,
   parseOrThrow,
   projectBackupScheduleSchema,
   projectConnectionSchema,
+  projectDeleteSchema,
   projectDeploySchema,
   projectEnvUpdateSchema,
   projectIdSchema,
+  projectLocalPathUpdateSchema,
+  projectRuntimeModulesUpdateSchema,
+  projectScaffoldSchema,
   projectMigrationSchema,
   projectRemoteDetailsSchema,
   projectSiteSettingsSchema,
 } from "./schemas"
 import type {
+  DigwisProjectConfig,
   LocalProjectInput,
+  ProjectDeleteInput,
   ProjectBackupSchedule,
   ProjectDeployInput,
+  ProjectLocalPathUpdateInput,
   ProjectMigrationInput,
   ProjectRemoteDetailsInput,
+  ProjectRuntimeModulesUpdateInput,
+  ProjectScaffoldInput,
   ProjectSiteSettingsInput,
 } from "../../shared/projects"
 
@@ -71,6 +88,199 @@ function requireConnection(connectionId: string) {
   return connection
 }
 
+function resolveProjectLocalPreview(projectPath: string) {
+  const fallback = {
+    url: "http://localhost:3000",
+    webPath: path.join(projectPath, "apps", "web"),
+    adminUrl: "http://localhost:3000/admin",
+  }
+  const contractPath = path.join(projectPath, "digwis-project.json")
+  if (!fs.existsSync(contractPath)) {
+    return fallback
+  }
+  try {
+    const raw = fs.readFileSync(contractPath, "utf8")
+    const parsed = JSON.parse(raw) as DigwisProjectConfig
+    const previewUrl = parsed.panel?.previewUrl?.trim() || fallback.url
+    const runtime = readProjectLocalRuntime(projectPath)
+    const webPath = parsed.apps?.web?.path
+      ? path.join(projectPath, parsed.apps.web.path)
+      : fallback.webPath
+    return {
+      url: runtime?.previewUrl?.trim() || previewUrl,
+      webPath,
+      adminUrl: runtime?.adminUrl?.trim() || parsed.panel?.adminUrl?.trim() || fallback.adminUrl,
+    }
+  } catch {
+    return fallback
+  }
+}
+
+function envWithExtraPath(): NodeJS.ProcessEnv {
+  if (process.platform === "win32") {
+    return process.env
+  }
+  const extra = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+  const existing = (process.env.PATH ?? "")
+    .split(":")
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const merged: string[] = []
+  const seen = new Set<string>()
+  for (const entry of [...extra, ...existing]) {
+    if (!seen.has(entry)) {
+      seen.add(entry)
+      merged.push(entry)
+    }
+  }
+  return { ...process.env, PATH: merged.join(":") }
+}
+
+function resolveDetachedDevCommand(projectPath: string) {
+  const contractPath = path.join(projectPath, "digwis-project.json")
+  if (fs.existsSync(contractPath)) {
+    try {
+      const raw = fs.readFileSync(contractPath, "utf8")
+      const parsed = JSON.parse(raw) as DigwisProjectConfig
+      if (parsed.projectType === "next-platform") {
+        return "npm run dev"
+      }
+    } catch {
+      // ignore and fall back to the generic dev command
+    }
+  }
+  return "npm run dev"
+}
+
+function startLocalDevDetached(projectPath: string, webPath: string) {
+  const runtimeDir = path.join(projectPath, ".digwis-panel")
+  fs.mkdirSync(runtimeDir, { recursive: true })
+  const logPath = path.join(runtimeDir, "local-dev.log")
+  const logFd = fs.openSync(logPath, "a")
+  const devCommand = resolveDetachedDevCommand(projectPath)
+  const child =
+    process.platform === "win32"
+      ? spawn("cmd.exe", ["/c", devCommand], {
+          cwd: webPath,
+          detached: true,
+          env: envWithExtraPath(),
+          stdio: ["ignore", logFd, logFd],
+        })
+      : spawn("/bin/bash", ["-lc", `cd "${webPath.replace(/"/g, '\\"')}" && ${devCommand}`], {
+          env: envWithExtraPath(),
+          detached: true,
+          stdio: ["ignore", logFd, logFd],
+        })
+  fs.closeSync(logFd)
+  child.unref()
+  return {
+    pid: child.pid ?? undefined,
+    logPath,
+  }
+}
+
+function resolveAdminUrlFromPreview(previewUrl: string, fallbackAdminUrl?: string) {
+  if (!fallbackAdminUrl) {
+    return `${previewUrl.replace(/\/$/, "")}/admin`
+  }
+  try {
+    const preview = new URL(previewUrl)
+    const admin = new URL(fallbackAdminUrl)
+    if (admin.port === "8055") {
+      return fallbackAdminUrl
+    }
+    admin.protocol = preview.protocol
+    admin.hostname = preview.hostname
+    admin.port = preview.port
+    return admin.toString().replace(/\/$/, "")
+  } catch {
+    return fallbackAdminUrl
+  }
+}
+
+function stopLocalRuntimeIfPresent(projectPath: string) {
+  const runtime = readProjectLocalRuntime(projectPath)
+  const pid = runtime?.pid
+  if (!pid || pid <= 0) {
+    return
+  }
+  try {
+    process.kill(-pid, "SIGTERM")
+  } catch {
+    try {
+      process.kill(pid, "SIGTERM")
+    } catch {
+      // ignore stale pid or already exited process
+    }
+  }
+}
+
+function removeLocalDirectoryStrict(localPath: string) {
+  if (!fs.existsSync(localPath)) {
+    return false
+  }
+
+  try {
+    fs.rmSync(localPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+  } catch (error) {
+    if (process.platform !== "win32") {
+      try {
+        execFileSync("/bin/rm", ["-rf", localPath], {
+          stdio: "ignore",
+        })
+      } catch {
+        throw error
+      }
+    } else {
+      throw error
+    }
+  }
+
+  if (fs.existsSync(localPath)) {
+    throw new Error(`本地目录删除失败，目录仍然存在：${localPath}`)
+  }
+
+  return true
+}
+
+async function waitForPreviewUrlFromLog(logPath: string, timeoutMs: number) {
+  const startedAt = Date.now()
+  const patterns = [
+    /Local:\s+(http:\/\/localhost:\d+)/i,
+    /Local:\s+(http:\/\/127\.0\.0\.1:\d+)/i,
+    /Local:\s+(http:\/\/\[::1\]:\d+)/i,
+  ]
+  while (Date.now() - startedAt < timeoutMs) {
+    if (fs.existsSync(logPath)) {
+      const raw = fs.readFileSync(logPath, "utf8")
+      for (const pattern of patterns) {
+        const match = raw.match(pattern)
+        if (match?.[1]) {
+          return match[1].replace("http://[::1]:", "http://localhost:")
+        }
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 700))
+  }
+  return null
+}
+
+function runInProjectDetached(projectPath: string, command: string) {
+  const child =
+    process.platform === "win32"
+      ? spawn("cmd.exe", ["/c", command], {
+          cwd: projectPath,
+          detached: true,
+          stdio: "ignore",
+        })
+      : spawn("/bin/bash", ["-lc", `cd "${projectPath.replace(/"/g, '\\"')}" && ${command}`], {
+          detached: true,
+          stdio: "ignore",
+        })
+  child.unref()
+  return child.pid ?? undefined
+}
+
 export function registerProjectHandlers() {
   registerIpcHandle("projects:list", async () => {
     return listLocalProjects()
@@ -80,10 +290,46 @@ export function registerProjectHandlers() {
     return addLocalProjectFromPath(parseOrThrow(localProjectInputSchema, payload))
   })
 
-  registerIpcHandle("projects:delete", async (_event, id: string) => {
-    id = parseOrThrow(projectIdSchema, id)
-    deleteLocalProject(id)
-    return { success: true as const }
+  registerIpcHandle("projects:create-scaffold", async (_event, payload: ProjectScaffoldInput) => {
+    const parsed = parseOrThrow(projectScaffoldSchema, payload)
+    return createProjectScaffold(parsed, {
+      onProgress: (progress) => {
+        _event.sender.send("projects:scaffold-progress", progress)
+      },
+    })
+  })
+
+  registerIpcHandle("projects:get-config", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
+    const project = requireProject(projectId)
+    return getProjectConfig(project.localPath)
+  })
+
+  registerIpcHandle("projects:set-runtime-modules", async (_event, payload: ProjectRuntimeModulesUpdateInput) => {
+    const parsed = parseOrThrow(projectRuntimeModulesUpdateSchema, payload)
+    const project = requireProject(parsed.projectId)
+    return setProjectRuntimeModules(project.localPath, parsed.runtimeModules)
+  })
+
+  registerIpcHandle("projects:update-local-path", async (_event, payload: ProjectLocalPathUpdateInput) => {
+    return updateLocalProjectPath(parseOrThrow(projectLocalPathUpdateSchema, payload))
+  })
+
+  registerIpcHandle("projects:delete", async (_event, payload: ProjectDeleteInput) => {
+    const parsed = parseOrThrow(projectDeleteSchema, payload)
+    const project = requireProject(parsed.projectId)
+    const localPath = project.localPath
+    let removedLocalDirectory = false
+    if (parsed.removeLocalDirectory) {
+      stopLocalRuntimeIfPresent(localPath)
+      removedLocalDirectory = removeLocalDirectoryStrict(localPath)
+    }
+    deleteLocalProject(parsed.projectId)
+    return {
+      success: true as const,
+      removedLocalDirectory,
+      localPath,
+    }
   })
 
   registerIpcHandle("projects:list-npm-scripts", async (_event, projectId: string) => {
@@ -93,6 +339,74 @@ export function registerProjectHandlers() {
       return []
     }
     return readPackageJsonScriptNames(project.localPath)
+  })
+
+  registerIpcHandle("projects:get-local-preview", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
+    const project = requireProject(projectId)
+    return resolveProjectLocalPreview(project.localPath)
+  })
+
+  registerIpcHandle("projects:open-local-preview", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
+    const project = requireProject(projectId)
+    const preview = resolveProjectLocalPreview(project.localPath)
+    await shell.openExternal(preview.url)
+    return preview
+  })
+
+  registerIpcHandle("projects:open-local-admin", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
+    const project = requireProject(projectId)
+    const preview = resolveProjectLocalPreview(project.localPath)
+    await shell.openExternal(preview.adminUrl || `${preview.url.replace(/\/$/, "")}/admin`)
+    return preview
+  })
+
+  registerIpcHandle("projects:start-local-dev", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
+    const project = requireProject(projectId)
+    const preview = resolveProjectLocalPreview(project.localPath)
+    if (!fs.existsSync(preview.webPath)) {
+      throw new Error(`本地 Web 目录不存在：${preview.webPath}`)
+    }
+    repairProjectNativeModules(project.localPath)
+    const started = startLocalDevDetached(project.localPath, preview.webPath)
+    const detectedPreviewUrl = await waitForPreviewUrlFromLog(started.logPath, 20_000)
+    const nextPreviewUrl = detectedPreviewUrl || preview.url
+    const nextAdminUrl = resolveAdminUrlFromPreview(nextPreviewUrl, preview.adminUrl)
+    writeProjectLocalRuntime(project.localPath, {
+      previewUrl: nextPreviewUrl,
+      adminUrl: nextAdminUrl,
+      pid: started.pid,
+      logPath: started.logPath,
+    })
+    return {
+      ok: true,
+      message: "已在后台启动本地开发服务",
+      pid: started.pid,
+      previewUrl: nextPreviewUrl,
+    }
+  })
+
+  registerIpcHandle("projects:start-local-admin-service", async (_event, projectId: string) => {
+    projectId = parseOrThrow(projectIdSchema, projectId)
+    const project = requireProject(projectId)
+    const preview = resolveProjectLocalPreview(project.localPath)
+    const directusCompose = path.join(project.localPath, "services", "directus", "docker-compose.yml")
+    if (!fs.existsSync(directusCompose)) {
+      return {
+        ok: true,
+        message: "当前项目没有独立 CMS sidecar，跳过后台管理服务启动。",
+        adminUrl: preview.adminUrl || `${preview.url.replace(/\/$/, "")}/admin`,
+      }
+    }
+    runInProjectDetached(project.localPath, "npm run directus:up")
+    return {
+      ok: true,
+      message: "已在后台启动 CMS 管理服务",
+      adminUrl: preview.adminUrl || "http://127.0.0.1:8055/admin",
+    }
   })
 
   registerIpcHandle("projects:get-deploy-profile", async (_event, projectId: string) => {
@@ -505,4 +819,13 @@ export function registerProjectHandlers() {
     payload = parseOrThrow(operationLogsQuerySchema, payload)
     return listOperationLogs(payload?.limit)
   })
+
+  registerIpcHandle(
+    "projects:append-operation-log",
+    async (_event, payload: { projectId: string; stream: "stdout" | "stderr" | "system"; chunk: string }) => {
+      payload = parseOrThrow(operationLogAppendSchema, payload)
+      requireProject(payload.projectId)
+      return appendOperationLog(payload)
+    },
+  )
 }

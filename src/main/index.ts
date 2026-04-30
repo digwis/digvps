@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu, screen } from "electron"
+import fs from "node:fs"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import {
   getVpsConnectionInput,
   initializeDatabase,
@@ -26,11 +28,42 @@ import { registerVpsHandlers } from "./ipc/register-vps-handlers"
 import type { ProjectBackupSchedule } from "../shared/projects"
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
+const appDisplayName = "digwis-panel"
+const aboutPanelCopyright = "西山懒懒翁"
+const appDisplayVersion = "0.01"
+const userDataDirectoryName = "digwis-panel"
 let backupScheduler: NodeJS.Timeout | null = null
 const runningBackupProjects = new Set<string>()
+const currentDir = path.dirname(fileURLToPath(import.meta.url))
+
+function getAppIconPath() {
+  const appBundleResource = path.join(process.resourcesPath, "digwis-panel.png")
+  if (fs.existsSync(appBundleResource)) {
+    return appBundleResource
+  }
+  return path.join(app.getAppPath(), "resources", "digwis-panel.png")
+}
+
+function configureAppIdentity() {
+  const iconPath = getAppIconPath()
+  const userDataPath = path.join(app.getPath("appData"), userDataDirectoryName)
+
+  app.setPath("userData", userDataPath)
+  app.setAboutPanelOptions({
+    applicationName: appDisplayName,
+    applicationVersion: appDisplayVersion,
+    copyright: aboutPanelCopyright,
+    iconPath: fs.existsSync(iconPath) ? iconPath : undefined,
+  })
+
+  if (process.platform === "darwin" && app.dock && fs.existsSync(iconPath)) {
+    app.dock.setIcon(iconPath)
+  }
+}
 
 function createWindow() {
   const workArea = screen.getPrimaryDisplay().workArea
+  const iconPath = getAppIconPath()
 
   const window = new BrowserWindow({
     x: workArea.x,
@@ -40,10 +73,12 @@ function createWindow() {
     minWidth: 1280,
     minHeight: 800,
     show: false,
+    title: appDisplayName,
     titleBarStyle: "hiddenInset",
     backgroundColor: "#0d0f14",
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
-      preload: path.join(__dirname, "../preload/index.mjs"),
+      preload: path.join(currentDir, "../preload/index.mjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -86,7 +121,7 @@ function createWindow() {
     window.loadURL(process.env.ELECTRON_RENDERER_URL!)
     window.webContents.openDevTools({ mode: "detach" })
   } else {
-    window.loadFile(path.join(__dirname, "../renderer/index.html"))
+    window.loadFile(path.join(currentDir, "../renderer/index.html"))
   }
 }
 
@@ -163,6 +198,7 @@ async function runDueBackupTasks() {
 }
 
 app.whenReady().then(() => {
+  configureAppIdentity()
   Menu.setApplicationMenu(null)
   const userDataPath = app.getPath("userData")
   initializeDatabase(userDataPath)

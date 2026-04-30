@@ -18,6 +18,46 @@ export const localProjectInputSchema = z.object({
   category: z.literal("local-dev").optional(),
 })
 
+export const projectLocalPathUpdateSchema = z.object({
+  projectId: projectIdSchema,
+  localPath: nonEmptyString("localPath"),
+})
+
+export const projectDeleteSchema = z.object({
+  projectId: projectIdSchema,
+  removeLocalDirectory: z.boolean().optional(),
+})
+
+export const projectScaffoldSchema = z.object({
+  displayName: nonEmptyString("displayName"),
+  slug: z
+    .string()
+    .trim()
+    .min(1, "slug不能为空")
+    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "slug 只能包含小写字母、数字和连字符"),
+  localPath: nonEmptyString("localPath"),
+  packageManager: z.literal("pnpm"),
+  monorepo: z.boolean(),
+  template: z.enum(["next-core", "next-payload", "next-directus"]),
+  database: z.enum(["postgresql", "sqlite"]),
+  runtimeModules: z
+    .array(z.enum(["auth", "docs", "dashboard", "blog", "i18n", "search", "queue", "payments", "multi-tenant"]))
+    .max(12),
+  serviceModules: z
+    .array(z.enum(["python-ai", "python-data", "go-worker", "rust-worker"]))
+    .max(8),
+  autoInstall: z.boolean().optional(),
+  autoStart: z.boolean().optional(),
+  fullTemplatePull: z.boolean().optional(),
+})
+
+export const projectRuntimeModulesUpdateSchema = z.object({
+  projectId: projectIdSchema,
+  runtimeModules: z
+    .array(z.enum(["auth", "docs", "dashboard", "blog", "i18n", "search", "queue", "payments", "multi-tenant"]))
+    .max(12),
+})
+
 export const projectConnectionSchema = z.object({
   projectId: projectIdSchema,
   connectionId: connectionIdSchema,
@@ -62,6 +102,12 @@ export const operationLogsQuerySchema = z
   })
   .optional()
 
+export const operationLogAppendSchema = z.object({
+  projectId: projectIdSchema,
+  stream: z.enum(["stdout", "stderr", "system"]),
+  chunk: z.string().min(1, "chunk不能为空"),
+})
+
 export const vpsConnectionInputSchema = z
   .object({
     id: optionalNonEmptyString(),
@@ -69,6 +115,9 @@ export const vpsConnectionInputSchema = z
     host: nonEmptyString("host"),
     port: z.number().int().min(1).max(65535),
     username: nonEmptyString("username"),
+    provider: z.string().trim().max(120).optional(),
+    locationLabel: z.string().trim().max(120).optional(),
+    expiresAt: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "到期时间格式必须为 YYYY-MM-DD").optional(),
     authType: z.enum(["password", "privateKey"]),
     password: z.string().optional(),
     privateKey: z.string().optional(),
@@ -122,6 +171,11 @@ export const remoteReadSchema = z.object({
   path: nonEmptyString("path"),
 })
 
+const permissionModeSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-7]{3,4}$/, "权限必须是 3 到 4 位八进制数字")
+
 export const remoteWriteSchema = remoteReadSchema.extend({
   content: z.string(),
 })
@@ -136,6 +190,11 @@ export const remoteRenameSchema = z.object({
   connectionId: connectionIdSchema,
   path: nonEmptyString("path"),
   nextName: nonEmptyString("nextName"),
+})
+
+export const remotePermissionSchema = remoteReadSchema.extend({
+  mode: permissionModeSchema,
+  recursive: z.boolean().optional(),
 })
 
 export const remoteUploadSchema = z.object({

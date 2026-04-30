@@ -3,6 +3,7 @@ import type {
   RemoteFileDownloadInput,
   RemoteFileMutationResult,
   RemoteFileReadResult,
+  RemoteFileStatResult,
   RemoteTrashListResult,
   RemoteFileUploadResult,
   VpsConnectionInput,
@@ -10,21 +11,25 @@ import type {
 import type { BrowserWindow } from "electron"
 import {
   browseViaRemoteHelper,
+  chmodViaRemoteHelper,
   disposeAllRemoteFileSessions,
   invalidatePath,
   mkdirViaRemoteHelper,
   readTextViaRemoteHelper,
   renameViaRemoteHelper,
+  statViaRemoteHelper,
   writeTextViaRemoteHelper,
 } from "./remote-file-session-manager"
 import {
   browseRemoteFilesViaSftp,
+  chmodRemoteEntryViaSftp,
   deleteRemoteEntryViaSftp,
   downloadRemoteEntryViaSftp,
   listRemoteTrashViaSftp,
   pickAndUploadRemoteEntriesViaSftp,
   readRemoteTextFileViaSftp,
   purgeRemoteTrashEntryViaSftp,
+  statRemoteEntryViaSftp,
   writeRemoteTextFileViaSftp,
   renameRemoteEntryViaSftp,
   restoreRemoteTrashEntryViaSftp,
@@ -51,6 +56,17 @@ export async function readRemoteTextFile(
     return await readTextViaRemoteHelper(connection, remotePath)
   } catch {
     return await readRemoteTextFileViaSftp(connection, remotePath)
+  }
+}
+
+export async function statRemoteEntry(
+  connection: VpsConnectionInput,
+  remotePath: string,
+): Promise<RemoteFileStatResult> {
+  try {
+    return await statViaRemoteHelper(connection, remotePath)
+  } catch {
+    return await statRemoteEntryViaSftp(connection, remotePath)
   }
 }
 
@@ -98,6 +114,23 @@ export async function renameRemoteEntry(
     const result = await renameRemoteEntryViaSftp(connection, remotePath, nextName)
     if (connection.id) {
       await invalidatePath(connection.id, remotePath)
+      await invalidatePath(connection.id, result.path)
+    }
+    return result
+  }
+}
+
+export async function changeRemotePermissions(
+  connection: VpsConnectionInput,
+  remotePath: string,
+  mode: string,
+  recursive?: boolean,
+): Promise<RemoteFileMutationResult> {
+  try {
+    return await chmodViaRemoteHelper(connection, remotePath, mode, recursive)
+  } catch {
+    const result = await chmodRemoteEntryViaSftp(connection, remotePath, mode, recursive)
+    if (connection.id) {
       await invalidatePath(connection.id, result.path)
     }
     return result

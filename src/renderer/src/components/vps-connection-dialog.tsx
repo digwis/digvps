@@ -30,6 +30,9 @@ const initialForm: VpsConnectionInput = {
   host: "",
   port: 22,
   username: "root",
+  provider: "",
+  locationLabel: "",
+  expiresAt: "",
   authType: "password",
   password: "",
   privateKey: "",
@@ -147,9 +150,12 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
       host: candidate.host,
       port: candidate.port,
       username: candidate.username,
+      provider: "",
+      locationLabel: "",
+      expiresAt: "",
       authType: candidate.authType,
       password: "",
-      privateKey: "",
+      privateKey: candidate.privateKey ?? "",
       passphrase: "",
     }))
     setHasStoredPassword(false)
@@ -327,6 +333,30 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                   value={form.username}
                   onChange={(event) => updateField("username", event.target.value)}
                   placeholder="root"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm text-muted-foreground">
+                服务商名称
+                <Input
+                  value={form.provider ?? ""}
+                  onChange={(event) => updateField("provider", event.target.value)}
+                  placeholder="例如 GreenCloud"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm text-muted-foreground">
+                机房地点 / 线路
+                <Input
+                  value={form.locationLabel ?? ""}
+                  onChange={(event) => updateField("locationLabel", event.target.value)}
+                  placeholder="例如 东京软银"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-sm text-muted-foreground">
+                到期时间
+                <Input
+                  type="date"
+                  value={form.expiresAt ?? ""}
+                  onChange={(event) => updateField("expiresAt", event.target.value)}
                 />
               </label>
             </div>

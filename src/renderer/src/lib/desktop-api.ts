@@ -67,6 +67,14 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
         wrapInvoke(() => requireMethod(api.projects.startProjectLocalDev, "启动本地开发接口")(projectId)),
       startProjectLocalAdminService: (projectId) =>
         wrapInvoke(() => requireMethod(api.projects.startProjectLocalAdminService, "启动本地管理服务接口")(projectId)),
+      checkProjectUrlReachable: (url) =>
+        wrapInvoke(() => requireMethod(api.projects.checkProjectUrlReachable, "本地地址探活接口")(url)),
+      openProjectClientAppPath: (payload) =>
+        wrapInvoke(() => requireMethod(api.projects.openProjectClientAppPath, "打开客户端目录接口")(payload)),
+      startProjectClientApp: (payload) =>
+        wrapInvoke(() => requireMethod(api.projects.startProjectClientApp, "启动客户端接口")(payload)),
+      openProjectClientAppIde: (payload) =>
+        wrapInvoke(() => requireMethod(api.projects.openProjectClientAppIde, "打开客户端 IDE 接口")(payload)),
       getDeployProfile: (projectId) => wrapInvoke(() => api.projects.getDeployProfile(projectId)),
       getProjectRemoteState: (payload) => wrapInvoke(() => api.projects.getProjectRemoteState(payload)),
       getProjectRemoteDetails: (payload) => wrapInvoke(() => api.projects.getProjectRemoteDetails(payload)),

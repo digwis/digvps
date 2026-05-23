@@ -1,5 +1,8 @@
-import { BrowserWindow, dialog, shell, type OpenDialogOptions } from "electron"
+import { BrowserWindow, dialog, shell } from "../electron-shim"
+import type { OpenDialogOptions } from "electron"
 import fs from "node:fs"
+import http from "node:http"
+import https from "node:https"
 import path from "node:path"
 import { execFileSync, spawn } from "node:child_process"
 import {
@@ -46,6 +49,7 @@ import {
   operationLogsQuerySchema,
   parseOrThrow,
   projectBackupScheduleSchema,
+  projectClientAppSchema,
   projectConnectionSchema,
   projectDeleteSchema,
   projectDeploySchema,
@@ -61,6 +65,7 @@ import {
 import type {
   DigwisProjectConfig,
   LocalProjectInput,
+  ProjectClientAppInput,
   ProjectDeleteInput,
   ProjectBackupSchedule,
   ProjectDeployInput,
@@ -70,6 +75,7 @@ import type {
   ProjectRuntimeModulesUpdateInput,
   ProjectScaffoldInput,
   ProjectSiteSettingsInput,
+  ProjectUrlReachabilityResult,
 } from "../../shared/projects"
 
 function requireProject(projectId: string) {
@@ -113,6 +119,82 @@ function resolveProjectLocalPreview(projectPath: string) {
     }
   } catch {
     return fallback
+  }
+}
+
+function checkUrlReachable(url: string, redirectCount = 0): Promise<ProjectUrlReachabilityResult> {
+  return new Promise((resolve) => {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch (error) {
+      resolve({
+        ok: false,
+        detail: error instanceof Error ? error.message : "invalid url",
+      })
+      return
+    }
+
+    const transport = parsed.protocol === "https:" ? https : http
+    const request = transport.request(
+      parsed,
+      {
+        method: "GET",
+        timeout: 2500,
+        headers: {
+          "user-agent": "digwis-panel/1.0",
+          accept: "*/*",
+        },
+      },
+      (response) => {
+        response.resume()
+        const status = response.statusCode ?? 0
+        const location = response.headers.location
+        if (location && status >= 300 && status < 400 && redirectCount < 3) {
+          const nextUrl = new URL(location, parsed).toString()
+          resolve(checkUrlReachable(nextUrl, redirectCount + 1))
+          return
+        }
+        resolve({
+          ok: status >= 200 && status < 400,
+          detail: `HTTP ${status}`,
+          status,
+          finalUrl: parsed.toString(),
+        })
+      },
+    )
+
+    request.on("timeout", () => {
+      request.destroy(new Error("timeout"))
+    })
+    request.on("error", (error) => {
+      resolve({
+        ok: false,
+        detail: error.message,
+        finalUrl: parsed.toString(),
+      })
+    })
+    request.end()
+  })
+}
+
+function resolveProjectClientApp(projectPath: string, target: ProjectClientAppInput["target"]) {
+  const contract = getProjectConfig(projectPath)
+  if (!contract) {
+    throw new Error("项目缺少 digwis-project.json，暂时无法解析客户端目录")
+  }
+  const app =
+    target === "electron"
+      ? contract.apps.desktop
+      : target === "ios-native"
+        ? contract.apps.mobileIos
+        : contract.apps.mobileAndroid
+  if (!app?.path) {
+    throw new Error("当前项目没有启用这个客户端目标")
+  }
+  return {
+    app,
+    absolutePath: path.join(projectPath, app.path),
   }
 }
 
@@ -281,6 +363,85 @@ function runInProjectDetached(projectPath: string, command: string) {
   return child.pid ?? undefined
 }
 
+function startClientAppDetached(projectPath: string, target: ProjectClientAppInput["target"], cwd: string, command: string) {
+  const runtimeDir = path.join(projectPath, ".digwis-panel")
+  fs.mkdirSync(runtimeDir, { recursive: true })
+  const suffix = target === "electron" ? "desktop" : target === "ios-native" ? "ios" : "android"
+  const logPath = path.join(runtimeDir, `${suffix}.log`)
+  const logFd = fs.openSync(logPath, "a")
+  const child =
+    process.platform === "win32"
+      ? spawn("cmd.exe", ["/c", command], {
+          cwd,
+          detached: true,
+          env: envWithExtraPath(),
+          stdio: ["ignore", logFd, logFd],
+        })
+      : spawn("/bin/bash", ["-lc", `cd "${cwd.replace(/"/g, '\\"')}" && ${command}`], {
+          cwd,
+          detached: true,
+          env: envWithExtraPath(),
+          stdio: ["ignore", logFd, logFd],
+        })
+  fs.closeSync(logFd)
+  child.unref()
+  return {
+    pid: child.pid ?? undefined,
+    logPath,
+  }
+}
+
+function findIosIdePath(clientRoot: string) {
+  const entries = fs.readdirSync(clientRoot, { withFileTypes: true })
+  const workspace = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".xcworkspace"))
+  if (workspace) {
+    return path.join(clientRoot, workspace.name)
+  }
+  const project = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".xcodeproj"))
+  if (project) {
+    return path.join(clientRoot, project.name)
+  }
+  return clientRoot
+}
+
+function ensureIosIdeProject(clientRoot: string) {
+  const existing = findIosIdePath(clientRoot)
+  if (existing !== clientRoot) {
+    return existing
+  }
+  const projectYml = path.join(clientRoot, "project.yml")
+  if (!fs.existsSync(projectYml)) {
+    return clientRoot
+  }
+  try {
+    execFileSync("/usr/bin/env", ["xcodegen", "generate"], {
+      cwd: clientRoot,
+      stdio: "ignore",
+      env: envWithExtraPath(),
+    })
+  } catch {
+    throw new Error("未检测到可用的 xcodegen。请先安装 xcodegen，或手动在 Xcode 中创建工程。")
+  }
+  return findIosIdePath(clientRoot)
+}
+
+async function openPathInApplication(application: "Xcode" | "Android Studio", targetPath: string) {
+  if (process.platform !== "darwin") {
+    throw new Error(`${application} 一键打开目前只支持 macOS`)
+  }
+  return await new Promise<void>((resolve, reject) => {
+    const child = spawn("open", ["-a", application, targetPath], {
+      detached: true,
+      stdio: "ignore",
+    })
+    child.once("error", reject)
+    child.once("spawn", () => {
+      child.unref()
+      resolve()
+    })
+  })
+}
+
 export function registerProjectHandlers() {
   registerIpcHandle("projects:list", async () => {
     return listLocalProjects()
@@ -406,6 +567,72 @@ export function registerProjectHandlers() {
       ok: true,
       message: "已在后台启动 CMS 管理服务",
       adminUrl: preview.adminUrl || "http://127.0.0.1:8055/admin",
+    }
+  })
+
+  registerIpcHandle("projects:check-url-reachable", async (_event, url: string) => {
+    if (typeof url !== "string" || url.trim().length === 0) {
+      throw new Error("URL 不能为空")
+    }
+    return checkUrlReachable(url.trim())
+  })
+
+  registerIpcHandle("projects:open-client-app-path", async (_event, payload: ProjectClientAppInput) => {
+    const parsed = parseOrThrow(projectClientAppSchema, payload)
+    const project = requireProject(parsed.projectId)
+    const resolved = resolveProjectClientApp(project.localPath, parsed.target)
+    if (!fs.existsSync(resolved.absolutePath)) {
+      throw new Error(`客户端目录不存在：${resolved.absolutePath}`)
+    }
+    const openResult = await shell.openPath(resolved.absolutePath)
+    if (openResult) {
+      throw new Error(openResult)
+    }
+    return {
+      ok: true as const,
+      target: parsed.target,
+      path: resolved.absolutePath,
+    }
+  })
+
+  registerIpcHandle("projects:start-client-app", async (_event, payload: ProjectClientAppInput) => {
+    const parsed = parseOrThrow(projectClientAppSchema, payload)
+    const project = requireProject(parsed.projectId)
+    const resolved = resolveProjectClientApp(project.localPath, parsed.target)
+    if (!fs.existsSync(resolved.absolutePath)) {
+      throw new Error(`客户端目录不存在：${resolved.absolutePath}`)
+    }
+    if (!resolved.app.devCommand?.trim()) {
+      throw new Error("当前客户端骨架没有可直接启动的 dev 命令")
+    }
+    const started = startClientAppDetached(project.localPath, parsed.target, resolved.absolutePath, resolved.app.devCommand)
+    return {
+      ok: true as const,
+      message: "已在后台启动客户端",
+      target: parsed.target,
+      path: resolved.absolutePath,
+      pid: started.pid,
+    }
+  })
+
+  registerIpcHandle("projects:open-client-app-ide", async (_event, payload: ProjectClientAppInput) => {
+    const parsed = parseOrThrow(projectClientAppSchema, payload)
+    const project = requireProject(parsed.projectId)
+    const resolved = resolveProjectClientApp(project.localPath, parsed.target)
+    if (!fs.existsSync(resolved.absolutePath)) {
+      throw new Error(`客户端目录不存在：${resolved.absolutePath}`)
+    }
+    if (parsed.target === "electron") {
+      throw new Error("Electron 客户端没有专用原生 IDE，请直接使用启动或打开目录。")
+    }
+    const application = parsed.target === "ios-native" ? "Xcode" : "Android Studio"
+    const ideTargetPath = parsed.target === "ios-native" ? ensureIosIdeProject(resolved.absolutePath) : resolved.absolutePath
+    await openPathInApplication(application, ideTargetPath)
+    return {
+      ok: true as const,
+      target: parsed.target,
+      path: ideTargetPath,
+      application,
     }
   })
 

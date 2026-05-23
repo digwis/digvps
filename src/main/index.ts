@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, screen } from "electron"
+import { app, BrowserWindow, ipcMain, Menu, screen } from "./electron-shim"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -91,6 +91,15 @@ function createWindow() {
 
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     console.error("Preload failed:", preloadPath, error)
+  })
+
+  window.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    console.error("Renderer failed to load:", {
+      errorCode,
+      errorDescription,
+      validatedURL,
+      isMainFrame,
+    })
   })
 
   window.webContents.on("before-input-event", (event, input) => {

@@ -80,33 +80,23 @@ export function SystemUpgradePrompt({ connection }: Props) {
         <DialogHeader>
           <DialogTitle>检测到系统软件包可更新</DialogTitle>
           <DialogDescription>
-            当前主机使用 APT，并已发现可升级软件包。若远端已配置免密 sudo，可直接在本面板点击按钮，程序会通过已保存的 SSH
-            凭据连接服务器并在远端执行 apt 升级命令，无需你再单独打开终端敲命令。
+            这台服务器有可更新的软件包。你可以自己在 SSH 里执行命令，或在面板里一键更新。
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 text-sm text-muted-foreground">
           <p>
-            共检测到{" "}
-            <span className="font-medium text-foreground">{upgradePrompt?.upgradableCount}</span>{" "}
-            个可升级项（基于当前软件源缓存；若刚改过源，请先执行{" "}
-            <code className="text-foreground">sudo apt update</code> 再统计）。
+            检测到 <span className="font-medium text-foreground">{upgradePrompt?.upgradableCount}</span> 个可升级项。
+            {!upgradePrompt?.indexRefreshed ? (
+              <>
+                {" "}
+                如果你刚改过软件源，先执行 <code className="text-foreground">sudo apt-get update</code> 再更新。
+              </>
+            ) : null}
           </p>
-          {upgradePrompt?.indexRefreshed ? (
-            <p>
-              已尝试使用免密 <code className="text-foreground">sudo</code> 执行{" "}
-              <code className="text-foreground">apt-get update</code> 刷新索引。
-            </p>
-          ) : (
-            <p>
-              未配置免密 <code className="text-foreground">sudo</code> 时无法替你在后台刷新索引，数量可能偏保守；自行执行下方命令即可更新索引并升级。
-            </p>
-          )}
 
           <div className="rounded-lg border border-border bg-muted/30 p-3 text-foreground">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">方式一 · 在 SSH 里自行执行</p>
-            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              登录服务器后在终端粘贴执行，可在提示时输入你的 sudo 密码。
-            </p>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">终端命令</p>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">登录服务器后直接执行，可按提示输入 sudo 密码。</p>
             <code className="mt-2 block whitespace-pre-wrap break-all rounded-md border border-border bg-background/80 px-2 py-2 text-xs text-foreground">
               {MANUAL_UPGRADE_COMMANDS}
             </code>
@@ -127,17 +117,14 @@ export function SystemUpgradePrompt({ connection }: Props) {
           </div>
 
           <div className="rounded-lg border border-border/80 p-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">方式二 · 在面板里一键执行</p>
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">一键更新说明</p>
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              点击下方主按钮后，应用主进程会通过 SSH 在服务器上<strong className="font-medium text-foreground">直接运行</strong>
-              下列命令（非交互会话，使用 <code className="text-foreground">sudo -n</code>），与你在 SSH 里手动执行等价，前提是账户已配置免密
-              sudo（如 <code className="text-foreground">NOPASSWD</code>）。
+              下方按钮会通过 SSH 在服务器上直接执行同样的升级命令。
             </p>
-            <p className="mt-2 text-xs text-destructive">未配置免密 sudo 时，该按钮会失败，请改用上方方式一。</p>
-            <code className="mt-2 block break-all rounded-md border border-border bg-muted/50 px-2 py-2 text-xs text-foreground">
-              {"apt-get update && apt-get full-upgrade -y && apt-get autoremove -y"}
-              {reboot ? " && shutdown -r +0" : ""}
-            </code>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              如果之前一键更新失败，通常是因为账户<strong className="font-medium text-foreground">没有配置免密 sudo</strong>，而不是没有 sudo 权限。
+            </p>
+            <p className="mt-2 text-xs text-destructive">需要输入 sudo 密码时，请改用上面的终端命令。</p>
             <label className="mt-3 flex cursor-pointer items-start gap-2 text-foreground">
               <input
                 type="checkbox"

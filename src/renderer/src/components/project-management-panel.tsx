@@ -59,6 +59,7 @@ import { useProjectStore } from "@/store/project-store"
 import { toast } from "@/hooks/use-toast"
 import type {
   DigwisProjectConfig,
+  ProjectClientTarget,
   LocalProjectRecord,
   ProjectActionKind,
   ProjectActionHint,
@@ -151,6 +152,12 @@ const serviceModuleOptions: Array<{ value: ProjectServiceModule; label: string; 
   { value: "rust-worker", label: "Rust Worker", detail: "极致性能或本地核心模块的占位服务。" },
 ]
 
+const clientTargetOptions: Array<{ value: ProjectClientTarget; label: string; detail: string }> = [
+  { value: "electron", label: "Electron Desktop", detail: "生成桌面客户端骨架，可与 Web 共享核心模块与接口。" },
+  { value: "ios-native", label: "Native iOS", detail: "生成 SwiftUI 原生 iOS 目录骨架，适合作为苹果客户端起点。" },
+  { value: "android-native", label: "Native Android", detail: "生成 Kotlin 原生 Android 目录骨架，适合作为安卓客户端起点。" },
+]
+
 function toProjectSlug(value: string) {
   return value
     .trim()
@@ -159,27 +166,19 @@ function toProjectSlug(value: string) {
     .replace(/^-+|-+$/g, "")
 }
 
-async function checkUrlReachable(url: string): Promise<{ ok: boolean; detail: string }> {
-  try {
-    const controller = new AbortController()
-    const timer = window.setTimeout(() => controller.abort(), 2500)
-    const response = await fetch(url, {
-      method: "GET",
-      signal: controller.signal,
-      cache: "no-store",
-    })
-    window.clearTimeout(timer)
-    const ok = response.status > 0 && response.status < 600
-    return {
-      ok,
-      detail: ok ? `HTTP ${response.status}` : `HTTP ${response.status}`,
-    }
-  } catch (error) {
-    return {
-      ok: false,
-      detail: error instanceof Error ? error.message : "request failed",
-    }
+function joinProjectPath(parentPath: string, slug: string) {
+  const base = parentPath.trim().replace(/[\\/]+$/, "")
+  if (!base) {
+    return slug.trim()
   }
+  if (!slug.trim()) {
+    return base
+  }
+  return `${base}/${slug.trim()}`
+}
+
+async function checkUrlReachable(url: string): Promise<{ ok: boolean; detail: string }> {
+  return getDesktopApi().projects.checkProjectUrlReachable(url)
 }
 
 function formatFileSize(size: number) {
@@ -200,6 +199,47 @@ function connectionLabel(connections: VpsConnectionRecord[], id?: string | null)
     return ""
   }
   return connections.find((c) => c.id === id)?.name ?? ""
+}
+
+function clientTargetBadgeLabel(target: ProjectClientTarget) {
+  if (target === "electron") return "Electron"
+  if (target === "ios-native") return "iOS"
+  return "Android"
+}
+
+function clientAppSummary(config: DigwisProjectConfig | null) {
+  if (!config) {
+    return []
+  }
+  const items: Array<{ key: string; target: ProjectClientTarget; label: string; path: string; command?: string }> = []
+  if (config.apps.desktop) {
+    items.push({
+      key: "desktop",
+      target: "electron",
+      label: "Electron",
+      path: config.apps.desktop.path,
+      command: config.apps.desktop.devCommand,
+    })
+  }
+  if (config.apps.mobileIos) {
+    items.push({
+      key: "mobile-ios",
+      target: "ios-native",
+      label: "iOS",
+      path: config.apps.mobileIos.path,
+      command: config.apps.mobileIos.devCommand,
+    })
+  }
+  if (config.apps.mobileAndroid) {
+    items.push({
+      key: "mobile-android",
+      target: "android-native",
+      label: "Android",
+      path: config.apps.mobileAndroid.path,
+      command: config.apps.mobileAndroid.devCommand,
+    })
+  }
+  return items
 }
 
 function buildDeployScriptOptions(scripts: string[]): DeployScriptOption[] {
@@ -544,6 +584,12 @@ function ProjectDeployCard({
   const [previewAlive, setPreviewAlive] = useState(false)
   const [adminAlive, setAdminAlive] = useState(false)
   const [healthChecking, setHealthChecking] = useState(false)
+  const hasProjectContract = projectConfig != null
+  const clientApps = useMemo(() => clientAppSummary(projectConfig), [projectConfig])
+  const projectClientTargets = projectConfig?.clientTargets ?? []
+  const [openingClientTarget, setOpeningClientTarget] = useState<ProjectClientTarget | null>(null)
+  const [startingClientTarget, setStartingClientTarget] = useState<ProjectClientTarget | null>(null)
+  const [openingClientIdeTarget, setOpeningClientIdeTarget] = useState<ProjectClientTarget | null>(null)
   const hintByAction = useMemo(() => {
     const map = new Map<string, ProjectActionHint>()
     for (const item of actionHints ?? []) {
@@ -903,6 +949,16 @@ function ProjectDeployCard({
     setLoadingModules(true)
     try {
       const config = await getDesktopApi().projects.getProjectConfig(project.id)
+      if (!config) {
+        toast({
+          title: `${project.displayName} 还未接入面板项目协议`,
+          description: "当前目录里没有 digwis-project.json，暂时不能从这里管理运行时模块。",
+        })
+        setModulesOpen(false)
+        setProjectConfig(null)
+        setModuleDraft([])
+        return
+      }
       setProjectConfig(config)
       setModuleDraft(config?.runtimeModules ?? [])
     } catch (error) {
@@ -1129,6 +1185,72 @@ function ProjectDeployCard({
       })
     } finally {
       setAutoFixingLocal(false)
+    }
+  }
+
+  const openClientAppPath = async (target: ProjectClientTarget) => {
+    setOpeningClientTarget(target)
+    try {
+      const result = await getDesktopApi().projects.openProjectClientAppPath({
+        projectId: project.id,
+        target,
+      })
+      toast({
+        title: `${project.displayName} 已打开客户端目录`,
+        description: result.path,
+      })
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 目录打开失败`,
+        description: error instanceof Error ? error.message : "无法打开客户端目录",
+      })
+    } finally {
+      setOpeningClientTarget(null)
+    }
+  }
+
+  const startClientApp = async (target: ProjectClientTarget) => {
+    setStartingClientTarget(target)
+    try {
+      const result = await getDesktopApi().projects.startProjectClientApp({
+        projectId: project.id,
+        target,
+      })
+      toast({
+        title: `${project.displayName} 客户端已启动`,
+        description: `${result.path}${result.pid ? ` (pid ${result.pid})` : ""}`,
+      })
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} 启动失败`,
+        description: error instanceof Error ? error.message : "无法启动客户端",
+      })
+    } finally {
+      setStartingClientTarget(null)
+    }
+  }
+
+  const openClientAppIde = async (target: ProjectClientTarget) => {
+    setOpeningClientIdeTarget(target)
+    try {
+      const result = await getDesktopApi().projects.openProjectClientAppIde({
+        projectId: project.id,
+        target,
+      })
+      toast({
+        title: `${project.displayName} 已在 ${result.application} 中打开`,
+        description: result.path,
+      })
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: `${project.displayName} IDE 打开失败`,
+        description: error instanceof Error ? error.message : "无法打开客户端 IDE",
+      })
+    } finally {
+      setOpeningClientIdeTarget(null)
     }
   }
 
@@ -1638,6 +1760,7 @@ function ProjectDeployCard({
                   type="button"
                   variant="outline"
                   className="h-9 rounded-2xl px-3 text-xs shadow-none"
+                  title={hasProjectContract ? "管理运行时模块" : "当前项目尚未接入 digwis-project.json"}
                   onClick={() => void openRuntimeModulesDialog()}
                 >
                   <Blocks className="size-4" />
@@ -1699,10 +1822,113 @@ function ProjectDeployCard({
                         {runtimeModuleOptions.find((option) => option.value === moduleId)?.label ?? moduleId}
                       </Badge>
                     ))}
-                    {projectConfig?.runtimeModules?.length ? null : (
+                    {!hasProjectContract ? (
+                      <span className="text-[11px] text-muted-foreground">
+                        未接入 Digwis 项目协议，当前只保留基础部署信息
+                      </span>
+                    ) : projectConfig?.runtimeModules?.length ? null : (
                       <span className="text-[11px] text-muted-foreground">尚未声明运行时模块</span>
                     )}
                   </div>
+                  {hasProjectContract ? (
+                    <div className="space-y-2">
+                      <p>客户端</p>
+                      {projectClientTargets.length ? (
+                        <>
+                          <div className="flex flex-wrap gap-2">
+                            {projectClientTargets.map((target) => (
+                              <Badge key={target} variant="outline" className="h-5 rounded-md px-2 font-normal shadow-none">
+                                {clientTargetBadgeLabel(target)}
+                              </Badge>
+                            ))}
+                          </div>
+                          <div className="space-y-2">
+                            {clientApps.map((app) => (
+                              <div
+                                key={app.key}
+                                className="rounded-2xl border border-border/60 bg-background/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.03]"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-sm text-foreground">{app.label}</span>
+                                  <span className="truncate font-mono text-[11px] text-muted-foreground">{app.path}</span>
+                                </div>
+                                {app.command ? (
+                                  <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">{app.command}</p>
+                                ) : (
+                                  <p className="mt-1 text-[11px] text-muted-foreground">当前提供目录骨架，启动流程需在对应原生工程中继续完成。</p>
+                                )}
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {app.target === "ios-native" || app.target === "android-native" ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      className="h-7 rounded-xl px-2 text-[11px] shadow-none"
+                                      disabled={openingClientIdeTarget === app.target}
+                                      onClick={() => void openClientAppIde(app.target)}
+                                    >
+                                      {openingClientIdeTarget === app.target ? (
+                                        <>
+                                          <LoaderCircle className="size-3 animate-spin" />
+                                          打开中…
+                                        </>
+                                      ) : (
+                                        <>
+                                          <ExternalLink className="size-3" />
+                                          打开 IDE
+                                        </>
+                                      )}
+                                    </Button>
+                                  ) : null}
+                                  {app.command ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      className="h-7 rounded-xl px-2 text-[11px] shadow-none"
+                                      disabled={startingClientTarget === app.target}
+                                      onClick={() => void startClientApp(app.target)}
+                                    >
+                                      {startingClientTarget === app.target ? (
+                                        <>
+                                          <LoaderCircle className="size-3 animate-spin" />
+                                          启动中…
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Server className="size-3" />
+                                          启动
+                                        </>
+                                      )}
+                                    </Button>
+                                  ) : null}
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="h-7 rounded-xl px-2 text-[11px] shadow-none"
+                                    disabled={openingClientTarget === app.target}
+                                    onClick={() => void openClientAppPath(app.target)}
+                                  >
+                                    {openingClientTarget === app.target ? (
+                                      <>
+                                        <LoaderCircle className="size-3 animate-spin" />
+                                        打开中…
+                                      </>
+                                    ) : (
+                                      <>
+                                        <FolderOpen className="size-3" />
+                                        打开目录
+                                      </>
+                                    )}
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground">当前项目仅生成 Web 端。</span>
+                      )}
+                    </div>
+                  ) : null}
                   <div className="flex flex-wrap gap-x-6 gap-y-2">
                     <p>
                       代码
@@ -2464,11 +2690,11 @@ export function ProjectManagementPanel({
   const [creatingScaffold, setCreatingScaffold] = useState(false)
   const [scaffoldDisplayName, setScaffoldDisplayName] = useState("")
   const [scaffoldSlug, setScaffoldSlug] = useState("")
-  const [scaffoldLocalPath, setScaffoldLocalPath] = useState("")
+  const [scaffoldParentPath, setScaffoldParentPath] = useState("/Users/zhao/Documents/Projects")
   const [slugManuallyEdited, setSlugManuallyEdited] = useState(false)
-  const [pathManuallyEdited, setPathManuallyEdited] = useState(false)
   const [scaffoldTemplate, setScaffoldTemplate] = useState<ProjectScaffoldTemplate>("next-core")
   const [scaffoldDatabase, setScaffoldDatabase] = useState<ProjectScaffoldDatabase>("postgresql")
+  const [scaffoldClientTargets, setScaffoldClientTargets] = useState<ProjectClientTarget[]>([])
   const [scaffoldRuntimeModules, setScaffoldRuntimeModules] = useState<ProjectRuntimeModule[]>(["auth", "dashboard"])
   const [scaffoldServiceModules, setScaffoldServiceModules] = useState<ProjectServiceModule[]>([])
   const [useFullTemplatePull, setUseFullTemplatePull] = useState(false)
@@ -2482,6 +2708,10 @@ export function ProjectManagementPanel({
     }
     return map
   }, [operationLogs])
+  const scaffoldLocalPath = useMemo(
+    () => joinProjectPath(scaffoldParentPath, scaffoldSlug),
+    [scaffoldParentPath, scaffoldSlug],
+  )
 
   useEffect(() => {
     void loadProjects()
@@ -2615,6 +2845,12 @@ export function ProjectManagementPanel({
     }
   }, [scaffoldTemplate, useFullTemplatePull, scaffoldDatabase])
 
+  const toggleClientTarget = (value: ProjectClientTarget) => {
+    setScaffoldClientTargets((current) =>
+      current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
+    )
+  }
+
   const toggleRuntimeModule = (value: ProjectRuntimeModule) => {
     setScaffoldRuntimeModules((current) =>
       current.includes(value) ? current.filter((item) => item !== value) : [...current, value],
@@ -2630,11 +2866,11 @@ export function ProjectManagementPanel({
   const openCreateDialog = () => {
     setScaffoldDisplayName("")
     setScaffoldSlug("")
-    setScaffoldLocalPath("")
+    setScaffoldParentPath("/Users/zhao/Documents/Projects")
     setSlugManuallyEdited(false)
-    setPathManuallyEdited(false)
     setScaffoldTemplate("next-core")
     setScaffoldDatabase("postgresql")
+    setScaffoldClientTargets([])
     setScaffoldRuntimeModules(["auth", "dashboard"])
     setScaffoldServiceModules([])
     setUseFullTemplatePull(false)
@@ -2644,8 +2880,7 @@ export function ProjectManagementPanel({
   const pickScaffoldDirectory = async () => {
     const picked = await getDesktopApi().projects.pickProjectDirectory()
     if (picked) {
-      setScaffoldLocalPath(picked)
-      setPathManuallyEdited(true)
+      setScaffoldParentPath(picked)
     }
   }
 
@@ -2658,6 +2893,7 @@ export function ProjectManagementPanel({
       monorepo: true,
       template: scaffoldTemplate,
       database: scaffoldDatabase,
+      clientTargets: scaffoldClientTargets,
       runtimeModules: scaffoldRuntimeModules,
       serviceModules: scaffoldServiceModules,
       autoInstall: true,
@@ -2778,11 +3014,13 @@ export function ProjectManagementPanel({
     if (!selectedConnectionId) {
       return sorted
     }
-    return sorted.filter((project) => project.lastConnectionId === selectedConnectionId)
+    return sorted.filter(
+      (project) => !project.lastConnectionId || project.lastConnectionId === selectedConnectionId,
+    )
   }, [selectedConnectionId, sorted])
   const visibleScaffoldCard = activeScaffold && !activeScaffold.projectId ? activeScaffold : null
   const createDisabled =
-    creatingScaffold || !scaffoldDisplayName.trim() || !scaffoldSlug.trim() || !scaffoldLocalPath.trim()
+    creatingScaffold || !scaffoldDisplayName.trim() || !scaffoldSlug.trim() || !scaffoldParentPath.trim()
   const missingFields: string[] = []
   if (!scaffoldDisplayName.trim()) {
     missingFields.push("项目名")
@@ -2790,8 +3028,8 @@ export function ProjectManagementPanel({
   if (!scaffoldSlug.trim()) {
     missingFields.push("slug")
   }
-  if (!scaffoldLocalPath.trim()) {
-    missingFields.push("项目目录")
+  if (!scaffoldParentPath.trim()) {
+    missingFields.push("父目录")
   }
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-6">
@@ -2800,7 +3038,7 @@ export function ProjectManagementPanel({
           <DialogHeader>
             <DialogTitle>创建平台项目</DialogTitle>
             <DialogDescription>
-              生成一个以 Next.js 为中心、可挂接 Python、Go、Rust 服务的项目骨架，并自动加入当前面板。默认 Next 应用会放在
+              生成一个以 Next.js 为中心、可挂接 Electron、iOS、Android 与 Python/Go/Rust 服务的项目骨架，并自动加入当前面板。默认 Web 应用会放在
               <code className="mx-1">apps/web</code>。
             </DialogDescription>
           </DialogHeader>
@@ -2818,9 +3056,6 @@ export function ProjectManagementPanel({
                     if (!slugManuallyEdited) {
                       setScaffoldSlug(nextSlug)
                     }
-                    if (!pathManuallyEdited && nextSlug) {
-                      setScaffoldLocalPath(`/Users/zhao/Documents/Projects/${nextSlug}`)
-                    }
                   }}
                   placeholder="Digwis Platform"
                 />
@@ -2834,9 +3069,6 @@ export function ProjectManagementPanel({
                     const nextSlug = toProjectSlug(event.target.value)
                     setSlugManuallyEdited(true)
                     setScaffoldSlug(nextSlug)
-                    if (!pathManuallyEdited && nextSlug) {
-                      setScaffoldLocalPath(`/Users/zhao/Documents/Projects/${nextSlug}`)
-                    }
                   }}
                   placeholder="digwis-platform"
                 />
@@ -2844,23 +3076,28 @@ export function ProjectManagementPanel({
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="scaffold-local-path">项目目录</Label>
+              <Label htmlFor="scaffold-parent-path">父目录</Label>
               <div className="flex gap-2">
                 <Input
-                  id="scaffold-local-path"
-                  value={scaffoldLocalPath}
+                  id="scaffold-parent-path"
+                  value={scaffoldParentPath}
                   onChange={(event) => {
-                    setPathManuallyEdited(true)
-                    setScaffoldLocalPath(event.target.value)
+                    setScaffoldParentPath(event.target.value)
                   }}
-                  placeholder="/Users/zhao/Documents/Projects/my-project"
+                  placeholder="/Users/zhao/Documents/Projects"
                 />
                 <Button type="button" variant="outline" onClick={() => void pickScaffoldDirectory()}>
                   <FolderOpen className="size-4" />
                   选择目录
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">当前第一版会在目标目录生成 monorepo 结构，建议选择新目录或空目录。</p>
+              <div className="grid gap-1 text-xs text-muted-foreground">
+                <p>创建时会自动在这个父目录下新建项目文件夹。</p>
+                <p>
+                  最终目录：
+                  <span className="ml-1 font-mono text-foreground">{scaffoldLocalPath || "请输入项目名"}</span>
+                </p>
+              </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -2938,6 +3175,35 @@ export function ProjectManagementPanel({
                 </label>
               </div>
             ) : null}
+
+            <div className="grid gap-2">
+              <Label>客户端目标</Label>
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {clientTargetOptions.map((option) => {
+                  const active = scaffoldClientTargets.includes(option.value)
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => toggleClientTarget(option.value)}
+                      className={cn(
+                        "rounded-lg border px-4 py-3 text-left transition-colors",
+                        active ? "border-amber-500 bg-amber-500/10" : "border-border/70 bg-muted/20 hover:bg-muted/40",
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium text-foreground">{option.label}</p>
+                        {active ? <Check className="size-4 text-amber-400" /> : null}
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">{option.detail}</p>
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Web 端始终会生成；这里额外勾选的客户端会放到同一个 monorepo 下，共用后端与核心层。
+              </p>
+            </div>
 
             <div className="grid gap-2">
               <Label>运行时模块</Label>
@@ -3075,7 +3341,7 @@ export function ProjectManagementPanel({
           </p>
           <p className="max-w-md text-sm text-muted-foreground">
             {selectedConnectionId
-              ? "这台服务器目前还没有绑定过项目。项目只有在明确关联到当前服务器后，才会出现在这里。"
+              ? "这台服务器下还没有已绑定项目；未部署、未绑定服务器的本地项目仍会显示在这里。"
               : "可以先点「创建平台项目」生成新的 Next 中心骨架，也可以点「导入本地项目」接入现有仓库。"}
           </p>
         </div>

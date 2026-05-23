@@ -40,6 +40,7 @@ export const projectScaffoldSchema = z.object({
   monorepo: z.boolean(),
   template: z.enum(["next-core", "next-payload", "next-directus"]),
   database: z.enum(["postgresql", "sqlite"]),
+  clientTargets: z.array(z.enum(["electron", "ios-native", "android-native"])).max(4),
   runtimeModules: z
     .array(z.enum(["auth", "docs", "dashboard", "blog", "i18n", "search", "queue", "payments", "multi-tenant"]))
     .max(12),
@@ -56,6 +57,11 @@ export const projectRuntimeModulesUpdateSchema = z.object({
   runtimeModules: z
     .array(z.enum(["auth", "docs", "dashboard", "blog", "i18n", "search", "queue", "payments", "multi-tenant"]))
     .max(12),
+})
+
+export const projectClientAppSchema = z.object({
+  projectId: projectIdSchema,
+  target: z.enum(["electron", "ios-native", "android-native"]),
 })
 
 export const projectConnectionSchema = z.object({

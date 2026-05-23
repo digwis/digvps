@@ -1,4 +1,5 @@
-import { ipcMain, type IpcMainInvokeEvent } from "electron"
+import { ipcMain } from "../electron-shim"
+import type { IpcMainInvokeEvent } from "electron"
 
 export const IPC_ERROR_PREFIX = "DIGWIS_IPC_ERROR:"
 

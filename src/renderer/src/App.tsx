@@ -427,6 +427,16 @@ export default function App() {
   }, [sidebarCollapsed])
 
   useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active instanceof HTMLButtonElement) {
+        active.blur()
+      }
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault()
@@ -931,14 +941,6 @@ export default function App() {
                     <LoaderCircle className="size-8 animate-spin text-muted-foreground" />
                     <p className="text-sm text-muted-foreground">正在拉取远程环境信息…</p>
                   </div>
-                ) : error ? (
-                  <div className="flex flex-1 flex-col items-center justify-center gap-4 rounded-2xl border border-dashed border-amber-500/25 bg-amber-500/[0.04] px-6 py-12 text-center">
-                    <ShieldAlert className="text-amber-500 dark:text-amber-300" />
-                    <div className="flex flex-col gap-2">
-                      <p className="text-base font-medium text-foreground">服务器监控没有完成</p>
-                      <p className="text-sm leading-6 text-amber-600 dark:text-amber-300">{error}</p>
-                    </div>
-                  </div>
                 ) : inspection ? (
                   activeNav === "deps" ? (
                     <DependencyCards
@@ -1103,6 +1105,14 @@ export default function App() {
                       )
                     })()
                   )
+                ) : error ? (
+                  <div className="flex flex-1 flex-col items-center justify-center gap-4 rounded-2xl border border-dashed border-amber-500/25 bg-amber-500/[0.04] px-6 py-12 text-center">
+                    <ShieldAlert className="text-amber-500 dark:text-amber-300" />
+                    <div className="flex flex-col gap-2">
+                      <p className="text-base font-medium text-foreground">服务器监控没有完成</p>
+                      <p className="text-sm leading-6 text-amber-600 dark:text-amber-300">{error}</p>
+                    </div>
+                  </div>
                 ) : (
                   <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/80 bg-muted/15 px-6 py-16 text-center text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
                     这台服务器还没有监控快照

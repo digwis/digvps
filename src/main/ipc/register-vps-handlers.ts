@@ -1,4 +1,3 @@
-import { } from "electron"
 import {
   createAndInstallSshKey,
 } from "../services/ssh-key-setup"

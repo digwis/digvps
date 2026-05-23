@@ -53,6 +53,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/ssh2": "^1.15.5",
     "@vitejs/plugin-react": "^5.2.0",
+    "agentation": "^3.0.2",
     "autoprefixer": "^10.5.0",
     "electron": "^41.3.0",
     "electron-builder": "^26.8.1",

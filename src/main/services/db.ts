@@ -2,8 +2,7 @@ import path from "node:path"
 import fs from "node:fs"
 import { randomUUID } from "node:crypto"
 import Database from "better-sqlite3"
-import electron from "electron"
-const { safeStorage } = electron
+import { safeStorage } from "../electron-shim"
 import type { VpsConnectionInput, VpsConnectionRecord } from "../../shared/vps"
 import type {
   LocalProjectCategory,

@@ -31,6 +31,7 @@ export type LocalProjectInput = {
 export type ProjectScaffoldTemplate = "next-core" | "next-payload" | "next-directus"
 export type ProjectScaffoldDatabase = "postgresql" | "sqlite"
 export type ProjectPackageManager = "pnpm"
+export type ProjectClientTarget = "electron" | "ios-native" | "android-native"
 export type ProjectRuntimeModule =
   | "auth"
   | "docs"
@@ -51,6 +52,7 @@ export type ProjectScaffoldInput = {
   monorepo: boolean
   template: ProjectScaffoldTemplate
   database: ProjectScaffoldDatabase
+  clientTargets: ProjectClientTarget[]
   runtimeModules: ProjectRuntimeModule[]
   serviceModules: ProjectServiceModule[]
   autoInstall?: boolean
@@ -99,10 +101,11 @@ export type ProjectScaffoldProgressEvent = {
 
 export type DigwisProjectAppContract = {
   path: string
-  devCommand: string
-  buildCommand: string
-  startCommand: string
+  devCommand?: string
+  buildCommand?: string
+  startCommand?: string
   port?: number
+  platform?: "web" | "desktop" | "ios" | "android"
 }
 
 export type DigwisProjectServiceContract = {
@@ -119,10 +122,14 @@ export type DigwisProjectConfig = {
   packageManager: ProjectPackageManager
   monorepo: boolean
   database: ProjectScaffoldDatabase
+  clientTargets: ProjectClientTarget[]
   runtimeModules: ProjectRuntimeModule[]
   serviceModules: ProjectServiceModule[]
   apps: {
     web: DigwisProjectAppContract
+    desktop?: DigwisProjectAppContract
+    mobileIos?: DigwisProjectAppContract
+    mobileAndroid?: DigwisProjectAppContract
   }
   services: {
     cms?: (DigwisProjectServiceContract & {
@@ -175,6 +182,39 @@ export type ProjectLocalAdminStartResult = {
   ok: boolean
   message: string
   adminUrl: string
+}
+
+export type ProjectUrlReachabilityResult = {
+  ok: boolean
+  detail: string
+  status?: number
+  finalUrl?: string
+}
+
+export type ProjectClientAppInput = {
+  projectId: string
+  target: ProjectClientTarget
+}
+
+export type ProjectClientAppOpenResult = {
+  ok: true
+  target: ProjectClientTarget
+  path: string
+}
+
+export type ProjectClientAppStartResult = {
+  ok: true
+  message: string
+  target: ProjectClientTarget
+  path: string
+  pid?: number
+}
+
+export type ProjectClientAppIdeOpenResult = {
+  ok: true
+  target: ProjectClientTarget
+  path: string
+  application: "Xcode" | "Android Studio"
 }
 
 export type ProjectLocalPathUpdateInput = {
@@ -419,6 +459,10 @@ export type ManagedProjectsApi = {
   openProjectLocalAdmin: (projectId: string) => Promise<ProjectLocalPreview>
   startProjectLocalDev: (projectId: string) => Promise<ProjectLocalDevStartResult>
   startProjectLocalAdminService: (projectId: string) => Promise<ProjectLocalAdminStartResult>
+  checkProjectUrlReachable: (url: string) => Promise<ProjectUrlReachabilityResult>
+  openProjectClientAppPath: (payload: ProjectClientAppInput) => Promise<ProjectClientAppOpenResult>
+  startProjectClientApp: (payload: ProjectClientAppInput) => Promise<ProjectClientAppStartResult>
+  openProjectClientAppIde: (payload: ProjectClientAppInput) => Promise<ProjectClientAppIdeOpenResult>
   getDeployProfile: (projectId: string) => Promise<ProjectDeployProfile>
   getProjectRemoteState: (payload: ProjectRemoteStateInput) => Promise<ProjectRemoteState>
   getProjectRemoteDetails: (payload: ProjectRemoteDetailsInput) => Promise<ProjectRemoteDetails>

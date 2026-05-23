@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron"
+import { contextBridge, ipcRenderer } from "./electron-shim"
 import type {
   DependencyServiceAction,
   DigwisApi,
@@ -20,6 +20,7 @@ import type {
   ProjectEnvUpdateInput,
   ProjectInitializeInput,
   ProjectDeleteInput,
+  ProjectClientAppInput,
   ProjectRemoteStateInput,
   ProjectScaffoldInput,
   ProjectSiteSettingsInput,
@@ -52,6 +53,10 @@ const api: DigwisApi = {
     openProjectLocalAdmin: (projectId: string) => ipcRenderer.invoke("projects:open-local-admin", projectId),
     startProjectLocalDev: (projectId: string) => ipcRenderer.invoke("projects:start-local-dev", projectId),
     startProjectLocalAdminService: (projectId: string) => ipcRenderer.invoke("projects:start-local-admin-service", projectId),
+    checkProjectUrlReachable: (url: string) => ipcRenderer.invoke("projects:check-url-reachable", url),
+    openProjectClientAppPath: (payload: ProjectClientAppInput) => ipcRenderer.invoke("projects:open-client-app-path", payload),
+    startProjectClientApp: (payload: ProjectClientAppInput) => ipcRenderer.invoke("projects:start-client-app", payload),
+    openProjectClientAppIde: (payload: ProjectClientAppInput) => ipcRenderer.invoke("projects:open-client-app-ide", payload),
     getDeployProfile: (projectId: string) => ipcRenderer.invoke("projects:get-deploy-profile", projectId),
     getProjectRemoteState: (payload: ProjectRemoteStateInput) => ipcRenderer.invoke("projects:get-remote-state", payload),
     getProjectRemoteDetails: (payload: ProjectRemoteDetailsInput) =>

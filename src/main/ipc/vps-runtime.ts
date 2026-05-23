@@ -1,4 +1,5 @@
-import { BrowserWindow, type WebContents } from "electron"
+import { BrowserWindow } from "../electron-shim"
+import type { WebContents } from "electron"
 import { getVpsConnectionInput, updateConnectionHealth } from "../services/db"
 import { resolveStoredPayload } from "./helpers"
 import type { VpsConnectionInput } from "../../shared/vps"

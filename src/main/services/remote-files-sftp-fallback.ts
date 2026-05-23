@@ -16,7 +16,8 @@ import type {
   VpsConnectionInput,
 } from "../../shared/vps"
 import type { BrowserWindow } from "electron"
-import { dialog, type OpenDialogOptions, type SaveDialogOptions } from "electron"
+import { dialog } from "../electron-shim"
+import type { OpenDialogOptions, SaveDialogOptions } from "electron"
 import { connectSftpClient } from "./ssh-runtime"
 
 type SftpLike = any

@@ -1,15 +1,17 @@
 import fs from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import { spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { request as httpRequest } from "node:http"
-import { addLocalProjectFromPath } from "./db"
+import { addLocalProjectFromPath, listLocalProjects } from "./db"
 import { repairProjectNativeModules } from "./project-native-module-fix"
-import { writeProjectLocalRuntime } from "./project-local-runtime"
+import { readProjectLocalRuntime, writeProjectLocalRuntime } from "./project-local-runtime"
 import { appendOperationLog } from "./project-operation-log"
 import type {
   DigwisProjectConfig,
   LocalProjectRecord,
+  ProjectClientTarget,
   ProjectRuntimeModule,
   ProjectRuntimeModulesUpdateResult,
   ProjectScaffoldInput,
@@ -24,6 +26,8 @@ type ScaffoldContext = {
   slug: string
   template: ProjectScaffoldTemplate
   database: ProjectScaffoldInput["database"]
+  webPort: number
+  clientTargets: Set<ProjectScaffoldInput["clientTargets"][number]>
   runtimeModules: Set<ProjectScaffoldInput["runtimeModules"][number]>
   serviceModules: Set<ProjectScaffoldInput["serviceModules"][number]>
 }
@@ -35,14 +39,22 @@ type CreateProjectScaffoldOptions = {
 }
 
 const DEFAULT_PAYLOAD_PUBLISHED_VERSION = "3.84.1"
-const LOCALHOST_PREVIEW_URL = "http://localhost:3000"
-const LOCALHOST_ADMIN_URL = "http://localhost:3000/admin"
+const DEFAULT_WEB_PORT = 3000
+const MAX_WEB_PORT = 3999
 const LIGHT_RUNTIME_MODULES = ["docs", "dashboard", "blog", "i18n"] as const
 
 type LightRuntimeModule = (typeof LIGHT_RUNTIME_MODULES)[number]
 
 function toPosixPath(value: string) {
   return value.split(path.sep).join("/")
+}
+
+function buildLocalPreviewUrl(port: number) {
+  return `http://127.0.0.1:${port}`
+}
+
+function buildLocalAdminUrl(port: number) {
+  return `${buildLocalPreviewUrl(port)}/admin`
 }
 
 function writeTextFile(rootPath: string, relativePath: string, content: string, createdFiles: string[]) {
@@ -88,6 +100,72 @@ function ensureScaffoldRoot(localPath: string) {
     fs.mkdirSync(resolved, { recursive: true })
   }
   return resolved
+}
+
+function isPortAvailable(port: number) {
+  return new Promise<boolean>((resolve) => {
+    const server = net.createServer()
+    server.once("error", () => resolve(false))
+    server.once("listening", () => {
+      server.close(() => resolve(true))
+    })
+    server.listen(port, "127.0.0.1")
+  })
+}
+
+function readAssignedWebPort(projectPath: string) {
+  const runtime = readProjectLocalRuntime(projectPath)
+  if (runtime?.previewUrl) {
+    try {
+      const preview = new URL(runtime.previewUrl)
+      const port = Number(preview.port)
+      if (Number.isInteger(port) && port > 0) {
+        return port
+      }
+    } catch {
+      // ignore invalid runtime URL and fall back to contract parsing
+    }
+  }
+  const contractPath = path.join(projectPath, "digwis-project.json")
+  if (!fs.existsSync(contractPath)) {
+    return null
+  }
+  try {
+    const raw = fs.readFileSync(contractPath, "utf8")
+    const parsed = JSON.parse(raw) as DigwisProjectConfig
+    if (typeof parsed.apps?.web?.port === "number") {
+      return parsed.apps.web.port
+    }
+    if (parsed.panel?.previewUrl) {
+      const preview = new URL(parsed.panel.previewUrl)
+      const port = Number(preview.port)
+      return Number.isInteger(port) && port > 0 ? port : null
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+async function allocateWebPort() {
+  const reservedPorts = new Set<number>()
+  for (const project of listLocalProjects()) {
+    const port = readAssignedWebPort(project.localPath)
+    if (port) {
+      reservedPorts.add(port)
+    }
+  }
+
+  for (let port = DEFAULT_WEB_PORT; port <= MAX_WEB_PORT; port += 1) {
+    if (reservedPorts.has(port)) {
+      continue
+    }
+    if (await isPortAvailable(port)) {
+      return port
+    }
+  }
+
+  throw new Error(`没有找到可用的本地 Web 端口（已尝试 ${DEFAULT_WEB_PORT}-${MAX_WEB_PORT}）`)
 }
 
 function envWithExtraPath(): NodeJS.ProcessEnv {
@@ -358,16 +436,43 @@ async function normalizePayloadTemplatePackageJson(projectRoot: string) {
   }
 }
 
-function buildFullPayloadEnv(input: ProjectScaffoldInput, secret: string) {
+function buildFullPayloadEnv(input: ProjectScaffoldInput, secret: string, webPort: number) {
+  const previewUrl = buildLocalPreviewUrl(webPort)
   return [
     `DATABASE_URL=${input.database === "postgresql" ? `postgresql://postgres:postgres@127.0.0.1:5432/${input.slug}` : "file:./local.db"}`,
     `PAYLOAD_SECRET=${secret}`,
-    `NEXT_PUBLIC_SERVER_URL=${LOCALHOST_PREVIEW_URL}`,
-    `NEXT_PUBLIC_APP_URL=${LOCALHOST_PREVIEW_URL}`,
+    `NEXT_PUBLIC_SERVER_URL=${previewUrl}`,
+    `NEXT_PUBLIC_APP_URL=${previewUrl}`,
     `CRON_SECRET=${randomBytes(24).toString("hex")}`,
     `PREVIEW_SECRET=${randomBytes(24).toString("hex")}`,
     "",
   ].join("\n")
+}
+
+function buildClientAppsContract(input: ProjectScaffoldInput) {
+  return {
+    desktop: input.clientTargets.includes("electron")
+      ? {
+          path: "apps/desktop",
+          platform: "desktop" as const,
+          devCommand: "pnpm --filter desktop dev",
+          buildCommand: "pnpm --filter desktop build",
+          startCommand: "pnpm --filter desktop start",
+        }
+      : undefined,
+    mobileIos: input.clientTargets.includes("ios-native")
+      ? {
+          path: "apps/mobile-ios",
+          platform: "ios" as const,
+        }
+      : undefined,
+    mobileAndroid: input.clientTargets.includes("android-native")
+      ? {
+          path: "apps/mobile-android",
+          platform: "android" as const,
+        }
+      : undefined,
+  }
 }
 
 function ensureNextConfigAllowsLoopback(projectRoot: string) {
@@ -394,7 +499,7 @@ function ensureNextConfigAllowsLoopback(projectRoot: string) {
   }
 }
 
-async function patchFullPayloadTemplate(projectRoot: string, input: ProjectScaffoldInput) {
+async function patchFullPayloadTemplate(projectRoot: string, input: ProjectScaffoldInput, webPort: number) {
   const packageJsonPath = path.join(projectRoot, "package.json")
   if (!fs.existsSync(packageJsonPath)) {
     throw new Error("Payload 模板缺少 package.json")
@@ -402,8 +507,11 @@ async function patchFullPayloadTemplate(projectRoot: string, input: ProjectScaff
 
   const raw = fs.readFileSync(packageJsonPath, "utf8")
   const pkg = JSON.parse(raw) as {
+    scripts?: Record<string, string>
     dependencies?: Record<string, string>
     devDependencies?: Record<string, string>
+    workspaces?: string[]
+    packageManager?: string
   }
 
   const payloadVersion = await resolvePayloadPublishedVersion(projectRoot)
@@ -430,6 +538,16 @@ async function patchFullPayloadTemplate(projectRoot: string, input: ProjectScaff
 
   pkg.dependencies = dependencies
   pkg.devDependencies = devDependencies
+  pkg.scripts = { ...(pkg.scripts ?? {}) }
+  if (pkg.scripts.dev) {
+    pkg.scripts.dev = `next dev --hostname 127.0.0.1 --port ${webPort}`
+  }
+  if (pkg.scripts.start) {
+    pkg.scripts.start = `next start --hostname 127.0.0.1 --port ${webPort}`
+  }
+  addDesktopScripts(pkg.scripts, input.clientTargets)
+  pkg.workspaces = Array.from(new Set([...(pkg.workspaces ?? []), ...buildWorkspacePatterns()]))
+  pkg.packageManager = pkg.packageManager ?? "pnpm@10"
   fs.writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`, "utf8")
 
   writePayloadCmsTemplate(input.database, "src", (relativePath, content) => {
@@ -481,9 +599,13 @@ async function patchFullPayloadTemplate(projectRoot: string, input: ProjectScaff
   ensureNextConfigAllowsLoopback(projectRoot)
 
   const secret = randomBytes(24).toString("hex")
-  const envContent = buildFullPayloadEnv(input, secret)
+  const envContent = buildFullPayloadEnv(input, secret, webPort)
   fs.writeFileSync(path.join(projectRoot, ".env"), envContent, "utf8")
-  fs.writeFileSync(path.join(projectRoot, ".env.example"), buildFullPayloadEnv(input, "change-me-before-production"), "utf8")
+  fs.writeFileSync(
+    path.join(projectRoot, ".env.example"),
+    buildFullPayloadEnv(input, "change-me-before-production", webPort),
+    "utf8",
+  )
 
   return {
     version: payloadVersion,
@@ -494,7 +616,7 @@ async function patchFullPayloadTemplate(projectRoot: string, input: ProjectScaff
 }
 
 
-function buildContractForFullPayload(input: ProjectScaffoldInput): DigwisProjectConfig {
+function buildContractForFullPayload(input: ProjectScaffoldInput, webPort: number): DigwisProjectConfig {
   return {
     version: 1,
     projectType: "next-platform",
@@ -502,16 +624,19 @@ function buildContractForFullPayload(input: ProjectScaffoldInput): DigwisProject
     packageManager: input.packageManager,
     monorepo: false,
     database: input.database,
+    clientTargets: input.clientTargets,
     runtimeModules: input.runtimeModules,
     serviceModules: input.serviceModules,
     apps: {
       web: {
         path: ".",
-        devCommand: "pnpm dev",
+        platform: "web",
+        devCommand: `pnpm dev -- --hostname 127.0.0.1 --port ${webPort}`,
         buildCommand: "pnpm build",
-        startCommand: "pnpm start",
-        port: 3000,
+        startCommand: `pnpm start -- --hostname 127.0.0.1 --port ${webPort}`,
+        port: webPort,
       },
+      ...buildClientAppsContract(input),
     },
     services: {
       cms: {
@@ -522,13 +647,13 @@ function buildContractForFullPayload(input: ProjectScaffoldInput): DigwisProject
       },
     },
     panel: {
-      previewUrl: LOCALHOST_PREVIEW_URL,
-      adminUrl: LOCALHOST_ADMIN_URL,
+      previewUrl: buildLocalPreviewUrl(webPort),
+      adminUrl: buildLocalAdminUrl(webPort),
     },
   }
 }
 
-function buildContractForFullDirectus(input: ProjectScaffoldInput): DigwisProjectConfig {
+function buildContractForFullDirectus(input: ProjectScaffoldInput, webPort: number): DigwisProjectConfig {
   return {
     version: 1,
     projectType: "next-platform",
@@ -536,16 +661,19 @@ function buildContractForFullDirectus(input: ProjectScaffoldInput): DigwisProjec
     packageManager: input.packageManager,
     monorepo: false,
     database: input.database,
+    clientTargets: input.clientTargets,
     runtimeModules: input.runtimeModules,
     serviceModules: input.serviceModules,
     apps: {
       web: {
         path: "apps/web",
+        platform: "web",
         devCommand: "npm run dev --prefix apps/web",
         buildCommand: "npm run build --prefix apps/web",
         startCommand: "npm run start --prefix apps/web",
-        port: 3000,
+        port: webPort,
       },
+      ...buildClientAppsContract(input),
     },
     services: {
       cms: {
@@ -557,7 +685,7 @@ function buildContractForFullDirectus(input: ProjectScaffoldInput): DigwisProjec
       },
     },
     panel: {
-      previewUrl: LOCALHOST_PREVIEW_URL,
+      previewUrl: buildLocalPreviewUrl(webPort),
       adminUrl: "http://127.0.0.1:8055/admin",
     },
   }
@@ -624,22 +752,39 @@ ${dbSection}
 `
 }
 
-function buildDirectusFullRootPackageJson(input: ProjectScaffoldInput) {
+function buildDirectusFullRootPackageJson(input: ProjectScaffoldInput, webPort: number) {
+  const scripts: Record<string, string> = {
+    dev: "npm run dev --prefix apps/web",
+    build: "npm run build --prefix apps/web",
+    start: "npm run start --prefix apps/web",
+    "directus:up": "docker compose -f services/directus/docker-compose.yml --env-file services/directus/.env up -d",
+    "directus:down": "docker compose -f services/directus/docker-compose.yml --env-file services/directus/.env down",
+  }
+  addDesktopScripts(scripts, input.clientTargets)
   return JSON.stringify(
     {
       name: input.slug,
       private: true,
-      scripts: {
-        dev: "npm run dev --prefix apps/web",
-        build: "npm run build --prefix apps/web",
-        start: "npm run start --prefix apps/web",
-        "directus:up": "docker compose -f services/directus/docker-compose.yml --env-file services/directus/.env up -d",
-        "directus:down": "docker compose -f services/directus/docker-compose.yml --env-file services/directus/.env down",
-      },
+      packageManager: "pnpm@10",
+      workspaces: buildWorkspacePatterns(),
+      scripts,
     },
     null,
     2,
   ) + "\n"
+}
+
+function buildWorkspacePatterns() {
+  return ["apps/*", "packages/*", "services/*"]
+}
+
+function addDesktopScripts(scripts: Record<string, string>, clientTargets: ProjectClientTarget[]) {
+  if (!clientTargets.includes("electron")) {
+    return
+  }
+  scripts["desktop:dev"] = "pnpm --filter desktop dev"
+  scripts["desktop:start"] = "pnpm --filter desktop start"
+  scripts["desktop:build"] = "pnpm --filter desktop build"
 }
 
 function buildRootPackageJson(input: ProjectScaffoldInput) {
@@ -657,11 +802,13 @@ function buildRootPackageJson(input: ProjectScaffoldInput) {
     scripts["directus:dev"] = "pnpm --dir services/directus dev"
     scripts["directus:start"] = "pnpm --dir services/directus start"
   }
+  addDesktopScripts(scripts, input.clientTargets)
   return JSON.stringify(
     {
       name: input.slug,
       private: true,
       packageManager: "pnpm@10",
+      workspaces: buildWorkspacePatterns(),
       scripts,
     },
     null,
@@ -669,9 +816,17 @@ function buildRootPackageJson(input: ProjectScaffoldInput) {
   ) + "\n"
 }
 
-function buildWebPackageJson(input: ProjectScaffoldInput) {
+function clientTargetLabel(target: ProjectClientTarget) {
+  if (target === "electron") return "Electron desktop client"
+  if (target === "ios-native") return "Native iOS client"
+  return "Native Android client"
+}
+
+function buildWebPackageJson(input: ProjectScaffoldInput, webPort: number) {
   const hasPayload = input.template === "next-payload"
   const deps: Record<string, string> = {
+    "@digwis/api-client": "workspace:*",
+    "@digwis/core": "workspace:*",
     next: "^16.0.0",
     react: "^19.2.0",
     "react-dom": "^19.2.0",
@@ -685,9 +840,9 @@ function buildWebPackageJson(input: ProjectScaffoldInput) {
     deps.sharp = "^0.34.0"
   }
   const scripts: Record<string, string> = {
-    dev: "next dev",
+    dev: "node ./scripts/dev-with-wasm.cjs",
     build: "next build",
-    start: "next start",
+    start: `next start --hostname 127.0.0.1 --port ${webPort}`,
     lint: "next lint",
   }
   if (hasPayload) {
@@ -701,6 +856,7 @@ function buildWebPackageJson(input: ProjectScaffoldInput) {
       scripts,
       dependencies: deps,
       devDependencies: {
+        "@next/swc-wasm-nodejs": "^16.2.6",
         "@types/node": "^24.0.0",
         "@types/react": "^19.2.0",
         "@types/react-dom": "^19.2.0",
@@ -710,6 +866,35 @@ function buildWebPackageJson(input: ProjectScaffoldInput) {
     null,
     2,
   ) + "\n"
+}
+
+function buildWebDevLauncher(webPort: number) {
+  return `const path = require("node:path")
+const { spawn } = require("node:child_process")
+
+const wasmDir = path.dirname(require.resolve("@next/swc-wasm-nodejs/wasm.js"))
+const nextBin = require.resolve("next/dist/bin/next")
+
+const child = spawn(
+  process.execPath,
+  [nextBin, "dev", "--webpack", "--hostname", "127.0.0.1", "--port", "${webPort}"],
+  {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      NEXT_TEST_WASM_DIR: wasmDir,
+    },
+  },
+)
+
+child.on("exit", (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal)
+    return
+  }
+  process.exit(code ?? 0)
+})
+`
 }
 
 function buildWebLayout(projectName: string) {
@@ -745,6 +930,9 @@ function buildFeatureList(ctx: ScaffoldContext) {
   if (ctx.template === "next-directus") {
     features.push("Directus selected as the CMS contract")
   }
+  if (ctx.clientTargets.size > 0) {
+    features.push(`Client targets: ${Array.from(ctx.clientTargets).map(clientTargetLabel).join(", ")}`)
+  }
   if (ctx.runtimeModules.size > 0) {
     features.push(`Runtime modules: ${Array.from(ctx.runtimeModules).join(", ")}`)
   }
@@ -755,7 +943,11 @@ function buildFeatureList(ctx: ScaffoldContext) {
 }
 
 function buildWebPage(ctx: ScaffoldContext) {
-  return `export default function HomePage() {
+  return `import { buildWebApiClient } from "../lib/api-client"
+
+export default function HomePage() {
+  const client = buildWebApiClient()
+
   return (
     <main className="shell">
       <section className="hero">
@@ -770,6 +962,26 @@ function buildWebPage(ctx: ScaffoldContext) {
         <ul>
 ${buildFeatureList(ctx)}
         </ul>
+      </section>
+      <section className="panel">
+        <h2>Shared API Contract</h2>
+        <p className="summary">
+          Web, Electron, iOS, and Android can point to the same API surface through <code>@digwis/api-client</code>.
+        </p>
+        <div className="api-grid">
+          <div className="api-card">
+            <p className="api-label">Base URL</p>
+            <p className="api-value">{client.baseUrl}</p>
+          </div>
+          <div className="api-card">
+            <p className="api-label">Healthcheck</p>
+            <p className="api-value">GET /api/health</p>
+          </div>
+          <div className="api-card">
+            <p className="api-label">Session</p>
+            <p className="api-value">GET /api/session</p>
+          </div>
+        </div>
       </section>
     </main>
   )
@@ -845,6 +1057,39 @@ ul {
   padding-left: 20px;
   color: #e2e8f0;
 }
+
+code {
+  font-family: "SF Mono", "Geist Mono", ui-monospace, monospace;
+}
+
+.api-grid {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.api-card {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.55);
+  padding: 18px;
+}
+
+.api-label {
+  margin: 0 0 8px;
+  color: #7dd3fc;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.api-value {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 14px;
+  line-height: 1.5;
+  word-break: break-word;
+}
 `
 }
 
@@ -880,13 +1125,26 @@ function buildTsconfig() {
 }
 
 function buildNextConfig() {
-  return `import type { NextConfig } from "next"
-
-const nextConfig: NextConfig = {
+  return `const nextConfig = {
   allowedDevOrigins: ["127.0.0.1", "localhost"],
+  transpilePackages: ["@digwis/api-client", "@digwis/core"],
 }
 
 export default nextConfig
+`
+}
+
+function buildWebApiClientHelper() {
+  return `import { DigwisApiClient, resolveApiBaseUrl } from "@digwis/api-client"
+
+export function buildWebApiClient() {
+  const baseUrl = resolveApiBaseUrl(process.env.NEXT_PUBLIC_APP_URL)
+  const client = new DigwisApiClient({ baseUrl })
+  return {
+    baseUrl,
+    client,
+  }
+}
 `
 }
 
@@ -1132,6 +1390,7 @@ Generated by Digwis Panel.
 - Next app location: \`apps/web\`
 - ${ctx.database === "postgresql" ? "PostgreSQL" : "SQLite"} as the default data target
 - Panel contract in \`digwis-project.json\`
+- Shared workspace buckets in \`packages/core\` and \`packages/api-client\`
 - Optional service modules declared by the panel
 
 ## Template notes
@@ -1141,6 +1400,14 @@ ${cmsText}
 ## Service modules
 
 ${ctx.serviceModules.size ? Array.from(ctx.serviceModules).map((item) => `- ${item}`).join("\n") : "- none"}
+
+## Client targets
+
+${ctx.clientTargets.size ? Array.from(ctx.clientTargets).map((item) => `- ${clientTargetLabel(item)}`).join("\n") : "- web only"}
+
+## Local preview
+
+- Preview URL: \`${buildLocalPreviewUrl(ctx.webPort)}\`
 
 ## First run
 
@@ -1152,10 +1419,10 @@ ${ctx.template === "next-directus" ? "4. Run `pnpm directus:dev` to start Direct
 `
 }
 
-function buildRootEnvExample(input: ProjectScaffoldInput) {
+function buildRootEnvExample(input: ProjectScaffoldInput, webPort: number) {
   const lines = [
     `DATABASE_URL=${input.database === "postgresql" ? `postgresql://postgres:postgres@127.0.0.1:5432/${input.slug}` : "file:./apps/web/local.db"}`,
-    `NEXT_PUBLIC_APP_URL=${LOCALHOST_PREVIEW_URL}`,
+    `NEXT_PUBLIC_APP_URL=${buildLocalPreviewUrl(webPort)}`,
   ]
   if (input.template === "next-payload") {
     lines.push("PAYLOAD_SECRET=change-me-before-production")
@@ -1939,7 +2206,7 @@ function ensureRuntimeModuleScaffold(
   }
 }
 
-function buildContract(input: ProjectScaffoldInput): DigwisProjectConfig {
+function buildContract(input: ProjectScaffoldInput, webPort: number): DigwisProjectConfig {
   return {
     version: 1,
     projectType: "next-platform",
@@ -1947,16 +2214,19 @@ function buildContract(input: ProjectScaffoldInput): DigwisProjectConfig {
     packageManager: input.packageManager,
     monorepo: input.monorepo,
     database: input.database,
+    clientTargets: input.clientTargets,
     runtimeModules: input.runtimeModules,
     serviceModules: input.serviceModules,
     apps: {
       web: {
         path: "apps/web",
+        platform: "web",
         devCommand: "pnpm --filter web dev",
         buildCommand: "pnpm --filter web build",
         startCommand: "pnpm --filter web start",
-        port: 3000,
+        port: webPort,
       },
+      ...buildClientAppsContract(input),
     },
     services: {
       cms:
@@ -2009,38 +2279,973 @@ function buildContract(input: ProjectScaffoldInput): DigwisProjectConfig {
         : undefined,
     },
     panel: {
-      previewUrl: LOCALHOST_PREVIEW_URL,
-      adminUrl: LOCALHOST_ADMIN_URL,
+      previewUrl: buildLocalPreviewUrl(webPort),
+      adminUrl: buildLocalAdminUrl(webPort),
     },
   }
 }
 
-export function generateProjectScaffoldFiles(input: ProjectScaffoldInput, rootPath: string) {
+function buildSharedCoreReadme() {
+  return `# Shared core
+
+Place cross-platform domain logic, business rules, and shared types here.
+`
+}
+
+function buildSharedCorePackageJson() {
+  return JSON.stringify(
+    {
+      name: "@digwis/core",
+      private: true,
+      version: "0.1.0",
+      type: "module",
+      exports: {
+        ".": "./src/index.ts",
+      },
+    },
+    null,
+    2,
+  ) + "\n"
+}
+
+function buildSharedCoreIndex() {
+  return `export type DigwisRuntime = "web" | "desktop" | "ios" | "android"
+
+export type DigwisSession = {
+  accessToken?: string
+  refreshToken?: string
+}
+`
+}
+
+function buildApiClientReadme() {
+  return `# Shared API client
+
+Place shared fetch wrappers, DTOs, and auth/session helpers here.
+
+## Included starter files
+
+- \`src/config.ts\` for endpoint defaults
+- \`src/contracts.ts\` for shared DTOs
+- \`src/client.ts\` for a tiny fetch-based API client
+`
+}
+
+function buildApiClientPackageJson() {
+  return JSON.stringify(
+    {
+      name: "@digwis/api-client",
+      private: true,
+      version: "0.1.0",
+      type: "module",
+      exports: {
+        ".": "./src/index.ts",
+      },
+    },
+    null,
+    2,
+  ) + "\n"
+}
+
+function buildApiClientTsconfig() {
+  return JSON.stringify(
+    {
+      compilerOptions: {
+        target: "ES2022",
+        module: "ESNext",
+        moduleResolution: "Bundler",
+        strict: true,
+        jsx: "preserve",
+        esModuleInterop: true,
+        skipLibCheck: true,
+      },
+      include: ["src/**/*"],
+    },
+    null,
+    2,
+  ) + "\n"
+}
+
+function buildApiClientConfig(webPort: number) {
+  return `export const DEFAULT_API_BASE_URL = "${buildLocalPreviewUrl(webPort)}"
+
+export function resolveApiBaseUrl(explicit?: string) {
+  return explicit?.trim() || DEFAULT_API_BASE_URL
+}
+`
+}
+
+function buildApiClientContracts() {
+  return `export type HealthcheckResponse = {
+  ok: boolean
+  service: string
+  version?: string
+}
+
+export type SessionUser = {
+  id: string
+  email: string
+  displayName?: string
+}
+
+export type SessionResponse = {
+  authenticated: boolean
+  user?: SessionUser
+}
+`
+}
+
+function buildApiClientSource() {
+  return `import { resolveApiBaseUrl } from "./config"
+import type { HealthcheckResponse, SessionResponse } from "./contracts"
+
+export type DigwisApiClientOptions = {
+  baseUrl?: string
+  headers?: HeadersInit
+  fetcher?: typeof fetch
+}
+
+export class DigwisApiClient {
+  private readonly baseUrl: string
+  private readonly headers: HeadersInit
+  private readonly fetcher: typeof fetch
+
+  constructor(options: DigwisApiClientOptions = {}) {
+    this.baseUrl = resolveApiBaseUrl(options.baseUrl)
+    this.headers = options.headers ?? {}
+    this.fetcher = options.fetcher ?? fetch
+  }
+
+  async getHealthcheck() {
+    return this.request<HealthcheckResponse>("/api/health")
+  }
+
+  async getSession() {
+    return this.request<SessionResponse>("/api/session")
+  }
+
+  async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await this.fetcher(this.baseUrl.replace(/\\/$/, "") + path, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...this.headers,
+        ...(init?.headers ?? {}),
+      },
+    })
+    if (!response.ok) {
+      throw new Error("API request failed: " + response.status)
+    }
+    return (await response.json()) as T
+  }
+}
+`
+}
+
+function buildApiClientIndex() {
+  return `export * from "./config"
+export * from "./contracts"
+export * from "./client"
+`
+}
+
+function buildApiClientExample() {
+  return `import { DigwisApiClient } from "./client"
+
+export async function runHealthcheckExample() {
+  const client = new DigwisApiClient()
+  return await client.getHealthcheck()
+}
+`
+}
+
+function buildElectronPackageJson() {
+  return JSON.stringify(
+    {
+      name: "desktop",
+      private: true,
+      main: "main.js",
+      scripts: {
+        dev: "electron .",
+        start: "electron .",
+        build: 'echo "Package the Electron client with your preferred desktop pipeline."',
+      },
+      devDependencies: {
+        electron: "^41.3.0",
+      },
+    },
+    null,
+    2,
+  ) + "\n"
+}
+
+function buildElectronMain(projectName: string) {
+  return `const { app, BrowserWindow } = require("electron")
+const path = require("node:path")
+
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 1320,
+    height: 860,
+    minWidth: 1100,
+    minHeight: 720,
+    title: "${projectName} Desktop",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+    },
+  })
+
+  win.loadFile(path.join(__dirname, "renderer", "index.html"))
+}
+
+app.whenReady().then(() => {
+  createWindow()
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+    }
+  })
+})
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    app.quit()
+  }
+})
+`
+}
+
+function buildElectronPreload() {
+  return `const { contextBridge } = require("electron")
+
+contextBridge.exposeInMainWorld("digwisDesktop", {
+  platform: "electron",
+})
+`
+}
+
+function buildElectronHtml(projectName: string) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${projectName} Desktop</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Desktop shell</p>
+        <h1>${projectName}</h1>
+        <p class="summary">Electron workspace for desktop flows that share the same backend, auth, and domain model as the web app.</p>
+        <ul class="list">
+          <li>Connect shared domain logic from <code>packages/core</code></li>
+          <li>Connect shared API client code from <code>packages/api-client</code></li>
+          <li>Use <code>packages/api-client/src/client.ts</code> as the default HTTP contract</li>
+          <li>Use this shell for desktop-only navigation, local file access, and native menu flows</li>
+        </ul>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
+`
+}
+
+function buildElectronRendererJs() {
+  return `const root = document.querySelector(".shell")
+
+if (root && window.digwisDesktop) {
+  const chip = document.createElement("div")
+  chip.className = "chip"
+  chip.textContent = "Runtime: " + window.digwisDesktop.platform
+  root.appendChild(chip)
+}
+`
+}
+
+function buildElectronCss() {
+  return `:root {
+  color-scheme: dark;
+  font-family: Inter, "SF Pro Display", system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #141414;
+  color: #f5f5f5;
+}
+
+.shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 32px;
+}
+
+.hero {
+  width: min(820px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 32px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #f59e0b;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+h1 {
+  margin: 0;
+  font-size: 40px;
+}
+
+.summary {
+  color: #cbd5e1;
+  line-height: 1.6;
+}
+
+.list {
+  margin: 20px 0 0;
+  padding-left: 18px;
+  color: #e2e8f0;
+  line-height: 1.8;
+}
+
+.chip {
+  display: inline-flex;
+  margin-top: 20px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 999px;
+  padding: 8px 12px;
+  color: #fbbf24;
+  font-size: 13px;
+}
+`
+}
+
+function buildElectronReadme() {
+  return `# Desktop client
+
+This Electron shell is intended for desktop-only workflows while reusing backend APIs and shared domain logic.
+
+## Suggested next steps
+
+1. Install root dependencies with \`pnpm install\`
+2. Run \`pnpm desktop:dev\`
+3. Move shared business logic into \`packages/core\`
+4. Move shared request/auth code into \`packages/api-client\`
+`
+}
+
+function buildIosReadme(projectName: string) {
+  return `# Native iOS client
+
+This folder contains a SwiftUI app template for ${projectName}.
+
+## Suggested next steps
+
+1. Run \`xcodegen generate\` in this directory if the Xcode project has not been generated yet
+2. Keep API and domain contracts aligned with \`packages/core\` and \`packages/api-client\`
+3. Point your networking layer at the same backend used by the web app
+`
+}
+
+function buildIosProjectYml(projectName: string) {
+  const schemeName = projectName.replace(/[^A-Za-z0-9]/g, "") || "DigwisMobile"
+  return `name: ${schemeName}
+options:
+  bundleIdPrefix: com.digwis
+settings:
+  base:
+    SWIFT_VERSION: 5.10
+    IPHONEOS_DEPLOYMENT_TARGET: 17.0
+targets:
+  ${schemeName}:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources
+    resources:
+      - path: Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.digwis.${schemeName.toLowerCase()}
+        INFOPLIST_FILE: Resources/Info.plist
+        DEVELOPMENT_TEAM: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    scheme:
+      testTargets: []
+`
+}
+
+function buildIosAppSwift(projectName: string) {
+  return `import SwiftUI
+
+@main
+struct ${projectName.replace(/[^A-Za-z0-9]/g, "") || "Digwis"}App: App {
+    @StateObject private var appState = AppState()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environmentObject(appState)
+        }
+    }
+}
+`
+}
+
+function buildIosContentView(projectName: string) {
+  return `import SwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject private var appState: AppState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("${projectName}")
+                .font(.largeTitle)
+                .fontWeight(.semibold)
+            Text("Native iOS shell for a multi-platform Digwis product.")
+                .foregroundStyle(.secondary)
+            Text("Connect shared auth, content, and backend APIs here.")
+                .foregroundStyle(.secondary)
+            Text("API: \\(appState.apiBaseURL.absoluteString)")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+            Text("Shared contract: packages/api-client")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(24)
+    }
+}
+
+#Preview {
+    ContentView()
+}
+`
+}
+
+function buildIosInfoPlist() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.digwis.mobile</string>
+  <key>CFBundleName</key>
+  <string>DigwisMobile</string>
+  <key>UILaunchScreen</key>
+  <dict/>
+</dict>
+</plist>
+`
+}
+
+function buildIosApiConfig(webPort: number) {
+  return `API_BASE_URL = ${buildLocalPreviewUrl(webPort)}
+`
+}
+
+function buildIosAppState(webPort: number) {
+  const fallbackUrl = buildLocalPreviewUrl(webPort)
+  return `import Foundation
+
+@MainActor
+final class AppState: ObservableObject {
+    let apiBaseURL: URL
+    let apiClient: APIClient
+
+    init() {
+        let baseURLString = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
+            ?? "${fallbackUrl}"
+        self.apiBaseURL = URL(string: baseURLString) ?? URL(string: "${fallbackUrl}")!
+        self.apiClient = APIClient(baseURL: apiBaseURL)
+    }
+}
+`
+}
+
+function buildIosApiClient() {
+  return `import Foundation
+
+struct APIClient {
+    let baseURL: URL
+
+    func makeRequest(path: String) -> URLRequest {
+        let url = baseURL.appending(path: path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+        return URLRequest(url: url)
+    }
+}
+`
+}
+
+function buildAppleAssetsContents() {
+  return `{
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
+`
+}
+
+function buildIosAppIconContents() {
+  return `{
+  "images" : [
+    {
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
+`
+}
+
+function buildIosAccentColorContents() {
+  return `{
+  "colors" : [
+    {
+      "color" : {
+        "color-space" : "srgb",
+        "components" : {
+          "alpha" : "1.000",
+          "blue" : "0.208",
+          "green" : "0.608",
+          "red" : "0.961"
+        }
+      },
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
+`
+}
+
+function buildAndroidReadme(projectName: string) {
+  return `# Native Android client
+
+This folder contains a Kotlin + Compose Android template for ${projectName}.
+
+## Suggested next steps
+
+1. Open this directory in Android Studio
+2. Align networking and auth flows with \`packages/api-client\`
+3. Keep shared business rules and DTOs mirrored from \`packages/core\`
+`
+}
+
+function buildAndroidSettingsGradle() {
+  return `pluginManagement {
+  repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+  repositories {
+    google()
+    mavenCentral()
+  }
+}
+
+rootProject.name = "DigwisMobile"
+include(":app")
+`
+}
+
+function buildAndroidRootGradle() {
+  return `plugins {
+  id("com.android.application") version "8.7.2" apply false
+  id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+}
+`
+}
+
+function buildAndroidAppGradle() {
+  return `plugins {
+  id("com.android.application")
+  id("org.jetbrains.kotlin.android")
+}
+
+android {
+  namespace = "com.digwis.mobile"
+  compileSdk = 35
+
+  defaultConfig {
+    applicationId = "com.digwis.mobile"
+    minSdk = 26
+    targetSdk = 35
+    versionCode = 1
+    versionName = "0.1.0"
+  }
+
+  buildFeatures {
+    compose = true
+  }
+
+  composeOptions {
+    kotlinCompilerExtensionVersion = "1.5.15"
+  }
+
+  buildTypes {
+    release {
+      isMinifyEnabled = false
+      proguardFiles(
+        getDefaultProguardFile("proguard-android-optimize.txt"),
+        "proguard-rules.pro",
+      )
+    }
+  }
+}
+
+dependencies {
+  implementation("androidx.core:core-ktx:1.15.0")
+  implementation("androidx.activity:activity-compose:1.10.1")
+  implementation("androidx.compose.material3:material3:1.3.1")
+}
+`
+}
+
+function buildAndroidGradleProperties() {
+  return `org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+kotlin.code.style=official
+android.nonTransitiveRClass=true
+`
+}
+
+function buildAndroidProguardRules() {
+  return `# Project-specific ProGuard rules.
+`
+}
+
+function buildAndroidManifest() {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application
+    android:allowBackup="true"
+    android:label="@string/app_name"
+    android:supportsRtl="true"
+    android:theme="@style/Theme.Material3.DayNight.NoActionBar">
+    <activity
+      android:name=".MainActivity"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>
+`
+}
+
+function buildAndroidMainActivity(projectName: string) {
+  return `package com.digwis.mobile
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import com.digwis.mobile.ui.DigwisApp
+import com.digwis.mobile.ui.theme.DigwisMobileTheme
+
+class MainActivity : ComponentActivity() {
+  private val viewModel: MainViewModel by viewModels()
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    setContent {
+      DigwisMobileTheme {
+        DigwisApp(
+          projectName = "${projectName}",
+          viewModel = viewModel,
+        )
+      }
+    }
+  }
+}
+`
+}
+
+function buildAndroidStrings() {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">Digwis Mobile</string>
+</resources>
+`
+}
+
+function buildAndroidThemes() {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+  <style name="Theme.DigwisMobile" parent="Theme.Material3.DayNight.NoActionBar">
+    <item name="android:statusBarColor" tools:targetApi="l">#141414</item>
+    <item name="android:navigationBarColor">#141414</item>
+  </style>
+</resources>
+`
+}
+
+function buildAndroidApiConfig(webPort: number) {
+  return `package com.digwis.mobile
+
+object ApiConfig {
+  const val BASE_URL = "http://10.0.2.2:${webPort}"
+}
+`
+}
+
+function buildAndroidAppState() {
+  return `package com.digwis.mobile
+
+data class AppState(
+  val apiBaseUrl: String = ApiConfig.BASE_URL,
+)
+`
+}
+
+function buildAndroidMainViewModel() {
+  return `package com.digwis.mobile
+
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+class MainViewModel : ViewModel() {
+  private val _appState = MutableStateFlow(AppState())
+  val appState: StateFlow<AppState> = _appState.asStateFlow()
+}
+`
+}
+
+function buildAndroidAppComposable() {
+  return `package com.digwis.mobile.ui
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.digwis.mobile.MainViewModel
+
+@Composable
+fun DigwisApp(projectName: String, viewModel: MainViewModel) {
+  val appState by viewModel.appState.collectAsState()
+
+  Surface(modifier = Modifier.fillMaxSize()) {
+    Column(
+      modifier = Modifier.padding(24.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      Text(text = projectName, style = MaterialTheme.typography.headlineMedium)
+      Text(text = "Native Android shell for a shared Digwis platform product.")
+      Text(text = "Wire backend APIs and shared domain contracts here.")
+      Text(
+        text = "API: " + appState.apiBaseUrl,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+      Text(
+        text = "Shared contract: packages/api-client",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+  }
+}
+`
+}
+
+function buildAndroidColorScheme() {
+  return `package com.digwis.mobile.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+val DigwisBackground = Color(0xFF141414)
+val DigwisSurface = Color(0xFF1D1D1D)
+val DigwisPrimary = Color(0xFFF59B35)
+val DigwisOnSurface = Color(0xFFF5F5F5)
+val DigwisOnSurfaceVariant = Color(0xFFB8B8B8)
+`
+}
+
+function buildAndroidThemeKt() {
+  return `package com.digwis.mobile.ui.theme
+
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+
+private val DigwisDarkColors = darkColorScheme(
+  primary = DigwisPrimary,
+  background = DigwisBackground,
+  surface = DigwisSurface,
+  onSurface = DigwisOnSurface,
+  onSurfaceVariant = DigwisOnSurfaceVariant,
+)
+
+@Composable
+fun DigwisMobileTheme(content: @Composable () -> Unit) {
+  MaterialTheme(
+    colorScheme = DigwisDarkColors,
+    content = content,
+  )
+}
+`
+}
+
+function scaffoldClientTargets(projectRoot: string, input: ProjectScaffoldInput, createdFiles: string[], webPort: number) {
+  writeTextFile(projectRoot, "packages/core/README.md", buildSharedCoreReadme(), createdFiles)
+  writeTextFile(projectRoot, "packages/core/package.json", buildSharedCorePackageJson(), createdFiles)
+  writeTextFile(projectRoot, "packages/core/src/index.ts", buildSharedCoreIndex(), createdFiles)
+  writeTextFile(projectRoot, "packages/api-client/README.md", buildApiClientReadme(), createdFiles)
+  writeTextFile(projectRoot, "packages/api-client/package.json", buildApiClientPackageJson(), createdFiles)
+  writeTextFile(projectRoot, "packages/api-client/tsconfig.json", buildApiClientTsconfig(), createdFiles)
+  writeTextFile(projectRoot, "packages/api-client/src/config.ts", buildApiClientConfig(webPort), createdFiles)
+  writeTextFile(projectRoot, "packages/api-client/src/contracts.ts", buildApiClientContracts(), createdFiles)
+  writeTextFile(projectRoot, "packages/api-client/src/client.ts", buildApiClientSource(), createdFiles)
+  writeTextFile(projectRoot, "packages/api-client/src/example.ts", buildApiClientExample(), createdFiles)
+  writeTextFile(projectRoot, "packages/api-client/src/index.ts", buildApiClientIndex(), createdFiles)
+
+  if (input.clientTargets.includes("electron")) {
+    writeTextFile(projectRoot, "apps/desktop/package.json", buildElectronPackageJson(), createdFiles)
+    writeTextFile(projectRoot, "apps/desktop/main.js", buildElectronMain(input.displayName.trim()), createdFiles)
+    writeTextFile(projectRoot, "apps/desktop/preload.js", buildElectronPreload(), createdFiles)
+    writeTextFile(projectRoot, "apps/desktop/renderer/index.html", buildElectronHtml(input.displayName.trim()), createdFiles)
+    writeTextFile(projectRoot, "apps/desktop/renderer/renderer.js", buildElectronRendererJs(), createdFiles)
+    writeTextFile(projectRoot, "apps/desktop/renderer/styles.css", buildElectronCss(), createdFiles)
+    writeTextFile(projectRoot, "apps/desktop/README.md", buildElectronReadme(), createdFiles)
+  }
+
+  if (input.clientTargets.includes("ios-native")) {
+    writeTextFile(projectRoot, "apps/mobile-ios/README.md", buildIosReadme(input.displayName.trim()), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-ios/project.yml", buildIosProjectYml(input.displayName.trim()), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-ios/Sources/App/App.swift", buildIosAppSwift(input.displayName.trim()), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-ios/Sources/App/ContentView.swift", buildIosContentView(input.displayName.trim()), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-ios/Sources/App/AppState.swift", buildIosAppState(webPort), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-ios/Sources/App/APIClient.swift", buildIosApiClient(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-ios/Resources/Info.plist", buildIosInfoPlist(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-ios/Config/API.xcconfig", buildIosApiConfig(webPort), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-ios/Resources/Assets.xcassets/Contents.json", buildAppleAssetsContents(), createdFiles)
+    writeTextFile(
+      projectRoot,
+      "apps/mobile-ios/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json",
+      buildIosAppIconContents(),
+      createdFiles,
+    )
+    writeTextFile(
+      projectRoot,
+      "apps/mobile-ios/Resources/Assets.xcassets/AccentColor.colorset/Contents.json",
+      buildIosAccentColorContents(),
+      createdFiles,
+    )
+  }
+
+  if (input.clientTargets.includes("android-native")) {
+    writeTextFile(projectRoot, "apps/mobile-android/README.md", buildAndroidReadme(input.displayName.trim()), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/settings.gradle.kts", buildAndroidSettingsGradle(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/build.gradle.kts", buildAndroidRootGradle(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/gradle.properties", buildAndroidGradleProperties(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/app/build.gradle.kts", buildAndroidAppGradle(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/app/proguard-rules.pro", buildAndroidProguardRules(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/app/src/main/AndroidManifest.xml", buildAndroidManifest(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/app/src/main/java/com/digwis/mobile/ApiConfig.kt", buildAndroidApiConfig(webPort), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/app/src/main/java/com/digwis/mobile/AppState.kt", buildAndroidAppState(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/app/src/main/java/com/digwis/mobile/MainViewModel.kt", buildAndroidMainViewModel(), createdFiles)
+    writeTextFile(
+      projectRoot,
+      "apps/mobile-android/app/src/main/java/com/digwis/mobile/MainActivity.kt",
+      buildAndroidMainActivity(input.displayName.trim()),
+      createdFiles,
+    )
+    writeTextFile(projectRoot, "apps/mobile-android/app/src/main/java/com/digwis/mobile/ui/DigwisApp.kt", buildAndroidAppComposable(), createdFiles)
+    writeTextFile(
+      projectRoot,
+      "apps/mobile-android/app/src/main/java/com/digwis/mobile/ui/theme/Color.kt",
+      buildAndroidColorScheme(),
+      createdFiles,
+    )
+    writeTextFile(
+      projectRoot,
+      "apps/mobile-android/app/src/main/java/com/digwis/mobile/ui/theme/Theme.kt",
+      buildAndroidThemeKt(),
+      createdFiles,
+    )
+    writeTextFile(projectRoot, "apps/mobile-android/app/src/main/res/values/strings.xml", buildAndroidStrings(), createdFiles)
+    writeTextFile(projectRoot, "apps/mobile-android/app/src/main/res/values/themes.xml", buildAndroidThemes(), createdFiles)
+  }
+}
+
+export function generateProjectScaffoldFiles(
+  input: ProjectScaffoldInput,
+  rootPath: string,
+  options?: { webPort?: number },
+) {
   const createdFiles: string[] = []
+  const webPort = options?.webPort ?? DEFAULT_WEB_PORT
   const ctx: ScaffoldContext = {
     rootPath,
     projectName: input.displayName.trim(),
     slug: input.slug.trim(),
     template: input.template,
     database: input.database,
+    webPort,
+    clientTargets: new Set(input.clientTargets),
     runtimeModules: new Set(input.runtimeModules),
     serviceModules: new Set(input.serviceModules),
   }
 
   writeTextFile(rootPath, "package.json", buildRootPackageJson(input), createdFiles)
-  writeTextFile(rootPath, "pnpm-workspace.yaml", "packages:\n  - apps/*\n  - packages/*\n  - services/*\n", createdFiles)
+  writeTextFile(rootPath, "pnpm-workspace.yaml", `packages:\n${buildWorkspacePatterns().map((item) => `  - ${item}`).join("\n")}\n`, createdFiles)
   writeTextFile(rootPath, ".gitignore", "node_modules\n.next\n.env\n.env.local\n.dist\n__pycache__\n.venv\n", createdFiles)
-  writeTextFile(rootPath, ".env.example", buildRootEnvExample(input), createdFiles)
+  writeTextFile(rootPath, ".env.example", buildRootEnvExample(input, webPort), createdFiles)
   writeTextFile(rootPath, "README.md", buildReadme(ctx), createdFiles)
-  writeTextFile(rootPath, "apps/web/package.json", buildWebPackageJson(input), createdFiles)
+  writeTextFile(rootPath, "apps/web/package.json", buildWebPackageJson(input, webPort), createdFiles)
   writeTextFile(rootPath, "apps/web/.env.example", buildWebEnvExample(input), createdFiles)
   writeTextFile(rootPath, "apps/web/tsconfig.json", buildTsconfig(), createdFiles)
   writeTextFile(rootPath, "apps/web/next-env.d.ts", '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\n\n// This file is managed by Next.js.\n', createdFiles)
-  writeTextFile(rootPath, "apps/web/next.config.ts", buildNextConfig(), createdFiles)
+  writeTextFile(rootPath, "apps/web/next.config.mjs", buildNextConfig(), createdFiles)
+  writeTextFile(rootPath, "apps/web/scripts/dev-with-wasm.cjs", buildWebDevLauncher(webPort), createdFiles)
   writeTextFile(rootPath, "apps/web/app/layout.tsx", buildWebLayout(ctx.projectName), createdFiles)
   writeTextFile(rootPath, "apps/web/app/page.tsx", buildWebPage(ctx), createdFiles)
   writeTextFile(rootPath, "apps/web/app/globals.css", buildWebCss(), createdFiles)
+  writeTextFile(rootPath, "apps/web/lib/api-client.ts", buildWebApiClientHelper(), createdFiles)
   writeTextFile(rootPath, "apps/web/lib/digwis-runtime-modules.ts", buildRuntimeModulesHelper(input.runtimeModules), createdFiles)
+  scaffoldClientTargets(rootPath, input, createdFiles, webPort)
   writeTextFile(rootPath, "packages/ui/README.md", "# Shared UI package\n\nReserve this workspace for cross-project components.\n", createdFiles)
   writeTextFile(rootPath, "packages/config/README.md", "# Shared config package\n\nKeep theme and site-level configuration here.\n", createdFiles)
 
@@ -2099,7 +3304,7 @@ edition = "2024"
     writeTextFile(rootPath, "services/rust-worker/src/main.rs", buildRustMain(), createdFiles)
   }
 
-  const contract = buildContract(input)
+  const contract = buildContract(input, webPort)
   writeTextFile(rootPath, "digwis-project.json", JSON.stringify(contract, null, 2) + "\n", createdFiles)
   const lightModules = input.runtimeModules.filter((moduleId): moduleId is LightRuntimeModule =>
     (LIGHT_RUNTIME_MODULES as readonly string[]).includes(moduleId),
@@ -2111,6 +3316,10 @@ edition = "2024"
 }
 
 export function getProjectConfig(projectRoot: string) {
+  const contractPath = path.join(projectRoot, "digwis-project.json")
+  if (!fs.existsSync(contractPath)) {
+    return null
+  }
   return readProjectContract(projectRoot).contract
 }
 
@@ -2192,6 +3401,7 @@ export async function createProjectScaffold(
   options?: CreateProjectScaffoldOptions,
 ): Promise<ProjectScaffoldResult> {
   const resolvedRoot = ensureScaffoldRoot(payload.localPath)
+  const webPort = await allocateWebPort()
   const warnings: string[] = []
   const useFullPayloadTemplate = payload.template === "next-payload" && Boolean(payload.fullTemplatePull)
   const useFullDirectusTemplate = payload.template === "next-directus" && Boolean(payload.fullTemplatePull)
@@ -2208,6 +3418,7 @@ export async function createProjectScaffold(
     status: "running",
     percent: 4,
     message: "正在准备项目目录",
+    detail: `已分配本地预览端口 ${webPort}`,
   })
 
   let contract: DigwisProjectConfig
@@ -2231,7 +3442,7 @@ export async function createProjectScaffold(
     })
       throw new Error(`拉取 Payload 官方 website 模板失败：${pulled.output || "unknown error"}`)
     }
-    const normalized = await patchFullPayloadTemplate(resolvedRoot, payload)
+    const normalized = await patchFullPayloadTemplate(resolvedRoot, payload, webPort)
     report({
       stage: "template",
       status: "running",
@@ -2239,7 +3450,7 @@ export async function createProjectScaffold(
       message: "正在修正 Payload 模板配置",
       detail: `已切换到 ${normalized.database}，workspace 依赖改为 ${normalized.version}，并自动生成 website 模板运行环境`,
     })
-    contract = buildContractForFullPayload(payload)
+    contract = buildContractForFullPayload(payload, webPort)
     fs.writeFileSync(path.join(resolvedRoot, "digwis-project.json"), `${JSON.stringify(contract, null, 2)}\n`, "utf8")
     createdFiles = [
       "digwis-project.json",
@@ -2253,6 +3464,7 @@ export async function createProjectScaffold(
       "src/globals/MainNavigation.ts",
       "src/app/(payload)/admin/[[...segments]]/page.tsx",
     ]
+    scaffoldClientTargets(resolvedRoot, payload, createdFiles, webPort)
     warnings.push(`已在线拉取 Payload 官方 website 模板，并注入 Digwis 运行补丁；项目结构是单体应用，不是 apps/web。`)
   } else if (useFullDirectusTemplate) {
     report({
@@ -2261,8 +3473,8 @@ export async function createProjectScaffold(
       percent: 18,
       message: "正在生成 Next + Directus 完整项目模板",
     })
-    const generated = generateProjectScaffoldFiles(payload, resolvedRoot)
-    contract = buildContractForFullDirectus(payload)
+    const generated = generateProjectScaffoldFiles(payload, resolvedRoot, { webPort })
+    contract = buildContractForFullDirectus(payload, webPort)
     fs.writeFileSync(path.join(resolvedRoot, "digwis-project.json"), `${JSON.stringify(contract, null, 2)}\n`, "utf8")
     fs.mkdirSync(path.join(resolvedRoot, "services", "directus"), { recursive: true })
     fs.mkdirSync(path.join(resolvedRoot, "services", "directus", "uploads"), { recursive: true })
@@ -2283,7 +3495,7 @@ export async function createProjectScaffold(
       "# Directus Full Sidecar\n\nRun `npm run directus:up` from project root and open http://127.0.0.1:8055/admin\n",
       "utf8",
     )
-    fs.writeFileSync(path.join(resolvedRoot, "package.json"), buildDirectusFullRootPackageJson(payload), "utf8")
+    fs.writeFileSync(path.join(resolvedRoot, "package.json"), buildDirectusFullRootPackageJson(payload, webPort), "utf8")
     createdFiles = [
       ...generated.createdFiles,
       "services/directus/docker-compose.yml",
@@ -2301,7 +3513,7 @@ export async function createProjectScaffold(
       percent: 18,
       message: "正在生成平台项目骨架",
     })
-    const generated = generateProjectScaffoldFiles(payload, resolvedRoot)
+    const generated = generateProjectScaffoldFiles(payload, resolvedRoot, { webPort })
     contract = generated.contract
     createdFiles = generated.createdFiles
   }
@@ -2379,7 +3591,7 @@ export async function createProjectScaffold(
         projectId: createdProject.id,
       })
     }
-    const install = await runCommand(resolvedRoot, installCommand, 15 * 60 * 1000, {
+    const install = await runCommand(resolvedRoot, installCommand, 30 * 60 * 1000, {
       onOutput: publishInstallProgress,
     })
     let installOk = install.ok
@@ -2393,7 +3605,7 @@ export async function createProjectScaffold(
         detail: fallbackInstallCommand,
         projectId: createdProject.id,
       })
-      const fallbackInstall = await runCommand(resolvedRoot, fallbackInstallCommand, 15 * 60 * 1000, {
+      const fallbackInstall = await runCommand(resolvedRoot, fallbackInstallCommand, 30 * 60 * 1000, {
         onOutput: publishInstallProgress,
       })
       installOk = fallbackInstall.ok

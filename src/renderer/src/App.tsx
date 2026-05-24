@@ -17,6 +17,7 @@ import {
   ShieldAlert,
   SquareArrowOutUpRight,
   SquarePen,
+  FileText,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -36,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { CmsOverviewPage } from "@/components/cms-overview-page"
 import { cn } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { useProjectStore } from "@/store/project-store"
@@ -56,7 +58,7 @@ import type {
   VpsInspection,
 } from "../../shared/vps"
 
-type NavKey = "monitor" | "deps" | "projects" | "files" | "settings"
+type NavKey = "monitor" | "deps" | "projects" | "files" | "cms" | "settings"
 
 type AppLocation = {
   nav: NavKey
@@ -76,6 +78,7 @@ const navItems: Array<{ key: NavKey; label: string; icon: typeof Server }> = [
   { key: "deps", label: "运行环境", icon: HardDriveDownload },
   { key: "projects", label: "项目部署", icon: FolderKanban },
   { key: "files", label: "文件管理", icon: FolderOpen },
+  { key: "cms", label: "内容管理", icon: FileText },
 ]
 
 function isNavKey(value: string): value is NavKey {
@@ -905,6 +908,8 @@ export default function App() {
                     }
                     navigateTo({ nav: "monitor" })
                   }} />
+                ) : activeNav === "cms" ? (
+                  <CmsOverviewPage />
                 ) : activeNav === "projects" ? (
                   <ProjectManagementPanel
                     connections={connections}

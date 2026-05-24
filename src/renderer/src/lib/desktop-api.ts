@@ -135,6 +135,20 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
       uploadRemoteEntries: (payload) => wrapInvoke(() => api.vps.uploadRemoteEntries(payload)),
       downloadRemoteEntry: (payload) => wrapInvoke(() => api.vps.downloadRemoteEntry(payload)),
     },
+    cms: {
+      login: (apiBaseUrl, username, password) => wrapInvoke(() => api.cms.login(apiBaseUrl, username, password)),
+      getMe: (apiBaseUrl, token) => wrapInvoke(() => api.cms.getMe(apiBaseUrl, token)),
+      listSites: (apiBaseUrl, token) => wrapInvoke(() => api.cms.listSites(apiBaseUrl, token)),
+      createSite: (apiBaseUrl, token, input) => wrapInvoke(() => api.cms.createSite(apiBaseUrl, token, input)),
+      deleteSite: (apiBaseUrl, token, hostname) => wrapInvoke(() => api.cms.deleteSite(apiBaseUrl, token, hostname)),
+      reloadSites: (apiBaseUrl, token) => wrapInvoke(() => api.cms.reloadSites(apiBaseUrl, token)),
+      listContentTypes: (apiBaseUrl, token, hostname) => wrapInvoke(() => api.cms.listContentTypes(apiBaseUrl, token, hostname)),
+      createContentType: (apiBaseUrl, token, hostname, input) => wrapInvoke(() => api.cms.createContentType(apiBaseUrl, token, hostname, input)),
+      listEntries: (apiBaseUrl, token, hostname, typeKey, limit) => wrapInvoke(() => api.cms.listEntries(apiBaseUrl, token, hostname, typeKey, limit)),
+      createEntry: (apiBaseUrl, token, hostname, input) => wrapInvoke(() => api.cms.createEntry(apiBaseUrl, token, hostname, input)),
+      getEntry: (apiBaseUrl, token, hostname, slug, id) => wrapInvoke(() => api.cms.getEntry(apiBaseUrl, token, hostname, slug, id)),
+      getRuntimeSettings: (apiBaseUrl, token, hostname) => wrapInvoke(() => api.cms.getRuntimeSettings(apiBaseUrl, token, hostname)),
+    },
     bitcoin: {
       getPrice: () => wrapInvoke(() => api.bitcoin.getPrice()),
     },
@@ -142,7 +156,7 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
 }
 
 export function getDesktopApi(): DigwisApi {
-  if (!window.digwis?.vps || !window.digwis?.projects) {
+  if (!window.digwis?.vps || !window.digwis?.projects || !window.digwis?.cms) {
     throw new Error("桌面能力尚未注入，请确认当前是通过 Electron 桌面应用启动。")
   }
 

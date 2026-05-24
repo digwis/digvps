@@ -5,6 +5,7 @@ import type {
   SshConfigMutationInput,
   VpsConnectionInput,
 } from "../shared/vps"
+import type { CmsApi } from "../shared/cms"
 import type {
   ProjectBackupSchedule,
   LocalProjectInput,
@@ -152,6 +153,32 @@ const api: DigwisApi = {
       ipcRenderer.invoke("vps:files:upload", payload),
     downloadRemoteEntry: (payload: { connectionId: string; path: string; name: string; type: "file" | "directory" | "symlink" }) =>
       ipcRenderer.invoke("vps:files:download", payload),
+  },
+  cms: {
+    login: (apiBaseUrl: string, username: string, password: string) =>
+      ipcRenderer.invoke("cms:login", apiBaseUrl, username, password),
+    getMe: (apiBaseUrl: string, token: string) =>
+      ipcRenderer.invoke("cms:get-me", apiBaseUrl, token),
+    listSites: (apiBaseUrl: string, token: string) =>
+      ipcRenderer.invoke("cms:list-sites", apiBaseUrl, token),
+    createSite: (apiBaseUrl: string, token: string, input: any) =>
+      ipcRenderer.invoke("cms:create-site", apiBaseUrl, token, input),
+    deleteSite: (apiBaseUrl: string, token: string, hostname: string) =>
+      ipcRenderer.invoke("cms:delete-site", apiBaseUrl, token, hostname),
+    reloadSites: (apiBaseUrl: string, token: string) =>
+      ipcRenderer.invoke("cms:reload-sites", apiBaseUrl, token),
+    listContentTypes: (apiBaseUrl: string, token: string, hostname: string) =>
+      ipcRenderer.invoke("cms:list-content-types", apiBaseUrl, token, hostname),
+    createContentType: (apiBaseUrl: string, token: string, hostname: string, input: any) =>
+      ipcRenderer.invoke("cms:create-content-type", apiBaseUrl, token, hostname, input),
+    listEntries: (apiBaseUrl: string, token: string, hostname: string, typeKey?: string, limit?: number) =>
+      ipcRenderer.invoke("cms:list-entries", apiBaseUrl, token, hostname, typeKey, limit),
+    createEntry: (apiBaseUrl: string, token: string, hostname: string, input: any) =>
+      ipcRenderer.invoke("cms:create-entry", apiBaseUrl, token, hostname, input),
+    getEntry: (apiBaseUrl: string, token: string, hostname: string, slug?: string, id?: number) =>
+      ipcRenderer.invoke("cms:get-entry", apiBaseUrl, token, hostname, slug, id),
+    getRuntimeSettings: (apiBaseUrl: string, token: string, hostname: string) =>
+      ipcRenderer.invoke("cms:get-runtime-settings", apiBaseUrl, token, hostname),
   },
   bitcoin: {
     getPrice: () => ipcRenderer.invoke("bitcoin:get-price"),

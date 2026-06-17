@@ -32,6 +32,12 @@ const api: DigwisApi = {
     addProjectFromPath: (payload: LocalProjectInput) => ipcRenderer.invoke("projects:add", payload),
     createProjectScaffold: (payload: ProjectScaffoldInput) => ipcRenderer.invoke("projects:create-scaffold", payload),
     scanRemoteProjects: (payload) => ipcRenderer.invoke("projects:scan-remote", payload),
+    listOpenClawInstances: (connectionId: string) => ipcRenderer.invoke("openclaw:list", connectionId),
+    precheckOpenClawInstall: (payload) => ipcRenderer.invoke("openclaw:precheck", payload),
+    installOpenClaw: (payload) => ipcRenderer.invoke("openclaw:install", payload),
+    uninstallOpenClaw: (payload) => ipcRenderer.invoke("openclaw:uninstall", payload),
+    restartOpenClaw: (payload) => ipcRenderer.invoke("openclaw:restart", payload),
+    fetchOpenClawLogs: (payload) => ipcRenderer.invoke("openclaw:logs", payload),
     onScaffoldProgress: (handler: (event: ProjectScaffoldProgressEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ProjectScaffoldProgressEvent) => {
         handler(payload)

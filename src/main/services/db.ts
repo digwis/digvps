@@ -251,6 +251,18 @@ export function initializeDatabase(userDataPath: string) {
     db.exec("ALTER TABLE local_projects ADD COLUMN last_deploy_kind TEXT;")
   }
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS openclaw_instances (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      listen_port INTEGER NOT NULL,
+      data_dir TEXT NOT NULL,
+      service_name TEXT NOT NULL,
+      installed_at TEXT NOT NULL,
+      UNIQUE(connection_id, listen_port)
+    );
+  `)
+
   normalizeDuplicateConnections(db)
 
   return db
@@ -600,6 +612,43 @@ export function updateLocalProjectPath(
 
 export function deleteLocalProject(id: string) {
   db!.prepare("DELETE FROM local_projects WHERE id = ?").run(id)
+}
+
+export type OpenClawInstanceRow = {
+  id: string
+  connection_id: string
+  listen_port: number
+  data_dir: string
+  service_name: string
+  installed_at: string
+}
+
+export function listOpenClawInstances(connectionId: string): OpenClawInstanceRow[] {
+  if (!db) return []
+  return db
+    .prepare(
+      "SELECT * FROM openclaw_instances WHERE connection_id = ? ORDER BY listen_port ASC",
+    )
+    .all(connectionId) as OpenClawInstanceRow[]
+}
+
+export function getOpenClawInstance(id: string): OpenClawInstanceRow | null {
+  if (!db) return null
+  const row = db
+    .prepare("SELECT * FROM openclaw_instances WHERE id = ?")
+    .get(id) as OpenClawInstanceRow | undefined
+  return row ?? null
+}
+
+export function insertOpenClawInstance(row: OpenClawInstanceRow) {
+  db!.prepare(
+    `INSERT INTO openclaw_instances (id, connection_id, listen_port, data_dir, service_name, installed_at)
+     VALUES (@id, @connection_id, @listen_port, @data_dir, @service_name, @installed_at)`,
+  ).run(row)
+}
+
+export function deleteOpenClawInstance(id: string) {
+  db!.prepare("DELETE FROM openclaw_instances WHERE id = ?").run(id)
 }
 
 export function updateLocalProjectDeployResult(

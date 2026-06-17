@@ -62,6 +62,10 @@ import {
   projectRemoteDetailsSchema,
   projectSiteSettingsSchema,
 } from "./schemas"
+import {
+  DIRECTUS_LOCAL_ADMIN_URL,
+  resolveProjectPanelAdminUrl,
+} from "../../shared/projects"
 import type {
   DigwisProjectConfig,
   LocalProjectInput,
@@ -94,12 +98,62 @@ function requireConnection(connectionId: string) {
   return connection
 }
 
-function resolveProjectLocalPreview(projectPath: string) {
-  const fallback = {
-    url: "http://localhost:3000",
-    webPath: path.join(projectPath, "apps", "web"),
-    adminUrl: "http://localhost:3000/admin",
+function readRootPackageJson(projectPath: string): {
+  packageManager?: string
+  scripts?: Record<string, string>
+  dependencies?: Record<string, string>
+  devDependencies?: Record<string, string>
+} | null {
+  const packagePath = path.join(projectPath, "package.json")
+  if (!fs.existsSync(packagePath)) {
+    return null
   }
+  try {
+    return JSON.parse(fs.readFileSync(packagePath, "utf8")) as {
+      packageManager?: string
+      scripts?: Record<string, string>
+      dependencies?: Record<string, string>
+      devDependencies?: Record<string, string>
+    }
+  } catch {
+    return null
+  }
+}
+
+function parseLocalPortFromScripts(pkg: ReturnType<typeof readRootPackageJson>) {
+  const candidates = [
+    pkg?.scripts?.dev,
+    pkg?.scripts?.["dev:webpack"],
+    pkg?.scripts?.start,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+  for (const script of candidates) {
+    const match = script.match(/--port(?:=|\s+)(\d{2,5})/)
+    if (match?.[1]) {
+      return Number(match[1])
+    }
+  }
+  return null
+}
+
+function inferLocalPreviewFallback(projectPath: string) {
+  const pkg = readRootPackageJson(projectPath)
+  const hasStandaloneNextLayout =
+    fs.existsSync(path.join(projectPath, "src", "app")) ||
+    fs.existsSync(path.join(projectPath, "app")) ||
+    fs.existsSync(path.join(projectPath, "src", "pages")) ||
+    fs.existsSync(path.join(projectPath, "pages"))
+  const usesNext = Boolean(pkg?.dependencies?.next || pkg?.devDependencies?.next)
+  const webPath = hasStandaloneNextLayout || usesNext ? projectPath : path.join(projectPath, "apps", "web")
+  const port = parseLocalPortFromScripts(pkg) ?? 3000
+  return {
+    url: `http://localhost:${port}`,
+    webPath,
+    adminUrl: `http://localhost:${port}/admin`,
+  }
+}
+
+function resolveProjectLocalPreview(projectPath: string) {
+  const fallback = inferLocalPreviewFallback(projectPath)
   const contractPath = path.join(projectPath, "digwis-project.json")
   if (!fs.existsSync(contractPath)) {
     return fallback
@@ -112,10 +166,14 @@ function resolveProjectLocalPreview(projectPath: string) {
     const webPath = parsed.apps?.web?.path
       ? path.join(projectPath, parsed.apps.web.path)
       : fallback.webPath
+    const contractAdminUrl = resolveProjectPanelAdminUrl(
+      parsed,
+      runtime?.adminUrl?.trim() || parsed.panel?.adminUrl?.trim() || fallback.adminUrl,
+    )
     return {
       url: runtime?.previewUrl?.trim() || previewUrl,
       webPath,
-      adminUrl: runtime?.adminUrl?.trim() || parsed.panel?.adminUrl?.trim() || fallback.adminUrl,
+      adminUrl: contractAdminUrl,
     }
   } catch {
     return fallback
@@ -231,6 +289,10 @@ function resolveDetachedDevCommand(projectPath: string) {
       // ignore and fall back to the generic dev command
     }
   }
+  const pkg = readRootPackageJson(projectPath)
+  if (pkg?.packageManager?.startsWith("bun@")) {
+    return "bun run dev"
+  }
   return "npm run dev"
 }
 
@@ -331,6 +393,7 @@ async function waitForPreviewUrlFromLog(logPath: string, timeoutMs: number) {
     /Local:\s+(http:\/\/localhost:\d+)/i,
     /Local:\s+(http:\/\/127\.0\.0\.1:\d+)/i,
     /Local:\s+(http:\/\/\[::1\]:\d+)/i,
+    /Local:\s+(http:\/\/0\.0\.0\.0:\d+)/i,
   ]
   while (Date.now() - startedAt < timeoutMs) {
     if (fs.existsSync(logPath)) {
@@ -338,7 +401,9 @@ async function waitForPreviewUrlFromLog(logPath: string, timeoutMs: number) {
       for (const pattern of patterns) {
         const match = raw.match(pattern)
         if (match?.[1]) {
-          return match[1].replace("http://[::1]:", "http://localhost:")
+          return match[1]
+            .replace("http://[::1]:", "http://localhost:")
+            .replace("http://0.0.0.0:", "http://localhost:")
         }
       }
     }
@@ -347,17 +412,87 @@ async function waitForPreviewUrlFromLog(logPath: string, timeoutMs: number) {
   return null
 }
 
-function runInProjectDetached(projectPath: string, command: string) {
+function ensureDirectusDatabase(envPath: string) {
+  if (!fs.existsSync(envPath)) {
+    return
+  }
+  const content = fs.readFileSync(envPath, "utf8")
+  const dbClient = content.match(/^DB_CLIENT=(.+)$/m)?.[1]?.trim()
+  if (dbClient !== "pg") {
+    return
+  }
+  const connectionString = content.match(/^DB_CONNECTION_STRING=(.+)$/m)?.[1]?.trim()
+  if (!connectionString) {
+    return
+  }
+  try {
+    const normalized = connectionString.replace(/^postgres(ql)?:/, "postgres:")
+    const url = new URL(normalized)
+    const dbName = url.pathname.replace(/^\//, "")
+    if (!dbName) {
+      return
+    }
+    execFileSync(
+      "createdb",
+      ["-h", url.hostname, "-p", url.port || "5432", "-U", decodeURIComponent(url.username), dbName],
+      {
+        env: {
+          ...process.env,
+          ...(url.password ? { PGPASSWORD: decodeURIComponent(url.password) } : {}),
+        },
+        stdio: "ignore",
+      },
+    )
+  } catch {
+    // database may already exist or createdb is unavailable
+  }
+}
+
+function bootstrapDirectusIfNeeded(directusSidecarDir: string) {
+  const envPath = path.join(directusSidecarDir, ".env")
+  if (!fs.existsSync(envPath)) {
+    return
+  }
+  try {
+    execFileSync("/bin/bash", ["-lc", "npx directus bootstrap"], {
+      cwd: directusSidecarDir,
+      env: {
+        ...envWithExtraPath(),
+        NAPI_RS_FORCE_WASI: "1",
+      },
+      stdio: "ignore",
+      timeout: 120_000,
+    })
+  } catch {
+    // bootstrap is only required on first run; ignore if tables already exist
+  }
+}
+
+function runInProjectDetached(projectPath: string, command: string, options?: { logName?: string }) {
+  const env = envWithExtraPath()
+  if (command.includes("directus")) {
+    env.NAPI_RS_FORCE_WASI = "1"
+  }
+  let stdio: "ignore" | ["ignore", number, number] = "ignore"
+  if (options?.logName) {
+    const runtimeDir = path.join(projectPath, ".digwis-panel")
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    const logPath = path.join(runtimeDir, options.logName)
+    const logFd = fs.openSync(logPath, "a")
+    stdio = ["ignore", logFd, logFd]
+  }
   const child =
     process.platform === "win32"
       ? spawn("cmd.exe", ["/c", command], {
           cwd: projectPath,
           detached: true,
-          stdio: "ignore",
+          env,
+          stdio,
         })
       : spawn("/bin/bash", ["-lc", `cd "${projectPath.replace(/"/g, '\\"')}" && ${command}`], {
           detached: true,
-          stdio: "ignore",
+          env,
+          stdio,
         })
   child.unref()
   return child.pid ?? undefined
@@ -554,19 +689,61 @@ export function registerProjectHandlers() {
     projectId = parseOrThrow(projectIdSchema, projectId)
     const project = requireProject(projectId)
     const preview = resolveProjectLocalPreview(project.localPath)
+    const adminUrl = preview.adminUrl || DIRECTUS_LOCAL_ADMIN_URL
     const directusCompose = path.join(project.localPath, "services", "directus", "docker-compose.yml")
-    if (!fs.existsSync(directusCompose)) {
+    const directusSidecarDir = path.join(project.localPath, "services", "directus")
+    const directusPackage = path.join(directusSidecarDir, "package.json")
+    const rootPackage = path.join(project.localPath, "package.json")
+
+    if (fs.existsSync(directusCompose)) {
+      runInProjectDetached(project.localPath, "npm run directus:up")
+      return {
+        ok: true,
+        message: "已在后台启动 CMS 管理服务（Docker）",
+        adminUrl,
+      }
+    }
+
+    if (!fs.existsSync(directusPackage)) {
       return {
         ok: true,
         message: "当前项目没有独立 CMS sidecar，跳过后台管理服务启动。",
-        adminUrl: preview.adminUrl || `${preview.url.replace(/\/$/, "")}/admin`,
+        adminUrl,
       }
     }
-    runInProjectDetached(project.localPath, "npm run directus:up")
+
+    repairProjectNativeModules(project.localPath)
+
+    const envPath = path.join(directusSidecarDir, ".env")
+    const envExample = path.join(directusSidecarDir, ".env.example")
+    if (!fs.existsSync(envPath) && fs.existsSync(envExample)) {
+      fs.copyFileSync(envExample, envPath)
+    }
+    ensureDirectusDatabase(envPath)
+    bootstrapDirectusIfNeeded(directusSidecarDir)
+
+    let startCommand = "npm run directus:dev"
+    if (fs.existsSync(rootPackage)) {
+      try {
+        const rootScripts = (JSON.parse(fs.readFileSync(rootPackage, "utf8")) as { scripts?: Record<string, string> })
+          .scripts
+        if (rootScripts?.["directus:dev"]) {
+          startCommand = "npm run directus:dev"
+        } else if (rootScripts?.["directus:start"]) {
+          startCommand = "npm run directus:start"
+        }
+      } catch {
+        // keep default
+      }
+    } else {
+      startCommand = "npm run dev"
+    }
+
+    runInProjectDetached(project.localPath, startCommand, { logName: "directus.log" })
     return {
       ok: true,
-      message: "已在后台启动 CMS 管理服务",
-      adminUrl: preview.adminUrl || "http://127.0.0.1:8055/admin",
+      message: "已在后台启动 Directus 开发服务",
+      adminUrl,
     }
   })
 

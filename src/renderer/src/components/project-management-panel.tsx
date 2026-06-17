@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Archive,
   ArrowRightLeft,
@@ -255,6 +255,7 @@ function buildDeployScriptOptions(scripts: string[]): DeployScriptOption[] {
   add(["deploy:panel", "deploy:vps:code"], "部署代码", "code")
   add(["sync:vps:admin-data", "sync:vps:data", "sync:vps"], "部署数据", "data")
   add(["sync:vps:uploads", "sync:uploads:vps"], "同步文件", "uploads")
+  add(["backup:vps", "backup"], "执行备份", "backup")
 
   if (options.length === 0) {
     const fallback = scripts.slice(0, 4)
@@ -385,6 +386,39 @@ function summarizeProjectLog(entry: ProjectOperationLogEntry) {
   }
 }
 
+function summarizeLiveExecution(lines: string[]) {
+  const trimmed = lines.map((line) => line.trim()).filter(Boolean)
+  const latest = trimmed[trimmed.length - 1] ?? ""
+  const startLine = [...trimmed].reverse().find((line) => line.includes("[start]"))
+  const finishLine = [...trimmed].reverse().find((line) => line.includes("[finish]"))
+  const stepLine = [...trimmed].reverse().find((line) => /^\[\d+\/\d+\]/.test(line))
+  const status = finishLine?.includes("failed")
+    ? "failed"
+    : finishLine?.includes("success")
+      ? "success"
+      : startLine
+        ? "running"
+        : "idle"
+  const title =
+    status === "failed"
+      ? "执行失败"
+      : status === "success"
+        ? "执行完成"
+        : status === "running"
+          ? "正在执行"
+          : "等待执行"
+  const detail = stepLine ?? finishLine ?? startLine ?? latest
+  return {
+    status,
+    title,
+    detail,
+    latest,
+    startLine,
+    finishLine,
+    stepLine,
+  }
+}
+
 function isInitLog(entry: ProjectOperationLogEntry) {
   return entry.chunk.includes("initialize remote project") || entry.chunk.includes("initialize success") || entry.chunk.includes("initialize failed")
 }
@@ -504,6 +538,7 @@ function ProjectDeployCard({
   actionHints,
   backupSchedule,
   fullLogs,
+  liveDeployLogs,
   scaffoldProgress,
   onAppendOperationLog,
   onProjectStateRefresh,
@@ -528,6 +563,7 @@ function ProjectDeployCard({
   actionHints?: ProjectActionHint[]
   backupSchedule?: ProjectBackupScheduleState
   fullLogs?: ProjectOperationLogEntry[]
+  liveDeployLogs?: string[]
   scaffoldProgress?: ActiveScaffoldState
   onAppendOperationLog: (entry: ProjectOperationLogEntry) => void
   onProjectStateRefresh: () => Promise<void>
@@ -561,6 +597,7 @@ function ProjectDeployCard({
   const [modulesOpen, setModulesOpen] = useState(false)
   const [remoteInfoOpen, setRemoteInfoOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
+  const [executionOpen, setExecutionOpen] = useState(false)
   const [logFilter, setLogFilter] = useState<ProjectLogFilter>("all")
   const [logQuery, setLogQuery] = useState("")
   const [deleteConfirmText, setDeleteConfirmText] = useState("")
@@ -584,6 +621,8 @@ function ProjectDeployCard({
   const [previewAlive, setPreviewAlive] = useState(false)
   const [adminAlive, setAdminAlive] = useState(false)
   const [healthChecking, setHealthChecking] = useState(false)
+  const executionViewportRef = useRef<HTMLDivElement | null>(null)
+  const previousBusyRef = useRef(false)
   const hasProjectContract = projectConfig != null
   const clientApps = useMemo(() => clientAppSummary(projectConfig), [projectConfig])
   const projectClientTargets = projectConfig?.clientTargets ?? []
@@ -599,6 +638,7 @@ function ProjectDeployCard({
   }, [actionHints])
 
   const executeScriptAction = (item: DeployScriptOption) => {
+    setExecutionOpen(true)
     setNpmScript(item.value)
     onDeploy({
       connectionId,
@@ -788,6 +828,34 @@ function ProjectDeployCard({
 
   const busy = isDeploying && deployingProjectId === project.id
   const bootstrapping = isInitializing && initializingProjectId === project.id
+  const executionLines = liveDeployLogs ?? []
+  const executionSummary = useMemo(() => summarizeLiveExecution(executionLines), [executionLines])
+  const canReopenExecution = busy || executionLines.length > 0
+  const executionTone =
+    executionSummary.status === "failed"
+      ? "border-destructive/40 bg-destructive/10 text-destructive"
+      : executionSummary.status === "success"
+        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+        : busy
+          ? "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+          : "border-border/70 bg-muted/40 text-muted-foreground"
+  useEffect(() => {
+    if (busy && !previousBusyRef.current) {
+      setExecutionOpen(true)
+    }
+    previousBusyRef.current = busy
+  }, [busy])
+
+  useEffect(() => {
+    if (!executionOpen) {
+      return
+    }
+    const node = executionViewportRef.current
+    if (!node) {
+      return
+    }
+    node.scrollTop = node.scrollHeight
+  }, [executionLines.length, executionOpen])
   const success = project.lastDeployStatus === "success"
   const failed = project.lastDeployStatus === "failed"
   const hasScriptActions = strategy === "local-npm-script" && npmScripts.length > 0
@@ -1647,7 +1715,10 @@ function ProjectDeployCard({
                 >
                   CMS/Admin：{adminAlive ? "可达" : healthChecking ? "检查中" : "未启动"}
                 </span>
-                <span className="truncate text-muted-foreground">{previewUrl}</span>
+                <span className="truncate text-muted-foreground" title={adminUrl !== previewUrl ? adminUrl : previewUrl}>
+                  {previewUrl}
+                  {adminUrl !== previewUrl ? ` · 管理端 ${adminUrl}` : null}
+                </span>
                 {!previewAlive ? (
                   <Button
                     type="button"
@@ -1694,13 +1765,14 @@ function ProjectDeployCard({
                     variant="outline"
                     className="h-10 w-full rounded-2xl text-sm shadow-none"
                     disabled={busy || bootstrapping || !connectionId}
-                    onClick={() =>
+                    onClick={() => {
+                      setExecutionOpen(true)
                       onDeploy({
                         connectionId,
                         strategy,
                         remoteParentPath: remoteParent.trim() || undefined,
                       })
-                    }
+                    }}
                   >
                     {busy ? (
                       <>
@@ -2005,6 +2077,17 @@ function ProjectDeployCard({
                         ? new Date(latestInitLog.at).toLocaleTimeString()
                         : "暂无"}
                   </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 rounded-xl px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                    disabled={!canReopenExecution}
+                    onClick={() => setExecutionOpen(true)}
+                  >
+                    <LoaderCircle className={cn("size-3.5", busy && "animate-spin")} />
+                    执行台
+                  </Button>
                   <Button
                     type="button"
                     variant="ghost"
@@ -2393,6 +2476,85 @@ function ProjectDeployCard({
         </DialogContent>
       </Dialog>
 
+      <Dialog open={executionOpen} onOpenChange={setExecutionOpen}>
+        <DialogContent className="max-w-5xl">
+          <DialogHeader>
+            <DialogTitle>部署执行台</DialogTitle>
+            <DialogDescription>{project.displayName}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={cn("inline-flex items-center rounded-full border px-2.5 py-1 text-[11px]", executionTone)}>
+                {busy ? <LoaderCircle className="mr-1 size-3.5 animate-spin" /> : null}
+                {busy ? "实时执行中" : executionSummary.title}
+              </span>
+              <span className="inline-flex items-center rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground">
+                当前动作：{npmScript || deployProfile?.recommendedNpmScript || "部署代码"}
+              </span>
+              <span className="inline-flex items-center rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground">
+                输出 {executionLines.length} 行
+              </span>
+            </div>
+            <div className="rounded-2xl border border-border/70 bg-muted/[0.04] px-4 py-3">
+              <p className="text-xs font-medium text-foreground">{executionSummary.detail || "等待新的执行输出"}</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {busy
+                  ? "弹窗会默认在每次部署开始时打开；关闭后部署会继续执行。"
+                  : executionLines.length
+                    ? "执行已结束，可继续查看本次输出，或切换到完整日志查看历史记录。"
+                    : "当前项目还没有实时执行输出。"}
+              </p>
+            </div>
+            <div
+              ref={executionViewportRef}
+              className="max-h-[55vh] overflow-auto rounded-2xl border border-border/70 bg-[#0b0d12] px-4 py-3"
+            >
+              {executionLines.length ? (
+                <div className="space-y-1 font-mono text-[11px] leading-5 text-slate-200">
+                  {executionLines.map((line, index) => (
+                    <p
+                      key={`${project.id}-execution-${index}-${line}`}
+                      className={cn(
+                        "break-all",
+                        line.includes("[finish] failed") || /error|failed/i.test(line)
+                          ? "text-rose-300"
+                          : line.includes("[finish] success")
+                            ? "text-emerald-300"
+                            : /^\[\d+\/\d+\]/.test(line)
+                              ? "text-sky-300"
+                              : line.includes("[start]")
+                                ? "text-amber-300"
+                                : "text-slate-200",
+                      )}
+                    >
+                      {line}
+                    </p>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-14 text-center text-sm text-slate-400">本次执行开始后，详细输出会实时显示在这里。</div>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setExecutionOpen(false)
+                setLogsOpen(true)
+              }}
+              disabled={!fullLogs?.length}
+            >
+              查看完整日志
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setExecutionOpen(false)}>
+              关闭
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={remoteInfoOpen} onOpenChange={setRemoteInfoOpen}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
@@ -2665,6 +2827,7 @@ export function ProjectManagementPanel({
 }: ProjectManagementPanelProps) {
   const {
     projects,
+    deployLogsByProject,
     operationLogs,
     isLoading,
     isImporting,
@@ -3431,6 +3594,7 @@ export function ProjectManagementPanel({
               actionHints={actionHintsByProject[project.id]}
               backupSchedule={backupScheduleByProject[project.id]}
               fullLogs={fullLogsByProject[project.id]}
+              liveDeployLogs={deployLogsByProject[project.id]}
               scaffoldProgress={activeScaffold?.projectId === project.id ? activeScaffold : undefined}
               onAppendOperationLog={appendOperationLog}
               onProjectStateRefresh={refreshProjectMeta}

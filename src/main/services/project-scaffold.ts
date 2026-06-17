@@ -19,6 +19,7 @@ import type {
   ProjectScaffoldResult,
   ProjectScaffoldTemplate,
 } from "../../shared/projects"
+import { DIRECTUS_LOCAL_ADMIN_URL } from "../../shared/projects"
 
 type ScaffoldContext = {
   rootPath: string
@@ -370,15 +371,45 @@ function resolveAdminUrlFromPreview(previewUrl: string, fallbackAdminUrl?: strin
   }
 }
 
-async function pullPayloadFullTemplate(targetPath: string) {
+async function pullPayloadFullTemplate(targetPath: string, payloadVersion: string) {
   const command = [
     "set -e",
     "tmp_tar=$(mktemp /tmp/payload-website-XXXXXX.tar.gz)",
-    'curl -fsSL "https://codeload.github.com/payloadcms/payload/tar.gz/refs/heads/main" -o "$tmp_tar"',
-    `tar -xzf "$tmp_tar" -C "${targetPath.replace(/"/g, '\\"')}" --strip-components=3 payload-main/templates/website`,
+    `curl -fsSL "https://codeload.github.com/payloadcms/payload/tar.gz/refs/tags/v${payloadVersion}" -o "$tmp_tar"`,
+    `tar -xzf "$tmp_tar" -C "${targetPath.replace(/"/g, '\\"')}" --strip-components=3 payload-${payloadVersion}/templates/website`,
     'rm -f "$tmp_tar"',
   ].join(" && ")
   return await runCommand(targetPath, command, 10 * 60 * 1000)
+}
+
+function patchPayloadFolderApiCompatibility(projectRoot: string) {
+  const mediaPath = path.join(projectRoot, "src", "collections", "Media.ts")
+  if (fs.existsSync(mediaPath)) {
+    let media = fs.readFileSync(mediaPath, "utf8")
+    if (media.includes("createFolderField")) {
+      media = media.replace(/import \{ createFolderField \} from 'payload'\n/, "")
+      media = media.replace(/\n    createFolderField\(\{ relationTo: 'folders' \}\),/, "")
+      if (!media.includes("folders: true,")) {
+        media = media.replace(
+          /export const Media: CollectionConfig = \{\n  slug: 'media',/,
+          "export const Media: CollectionConfig = {\n  slug: 'media',\n  folders: true,",
+        )
+      }
+      fs.writeFileSync(mediaPath, media, "utf8")
+    }
+  }
+
+  const payloadConfigPath = path.join(projectRoot, "src", "payload.config.ts")
+  if (fs.existsSync(payloadConfigPath)) {
+    let payloadConfig = fs.readFileSync(payloadConfigPath, "utf8")
+    if (payloadConfig.includes("slug: 'folders'")) {
+      payloadConfig = payloadConfig.replace(
+        /  collections: \[\n    \{\n      slug: 'folders',[\s\S]*?\n    \},\n    Pages,/,
+        "  collections: [Pages,",
+      )
+      fs.writeFileSync(payloadConfigPath, payloadConfig, "utf8")
+    }
+  }
 }
 
 async function resolvePayloadPublishedVersion(projectRoot: string) {
@@ -472,6 +503,29 @@ function buildClientAppsContract(input: ProjectScaffoldInput) {
           platform: "android" as const,
         }
       : undefined,
+  }
+}
+
+function ensurePayloadTsconfigBaseUrl(projectRoot: string) {
+  const tsconfigPath = path.join(projectRoot, "tsconfig.json")
+  if (!fs.existsSync(tsconfigPath)) {
+    return
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(tsconfigPath, "utf8")) as {
+      compilerOptions?: Record<string, unknown>
+    }
+    const compilerOptions = parsed.compilerOptions ?? {}
+    if (compilerOptions.baseUrl === ".") {
+      return
+    }
+    parsed.compilerOptions = {
+      ...compilerOptions,
+      baseUrl: ".",
+    }
+    fs.writeFileSync(tsconfigPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8")
+  } catch {
+    // ignore invalid tsconfig
   }
 }
 
@@ -597,6 +651,8 @@ async function patchFullPayloadTemplate(projectRoot: string, input: ProjectScaff
     fs.writeFileSync(payloadConfigPath, payloadConfig, "utf8")
   }
   ensureNextConfigAllowsLoopback(projectRoot)
+  ensurePayloadTsconfigBaseUrl(projectRoot)
+  patchPayloadFolderApiCompatibility(projectRoot)
 
   const secret = randomBytes(24).toString("hex")
   const envContent = buildFullPayloadEnv(input, secret, webPort)
@@ -686,7 +742,7 @@ function buildContractForFullDirectus(input: ProjectScaffoldInput, webPort: numb
     },
     panel: {
       previewUrl: buildLocalPreviewUrl(webPort),
-      adminUrl: "http://127.0.0.1:8055/admin",
+      adminUrl: DIRECTUS_LOCAL_ADMIN_URL,
     },
   }
 }
@@ -799,8 +855,9 @@ function buildRootPackageJson(input: ProjectScaffoldInput) {
     scripts["payload:importmap"] = "pnpm --filter web generate:importmap"
   }
   if (input.template === "next-directus") {
-    scripts["directus:dev"] = "pnpm --dir services/directus dev"
-    scripts["directus:start"] = "pnpm --dir services/directus start"
+    scripts["directus:bootstrap"] = "NAPI_RS_FORCE_WASI=1 pnpm --dir services/directus bootstrap"
+    scripts["directus:dev"] = "NAPI_RS_FORCE_WASI=1 pnpm --dir services/directus dev"
+    scripts["directus:start"] = "NAPI_RS_FORCE_WASI=1 pnpm --dir services/directus start"
   }
   addDesktopScripts(scripts, input.clientTargets)
   return JSON.stringify(
@@ -1452,11 +1509,16 @@ function buildDirectusServicePackageJson() {
       name: "directus-sidecar",
       private: true,
       scripts: {
-        dev: "directus start",
-        start: "directus start",
+        dev: "NAPI_RS_FORCE_WASI=1 directus start",
+        start: "NAPI_RS_FORCE_WASI=1 directus start",
+        bootstrap: "NAPI_RS_FORCE_WASI=1 directus bootstrap",
       },
       dependencies: {
         directus: "^11.0.0",
+        "@napi-rs/snappy-wasm32-wasi": "7.3.3",
+      },
+      optionalDependencies: {
+        "@napi-rs/snappy-darwin-arm64": "7.3.3",
       },
     },
     null,
@@ -2280,7 +2342,8 @@ function buildContract(input: ProjectScaffoldInput, webPort: number): DigwisProj
     },
     panel: {
       previewUrl: buildLocalPreviewUrl(webPort),
-      adminUrl: buildLocalAdminUrl(webPort),
+      adminUrl:
+        input.template === "next-directus" ? DIRECTUS_LOCAL_ADMIN_URL : buildLocalAdminUrl(webPort),
     },
   }
 }
@@ -3431,7 +3494,8 @@ export async function createProjectScaffold(
       message: "正在载入 Payload 完整模板",
       detail: "正在在线拉取 Payload 官方 website 模板。",
     })
-    const pulled = await pullPayloadFullTemplate(resolvedRoot)
+    const payloadVersion = await resolvePayloadPublishedVersion(resolvedRoot)
+    const pulled = await pullPayloadFullTemplate(resolvedRoot, payloadVersion)
     if (!pulled.ok) {
       report({
       stage: "failed",

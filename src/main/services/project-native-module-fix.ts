@@ -15,6 +15,15 @@ const nativeModulePatterns = [
     dirPrefix: "@img+sharp-darwin-arm64@",
     relativeBinaryPath: path.join("node_modules", "@img", "sharp-darwin-arm64", "lib", "sharp-darwin-arm64.node"),
   },
+  {
+    dirPrefix: "@napi-rs+snappy-darwin-arm64@",
+    relativeBinaryPath: path.join(
+      "node_modules",
+      "@napi-rs",
+      "snappy-darwin-arm64",
+      "snappy.darwin-arm64.node",
+    ),
+  },
 ]
 
 export function repairProjectNativeModules(projectPath: string): NativeFixResult {
@@ -37,18 +46,73 @@ export function repairProjectNativeModules(projectPath: string): NativeFixResult
       if (!fs.existsSync(binaryPath)) {
         continue
       }
-      try {
-        execFileSync("/usr/bin/codesign", ["--force", "--sign", "-", binaryPath], {
-          stdio: "ignore",
-        })
+      if (signNativeBinary(binaryPath)) {
         repaired.add(binaryPath)
-      } catch {
-        // Ignore signing failures and let runtime fall back to normal error handling.
       }
     }
   }
 
+  for (const entry of entries) {
+    const entryDir = path.join(pnpmDir, entry, "node_modules")
+    if (!fs.existsSync(entryDir)) {
+      continue
+    }
+    collectNativeBinaries(entryDir, repaired)
+  }
+
   return {
     repaired: Array.from(repaired),
+  }
+}
+
+function collectNativeBinaries(rootDir: string, repaired: Set<string>) {
+  const stack = [rootDir]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (!current) {
+      continue
+    }
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name === ".bin") {
+          continue
+        }
+        stack.push(fullPath)
+        continue
+      }
+      if (entry.isFile() && entry.name.endsWith(".node")) {
+        if (signNativeBinary(fullPath)) {
+          repaired.add(fullPath)
+        }
+      }
+    }
+  }
+}
+
+function signNativeBinary(binaryPath: string) {
+  try {
+    execFileSync("/usr/bin/xattr", ["-cr", binaryPath], { stdio: "ignore" })
+  } catch {
+    // ignore xattr failures
+  }
+  try {
+    execFileSync("/usr/bin/codesign", ["--remove-signature", binaryPath], { stdio: "ignore" })
+  } catch {
+    // ignore unsigned binaries
+  }
+  try {
+    execFileSync("/usr/bin/codesign", ["--force", "--sign", "-", binaryPath], {
+      stdio: "ignore",
+    })
+    return true
+  } catch {
+    return false
   }
 }

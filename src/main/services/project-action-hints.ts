@@ -153,7 +153,10 @@ export async function inspectProjectActionHints(project: LocalProjectRecord): Pr
   const git = await getGitDirtySnapshot(project.localPath)
   const codeLocal = git ?? scanDirLatest(project.localPath, { exclude: CODE_EXCLUDE_DIRS })
   const currentLsn = await readLocalPostgresLsn(project.localPath)
-  const uploadsLocal = scanDirLatest(path.join(project.localPath, "uploads"))
+  const uploadsDir = fs.existsSync(path.join(project.localPath, "storage", "uploads"))
+    ? path.join(project.localPath, "storage", "uploads")
+    : path.join(project.localPath, "uploads")
+  const uploadsLocal = scanDirLatest(uploadsDir)
 
   const hints: ProjectActionHints["hints"] = [
     buildHint({
@@ -182,8 +185,8 @@ export async function inspectProjectActionHints(project: LocalProjectRecord): Pr
       action: "uploads",
       runAt: uploadsRunAt,
       local: uploadsLocal,
-      missingReason: "未检测到 uploads 文件",
-      changedReason: "检测到 uploads 有新增或修改",
+      missingReason: "未检测到上传文件目录",
+      changedReason: "检测到上传文件有新增或修改",
     }),
     {
       action: "backup",

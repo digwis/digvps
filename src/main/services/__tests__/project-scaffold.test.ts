@@ -81,12 +81,13 @@ describe("generateProjectScaffoldFiles", () => {
 
     expect(result.contract.template).toBe("next-directus")
     expect(result.contract.services.cms?.type).toBe("directus")
+    expect(result.contract.panel.adminUrl).toBe("http://127.0.0.1:8055/admin")
     expect(result.createdFiles).toContain("services/directus/package.json")
     expect(result.createdFiles).toContain("services/directus/.env.example")
 
     const directusPackage = fs.readFileSync(path.join(localPath, "services/directus/package.json"), "utf8")
     expect(directusPackage).toContain("\"directus\"")
-    expect(directusPackage).toContain("\"dev\": \"directus start\"")
+    expect(directusPackage).toContain("\"dev\": \"NAPI_RS_FORCE_WASI=1 directus start\"")
 
     const directusEnv = fs.readFileSync(path.join(localPath, "services/directus/.env.example"), "utf8")
     expect(directusEnv).toContain("PORT=8055")

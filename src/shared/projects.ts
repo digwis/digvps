@@ -165,6 +165,27 @@ export type ProjectRuntimeModulesUpdateResult = {
   warnings: string[]
 }
 
+/** Directus sidecar 默认管理端（与 Next 预览端口 3000 分离） */
+export const DIRECTUS_LOCAL_ADMIN_URL = "http://127.0.0.1:8055/admin"
+
+export function resolveProjectPanelAdminUrl(
+  config: Pick<DigwisProjectConfig, "services" | "panel">,
+  fallback?: string,
+): string {
+  if (config.services?.cms?.type === "directus") {
+    return DIRECTUS_LOCAL_ADMIN_URL
+  }
+  const fromPanel = config.panel?.adminUrl?.trim()
+  if (fromPanel) {
+    return fromPanel
+  }
+  if (fallback?.trim()) {
+    return fallback.trim()
+  }
+  const preview = config.panel?.previewUrl?.trim() || "http://127.0.0.1:3000"
+  return `${preview.replace(/\/$/, "")}/admin`
+}
+
 export type ProjectLocalPreview = {
   url: string
   webPath: string

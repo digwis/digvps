@@ -29,6 +29,7 @@ import { readPackageJsonScriptNames, runLocalNpmScript } from "../services/proje
 import { deployLocalProjectToVps, resolveRemoteDeployPathForProject } from "../services/project-deploy"
 import { readLocalPostgresLsn } from "../services/project-db-marker"
 import { inspectProjectActionHints } from "../services/project-action-hints"
+import { scanRemoteManagedProjects } from "../services/remote-managed-projects"
 import {
   getProjectBackupSchedule,
   markProjectActionRun,
@@ -61,6 +62,7 @@ import {
   projectMigrationSchema,
   projectRemoteDetailsSchema,
   projectSiteSettingsSchema,
+  remoteManagedProjectScanSchema,
 } from "./schemas"
 import {
   DIRECTUS_LOCAL_ADMIN_URL,
@@ -593,6 +595,12 @@ export function registerProjectHandlers() {
         _event.sender.send("projects:scaffold-progress", progress)
       },
     })
+  })
+
+  registerIpcHandle("projects:scan-remote", async (_event, payload: unknown) => {
+    const parsed = parseOrThrow(remoteManagedProjectScanSchema, payload)
+    const connection = requireConnection(parsed.connectionId)
+    return scanRemoteManagedProjects(resolveStoredPayload(connection))
   })
 
   registerIpcHandle("projects:get-config", async (_event, projectId: string) => {

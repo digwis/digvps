@@ -32,6 +32,7 @@ const api: DigwisApi = {
     listProjects: () => ipcRenderer.invoke("projects:list"),
     addProjectFromPath: (payload: LocalProjectInput) => ipcRenderer.invoke("projects:add", payload),
     createProjectScaffold: (payload: ProjectScaffoldInput) => ipcRenderer.invoke("projects:create-scaffold", payload),
+    scanRemoteProjects: (payload) => ipcRenderer.invoke("projects:scan-remote", payload),
     onScaffoldProgress: (handler: (event: ProjectScaffoldProgressEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: ProjectScaffoldProgressEvent) => {
         handler(payload)

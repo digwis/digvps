@@ -295,8 +295,56 @@ export type SystemUpgradeApplyResult = {
   message: string
 }
 
+export type TerminalCreateInput = {
+  connectionId: string
+}
+
+export type TerminalCreateResult = {
+  sessionId: string
+}
+
+export type TerminalWriteInput = {
+  sessionId: string
+  data: string
+}
+
+export type TerminalResizeInput = {
+  sessionId: string
+  cols: number
+  rows: number
+}
+
+export type TerminalCloseInput = {
+  sessionId: string
+}
+
+export type TerminalDataEvent = {
+  sessionId: string
+  data: string
+}
+
+export type TerminalExitEvent = {
+  sessionId: string
+  code?: number
+  signal?: string
+}
+
+export type TerminalErrorEvent = {
+  sessionId: string
+  message: string
+}
+
 export type DigwisApi = {
   projects: ManagedProjectsApi
+  terminal: {
+    createSession: (payload: TerminalCreateInput) => Promise<TerminalCreateResult>
+    writeInput: (payload: TerminalWriteInput) => Promise<void>
+    resize: (payload: TerminalResizeInput) => Promise<void>
+    closeSession: (payload: TerminalCloseInput) => Promise<void>
+    onData: (handler: (event: TerminalDataEvent) => void) => () => void
+    onExit: (handler: (event: TerminalExitEvent) => void) => () => void
+    onError: (handler: (event: TerminalErrorEvent) => void) => () => void
+  }
   vps: {
     listConnections: () => Promise<VpsConnectionRecord[]>
     saveConnection: (payload: VpsConnectionInput) => Promise<VpsConnectionRecord>

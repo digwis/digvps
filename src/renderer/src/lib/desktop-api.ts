@@ -48,6 +48,8 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
       addProjectFromPath: (payload) => wrapInvoke(() => api.projects.addProjectFromPath(payload)),
       createProjectScaffold: (payload) => wrapInvoke(() => api.projects.createProjectScaffold(payload)),
       onScaffoldProgress: (handler) => api.projects.onScaffoldProgress(handler),
+      scanRemoteProjects: (payload) =>
+        wrapInvoke(() => requireMethod(api.projects.scanRemoteProjects, "远程项目扫描接口")(payload)),
       getProjectConfig: (projectId) =>
         wrapInvoke(() => requireMethod(api.projects.getProjectConfig, "项目配置读取接口")(projectId)),
       setProjectRuntimeModules: (payload) =>

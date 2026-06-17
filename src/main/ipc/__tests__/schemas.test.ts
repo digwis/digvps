@@ -7,6 +7,7 @@ import {
   projectRuntimeModulesUpdateSchema,
   projectScaffoldSchema,
   remoteDownloadSchema,
+  remoteManagedProjectScanSchema,
   vpsConnectionInputSchema,
 } from "../schemas"
 
@@ -39,6 +40,7 @@ describe("ipc schemas", () => {
       monorepo: true,
       template: "next-payload",
       database: "postgresql",
+      clientTargets: ["electron"],
       runtimeModules: ["auth", "dashboard"],
       serviceModules: ["python-ai"],
     })
@@ -73,6 +75,17 @@ describe("ipc schemas", () => {
         type: "bogus",
       }),
     ).toThrow()
+  })
+
+  test("accepts a remote managed project scan payload", () => {
+    const parsed = parseOrThrow(remoteManagedProjectScanSchema, {
+      connectionId: "conn-123",
+    })
+    expect(parsed.connectionId).toBe("conn-123")
+  })
+
+  test("rejects remote managed project scan without connectionId", () => {
+    expect(() => parseOrThrow(remoteManagedProjectScanSchema, {})).toThrow()
   })
 
   test("requires matching auth credentials", () => {

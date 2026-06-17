@@ -220,6 +220,10 @@ export const remoteTrashEntrySchema = z.object({
   trashId: nonEmptyString("trashId"),
 })
 
+export const remoteManagedProjectScanSchema = z.object({
+  connectionId: connectionIdSchema,
+})
+
 export const dependencyServiceSchema = z.object({
   dependencyId: nonEmptyString("dependencyId"),
   action: z.enum(["restart", "stop", "start"]),

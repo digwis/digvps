@@ -428,6 +428,37 @@ export type ProjectOperationLogAppendInput = {
   chunk: string
 }
 
+export type RemoteManagedProjectPathSource =
+  | "systemd"
+  | "pm2"
+  | "docker"
+  | "heuristic"
+  | "unknown"
+
+export type RemoteManagedProject = {
+  id: string
+  connectionId: string
+  domain: string
+  nginxConfigPath: string
+  proxyTarget: string
+  projectPath?: string
+  pathSource: RemoteManagedProjectPathSource
+  serviceName?: string
+  runtimeType?: "node" | "pm2" | "docker" | "unknown"
+  status: "ok" | "warning" | "unknown"
+  statusText: string
+}
+
+export type RemoteManagedProjectScanInput = {
+  connectionId: string
+}
+
+export type RemoteManagedProjectScanResult = {
+  connectionId: string
+  projects: RemoteManagedProject[]
+  scannedAt: string
+}
+
 export type ProjectActionKind = "code" | "data" | "uploads" | "backup"
 export type ProjectBackupSchedule = "off" | "daily" | "weekly" | "monthly"
 
@@ -469,6 +500,7 @@ export type ManagedProjectsApi = {
   addProjectFromPath: (payload: LocalProjectInput) => Promise<LocalProjectRecord>
   createProjectScaffold: (payload: ProjectScaffoldInput) => Promise<ProjectScaffoldResult>
   onScaffoldProgress: (handler: (event: ProjectScaffoldProgressEvent) => void) => () => void
+  scanRemoteProjects: (payload: RemoteManagedProjectScanInput) => Promise<RemoteManagedProjectScanResult>
   getProjectConfig: (projectId: string) => Promise<DigwisProjectConfig | null>
   setProjectRuntimeModules: (payload: ProjectRuntimeModulesUpdateInput) => Promise<ProjectRuntimeModulesUpdateResult>
   updateProjectLocalPath: (payload: ProjectLocalPathUpdateInput) => Promise<LocalProjectRecord>

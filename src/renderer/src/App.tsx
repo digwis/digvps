@@ -3,10 +3,10 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Bot,
   CheckCircle2,
   Clock3,
   FolderOpen,
-  FolderKanban,
   HardDriveDownload,
   LoaderCircle,
   PanelLeft,
@@ -46,7 +46,7 @@ import { DependencyCards } from "@/components/dependency-cards"
 import { InspectionTelemetryCards } from "@/components/inspection-telemetry-cards"
 import { SystemUpgradePrompt } from "@/components/system-upgrade-prompt"
 import { VpsConnectionDialog } from "@/components/vps-connection-dialog"
-import { ProjectManagementPanel } from "@/components/project-management-panel"
+import { AgentManagementPanel } from "@/components/agent-management-panel"
 import { FileBrowserPanel } from "@/components/file-browser-panel"
 import { Toaster } from "@/components/ui/toaster"
 import type {
@@ -75,7 +75,7 @@ const TELEMETRY_FRESH_MS = 20_000
 const navItems: Array<{ key: NavKey; label: string; icon: typeof Server }> = [
   { key: "monitor", label: "主机概览", icon: Server },
   { key: "deps", label: "运行环境", icon: HardDriveDownload },
-  { key: "projects", label: "项目管理", icon: FolderKanban },
+  { key: "projects", label: "代理管理", icon: Bot },
   { key: "files", label: "文件管理", icon: FolderOpen },
 ]
 
@@ -668,7 +668,7 @@ export default function App() {
                   keywords={project.keywords}
                   onSelect={() => openProjectFromSearch(project.id)}
                 >
-                  <FolderKanban className="size-4 text-muted-foreground" />
+                  <Bot className="size-4 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium text-foreground">{project.title}</div>
                     <div className="truncate text-xs text-muted-foreground">{project.subtitle}</div>
@@ -896,11 +896,9 @@ export default function App() {
                     navigateTo({ nav: "monitor" })
                   }} />
                 ) : activeNav === "projects" ? (
-                  <ProjectManagementPanel
+                  <AgentManagementPanel
                     connections={connections}
                     selectedConnectionId={selectedConnectionId}
-                    highlightedProjectId={highlightedProjectId}
-                    onOpenRemoteDirectory={openRemoteDirectoryInBrowser}
                   />
                 ) : activeNav === "files" ? (
                   <FileBrowserPanel

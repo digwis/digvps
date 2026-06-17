@@ -96,12 +96,6 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
       listOperationLogs: (payload) => wrapInvoke(() => api.projects.listOperationLogs(payload)),
       appendProjectOperationLog: (payload) => wrapInvoke(() => api.projects.appendProjectOperationLog(payload)),
       onDeployLog: (handler) => api.projects.onDeployLog(handler),
-      listOpenClawInstances: (connectionId) => wrapInvoke(() => api.projects.listOpenClawInstances(connectionId)),
-      precheckOpenClawInstall: (payload) => wrapInvoke(() => api.projects.precheckOpenClawInstall(payload)),
-      installOpenClaw: (payload) => wrapInvoke(() => api.projects.installOpenClaw(payload)),
-      uninstallOpenClaw: (payload) => wrapInvoke(() => api.projects.uninstallOpenClaw(payload)),
-      restartOpenClaw: (payload) => wrapInvoke(() => api.projects.restartOpenClaw(payload)),
-      fetchOpenClawLogs: (payload) => wrapInvoke(() => api.projects.fetchOpenClawLogs(payload)),
     },
     terminal: {
       createSession: (payload) => wrapInvoke(() => api.terminal.createSession(payload)),

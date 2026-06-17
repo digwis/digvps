@@ -560,12 +560,6 @@ export type ManagedProjectsApi = {
   createProjectScaffold: (payload: ProjectScaffoldInput) => Promise<ProjectScaffoldResult>
   onScaffoldProgress: (handler: (event: ProjectScaffoldProgressEvent) => void) => () => void
   scanRemoteProjects: (payload: RemoteManagedProjectScanInput) => Promise<RemoteManagedProjectScanResult>
-  listOpenClawInstances: (connectionId: string) => Promise<OpenClawInstance[]>
-  precheckOpenClawInstall: (payload: OpenClawInstallInput) => Promise<OpenClawPrecheck>
-  installOpenClaw: (payload: OpenClawInstallInput) => Promise<OpenClawInstance>
-  uninstallOpenClaw: (payload: OpenClawUninstallInput) => Promise<{ ok: true }>
-  restartOpenClaw: (payload: OpenClawRestartInput) => Promise<{ ok: true }>
-  fetchOpenClawLogs: (payload: OpenClawLogsInput) => Promise<string>
   getProjectConfig: (projectId: string) => Promise<DigwisProjectConfig | null>
   setProjectRuntimeModules: (payload: ProjectRuntimeModulesUpdateInput) => Promise<ProjectRuntimeModulesUpdateResult>
   updateProjectLocalPath: (payload: ProjectLocalPathUpdateInput) => Promise<LocalProjectRecord>

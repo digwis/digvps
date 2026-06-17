@@ -32,25 +32,11 @@ import { readLocalPostgresLsn } from "../services/project-db-marker"
 import { inspectProjectActionHints } from "../services/project-action-hints"
 import { scanRemoteManagedProjects } from "../services/remote-managed-projects"
 import {
-  fetchOpenClawLogs,
-  installOpenClaw,
-  listOpenClawInstancesRemote,
-  precheckOpenClawInstall,
-  restartOpenClaw,
-  uninstallOpenClaw,
-} from "../services/openclaw-installer"
-import {
   closeTerminalSession,
   createTerminalSession,
   resizeTerminalSession,
   writeTerminalInput,
 } from "../services/remote-terminal"
-import {
-  deleteOpenClawInstance,
-  getOpenClawInstance,
-  insertOpenClawInstance,
-  listOpenClawInstances,
-} from "../services/db"
 import {
   getProjectBackupSchedule,
   markProjectActionRun,
@@ -83,9 +69,6 @@ import {
   projectMigrationSchema,
   projectRemoteDetailsSchema,
   projectSiteSettingsSchema,
-  openClawInstallSchema,
-  openClawInstanceIdSchema,
-  openClawLogsSchema,
   remoteManagedProjectScanSchema,
 } from "./schemas"
 import {
@@ -663,83 +646,6 @@ export function registerProjectHandlers() {
   registerIpcHandle("terminal:close", async (_event, payload: unknown) => {
     const parsed = parseOrThrow(terminalCloseSchema, payload)
     return closeTerminalSession(parsed)
-  })
-
-  registerIpcHandle("openclaw:list", async (_event, connectionId: unknown) => {
-    const id = parseOrThrow(connectionIdSchemaSafe, connectionId)
-    const connection = requireConnection(id)
-    const rows = listOpenClawInstances(id)
-    return listOpenClawInstancesRemote(resolveStoredPayload(connection), rows)
-  })
-
-  registerIpcHandle("openclaw:precheck", async (_event, payload: unknown) => {
-    const parsed = parseOrThrow(openClawInstallSchema, payload)
-    const connection = requireConnection(parsed.connectionId)
-    return precheckOpenClawInstall({
-      ...resolveStoredPayload(connection),
-      listenPort: parsed.listenPort,
-    })
-  })
-
-  registerIpcHandle("openclaw:install", async (_event, payload: unknown) => {
-    const parsed = parseOrThrow(openClawInstallSchema, payload)
-    const connection = requireConnection(parsed.connectionId)
-    const instance = await installOpenClaw({
-      ...resolveStoredPayload(connection),
-      listenPort: parsed.listenPort,
-    })
-    insertOpenClawInstance({
-      id: instance.id,
-      connection_id: instance.connectionId,
-      listen_port: instance.listenPort,
-      data_dir: instance.dataDir,
-      service_name: instance.serviceName,
-      installed_at: instance.installedAt,
-    })
-    return instance
-  })
-
-  registerIpcHandle("openclaw:uninstall", async (_event, payload: unknown) => {
-    const parsed = parseOrThrow(openClawInstanceIdSchema, payload)
-    const row = getOpenClawInstance(parsed.instanceId)
-    if (!row || row.connection_id !== parsed.connectionId) {
-      throw new Error("未找到对应 OpenClaw 实例")
-    }
-    const connection = requireConnection(parsed.connectionId)
-    await uninstallOpenClaw({
-      ...resolveStoredPayload(connection),
-      listenPort: row.listen_port,
-      dataDir: row.data_dir,
-    })
-    deleteOpenClawInstance(row.id)
-    return { ok: true as const }
-  })
-
-  registerIpcHandle("openclaw:restart", async (_event, payload: unknown) => {
-    const parsed = parseOrThrow(openClawInstanceIdSchema, payload)
-    const row = getOpenClawInstance(parsed.instanceId)
-    if (!row || row.connection_id !== parsed.connectionId) {
-      throw new Error("未找到对应 OpenClaw 实例")
-    }
-    const connection = requireConnection(parsed.connectionId)
-    return restartOpenClaw({
-      ...resolveStoredPayload(connection),
-      listenPort: row.listen_port,
-    })
-  })
-
-  registerIpcHandle("openclaw:logs", async (_event, payload: unknown) => {
-    const parsed = parseOrThrow(openClawLogsSchema, payload)
-    const row = getOpenClawInstance(parsed.instanceId)
-    if (!row || row.connection_id !== parsed.connectionId) {
-      throw new Error("未找到对应 OpenClaw 实例")
-    }
-    const connection = requireConnection(parsed.connectionId)
-    return fetchOpenClawLogs({
-      ...resolveStoredPayload(connection),
-      listenPort: row.listen_port,
-      lines: parsed.lines,
-    })
   })
 
   registerIpcHandle("projects:get-config", async (_event, projectId: string) => {

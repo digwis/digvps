@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  Bot,
   CheckCircle2,
   Clock3,
   FolderOpen,
@@ -17,6 +16,7 @@ import {
   ShieldAlert,
   SquareArrowOutUpRight,
   SquarePen,
+  SquareTerminal,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -45,8 +45,8 @@ import { AppSettingsPage } from "@/components/app-settings-page"
 import { DependencyCards } from "@/components/dependency-cards"
 import { InspectionTelemetryCards } from "@/components/inspection-telemetry-cards"
 import { SystemUpgradePrompt } from "@/components/system-upgrade-prompt"
+import { TerminalPage } from "@/components/terminal-page"
 import { VpsConnectionDialog } from "@/components/vps-connection-dialog"
-import { AgentManagementPanel } from "@/components/agent-management-panel"
 import { FileBrowserPanel } from "@/components/file-browser-panel"
 import { Toaster } from "@/components/ui/toaster"
 import type {
@@ -75,7 +75,7 @@ const TELEMETRY_FRESH_MS = 20_000
 const navItems: Array<{ key: NavKey; label: string; icon: typeof Server }> = [
   { key: "monitor", label: "主机概览", icon: Server },
   { key: "deps", label: "运行环境", icon: HardDriveDownload },
-  { key: "projects", label: "代理管理", icon: Bot },
+  { key: "projects", label: "终端", icon: SquareTerminal },
   { key: "files", label: "文件管理", icon: FolderOpen },
 ]
 
@@ -668,7 +668,7 @@ export default function App() {
                   keywords={project.keywords}
                   onSelect={() => openProjectFromSearch(project.id)}
                 >
-                  <Bot className="size-4 text-muted-foreground" />
+                  <SquareTerminal className="size-4 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium text-foreground">{project.title}</div>
                     <div className="truncate text-xs text-muted-foreground">{project.subtitle}</div>
@@ -896,7 +896,7 @@ export default function App() {
                     navigateTo({ nav: "monitor" })
                   }} />
                 ) : activeNav === "projects" ? (
-                  <AgentManagementPanel
+                  <TerminalPage
                     connections={connections}
                     selectedConnectionId={selectedConnectionId}
                   />

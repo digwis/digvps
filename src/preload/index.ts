@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer } from "./electron-shim"
 import type {
   DependencyServiceAction,
   DigwisApi,
+  TerminalDataEvent,
+  TerminalErrorEvent,
+  TerminalExitEvent,
   SshConfigMutationInput,
   VpsConnectionInput,
 } from "../shared/vps"
@@ -94,6 +97,39 @@ const api: DigwisApi = {
       ipcRenderer.on("projects:deploy-log", listener)
       return () => {
         ipcRenderer.removeListener("projects:deploy-log", listener)
+      }
+    },
+  },
+  terminal: {
+    createSession: (payload) => ipcRenderer.invoke("terminal:create", payload),
+    writeInput: (payload) => ipcRenderer.invoke("terminal:write", payload),
+    resize: (payload) => ipcRenderer.invoke("terminal:resize", payload),
+    closeSession: (payload) => ipcRenderer.invoke("terminal:close", payload),
+    onData: (handler) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: TerminalDataEvent) => {
+        handler(payload)
+      }
+      ipcRenderer.on("terminal:data", listener)
+      return () => {
+        ipcRenderer.removeListener("terminal:data", listener)
+      }
+    },
+    onExit: (handler) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: TerminalExitEvent) => {
+        handler(payload)
+      }
+      ipcRenderer.on("terminal:exit", listener)
+      return () => {
+        ipcRenderer.removeListener("terminal:exit", listener)
+      }
+    },
+    onError: (handler) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: TerminalErrorEvent) => {
+        handler(payload)
+      }
+      ipcRenderer.on("terminal:error", listener)
+      return () => {
+        ipcRenderer.removeListener("terminal:error", listener)
       }
     },
   },

@@ -103,6 +103,15 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
       restartOpenClaw: (payload) => wrapInvoke(() => api.projects.restartOpenClaw(payload)),
       fetchOpenClawLogs: (payload) => wrapInvoke(() => api.projects.fetchOpenClawLogs(payload)),
     },
+    terminal: {
+      createSession: (payload) => wrapInvoke(() => api.terminal.createSession(payload)),
+      writeInput: (payload) => wrapInvoke(() => api.terminal.writeInput(payload)),
+      resize: (payload) => wrapInvoke(() => api.terminal.resize(payload)),
+      closeSession: (payload) => wrapInvoke(() => api.terminal.closeSession(payload)),
+      onData: (handler) => api.terminal.onData(handler),
+      onExit: (handler) => api.terminal.onExit(handler),
+      onError: (handler) => api.terminal.onError(handler),
+    },
     vps: {
       listConnections: () => wrapInvoke(() => api.vps.listConnections()),
       saveConnection: (payload) => wrapInvoke(() => api.vps.saveConnection(payload)),
@@ -150,7 +159,7 @@ function createWrappedApi(api: DigwisApi): DigwisApi {
 }
 
 export function getDesktopApi(): DigwisApi {
-  if (!window.digwis?.vps || !window.digwis?.projects) {
+  if (!window.digwis?.vps || !window.digwis?.projects || !window.digwis?.terminal) {
     throw new Error("桌面能力尚未注入，请确认当前是通过 Electron 桌面应用启动。")
   }
 

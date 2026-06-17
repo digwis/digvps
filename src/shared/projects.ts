@@ -459,6 +459,65 @@ export type RemoteManagedProjectScanResult = {
   scannedAt: string
 }
 
+export type OpenClawInstanceStatus =
+  | "running"
+  | "stopped"
+  | "failed"
+  | "unknown"
+
+export type OpenClawInstance = {
+  id: string
+  connectionId: string
+  host: string
+  listenPort: number
+  dataDir: string
+  serviceName: string
+  nodeVersion?: string
+  openclawVersion?: string
+  status: OpenClawInstanceStatus
+  installedAt: string
+  lastCheckedAt?: string
+  lastLog?: string
+}
+
+export type OpenClawPrecheckReason =
+  | "node_missing"
+  | "node_too_old"
+  | "memory_low"
+  | "port_in_use"
+  | "systemd_missing"
+  | "instance_limit_reached"
+
+export type OpenClawPrecheck = {
+  ready: boolean
+  reasons: OpenClawPrecheckReason[]
+  nodeVersion?: string
+  memoryAvailableMb?: number
+  existingInstances: number
+  portInUse: boolean
+}
+
+export type OpenClawInstallInput = {
+  connectionId: string
+  listenPort: number
+}
+
+export type OpenClawUninstallInput = {
+  connectionId: string
+  instanceId: string
+}
+
+export type OpenClawRestartInput = {
+  connectionId: string
+  instanceId: string
+}
+
+export type OpenClawLogsInput = {
+  connectionId: string
+  instanceId: string
+  lines: number
+}
+
 export type ProjectActionKind = "code" | "data" | "uploads" | "backup"
 export type ProjectBackupSchedule = "off" | "daily" | "weekly" | "monthly"
 
@@ -501,6 +560,12 @@ export type ManagedProjectsApi = {
   createProjectScaffold: (payload: ProjectScaffoldInput) => Promise<ProjectScaffoldResult>
   onScaffoldProgress: (handler: (event: ProjectScaffoldProgressEvent) => void) => () => void
   scanRemoteProjects: (payload: RemoteManagedProjectScanInput) => Promise<RemoteManagedProjectScanResult>
+  listOpenClawInstances: (connectionId: string) => Promise<OpenClawInstance[]>
+  precheckOpenClawInstall: (payload: OpenClawInstallInput) => Promise<OpenClawPrecheck>
+  installOpenClaw: (payload: OpenClawInstallInput) => Promise<OpenClawInstance>
+  uninstallOpenClaw: (payload: OpenClawUninstallInput) => Promise<{ ok: true }>
+  restartOpenClaw: (payload: OpenClawRestartInput) => Promise<{ ok: true }>
+  fetchOpenClawLogs: (payload: OpenClawLogsInput) => Promise<string>
   getProjectConfig: (projectId: string) => Promise<DigwisProjectConfig | null>
   setProjectRuntimeModules: (payload: ProjectRuntimeModulesUpdateInput) => Promise<ProjectRuntimeModulesUpdateResult>
   updateProjectLocalPath: (payload: ProjectLocalPathUpdateInput) => Promise<LocalProjectRecord>

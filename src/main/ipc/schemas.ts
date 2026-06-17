@@ -224,6 +224,20 @@ export const remoteManagedProjectScanSchema = z.object({
   connectionId: connectionIdSchema,
 })
 
+export const openClawInstallSchema = z.object({
+  connectionId: connectionIdSchema,
+  listenPort: z.number().int().min(1024).max(65535),
+})
+
+export const openClawInstanceIdSchema = z.object({
+  connectionId: connectionIdSchema,
+  instanceId: nonEmptyString("instanceId"),
+})
+
+export const openClawLogsSchema = openClawInstanceIdSchema.extend({
+  lines: z.number().int().min(10).max(500),
+})
+
 export const dependencyServiceSchema = z.object({
   dependencyId: nonEmptyString("dependencyId"),
   action: z.enum(["restart", "stop", "start"]),

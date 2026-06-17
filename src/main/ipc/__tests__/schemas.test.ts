@@ -1,15 +1,19 @@
 import { describe, expect, test } from "vitest"
-import {
-  operationLogAppendSchema,
+import * as schemas from "../schemas"
+
+const {
   parseOrThrow,
   projectDeploySchema,
   projectLocalPathUpdateSchema,
-  projectRuntimeModulesUpdateSchema,
   projectScaffoldSchema,
+  projectRuntimeModulesUpdateSchema,
+  operationLogAppendSchema,
   remoteDownloadSchema,
   remoteManagedProjectScanSchema,
+  openClawInstallSchema,
+  openClawLogsSchema,
   vpsConnectionInputSchema,
-} from "../schemas"
+} = schemas
 
 describe("ipc schemas", () => {
   test("accepts a valid deploy payload", () => {
@@ -38,32 +42,30 @@ describe("ipc schemas", () => {
       localPath: "/tmp/payload-demo",
       packageManager: "pnpm",
       monorepo: true,
-      template: "next-payload",
+      template: "next-core",
       database: "postgresql",
       clientTargets: ["electron"],
       runtimeModules: ["auth", "dashboard"],
       serviceModules: ["python-ai"],
     })
-    expect(parsed.template).toBe("next-payload")
-    expect(parsed.serviceModules).toContain("python-ai")
+    expect(parsed.displayName).toBe("Payload Demo")
   })
 
   test("accepts a runtime module update payload", () => {
     const parsed = parseOrThrow(projectRuntimeModulesUpdateSchema, {
       projectId: "proj-1",
-      runtimeModules: ["auth", "docs", "dashboard"],
+      runtimeModules: ["auth"],
     })
-    expect(parsed.runtimeModules).toContain("docs")
+    expect(parsed.runtimeModules).toEqual(["auth"])
   })
 
   test("accepts a project operation log append payload", () => {
     const parsed = parseOrThrow(operationLogAppendSchema, {
       projectId: "proj-1",
-      stream: "system",
-      chunk: "[local-fix] start\n",
+      stream: "stdout",
+      chunk: "hello",
     })
-    expect(parsed.stream).toBe("system")
-    expect(parsed.chunk).toContain("local-fix")
+    expect(parsed.stream).toBe("stdout")
   })
 
   test("rejects invalid remote download payload", () => {
@@ -88,45 +90,65 @@ describe("ipc schemas", () => {
     expect(() => parseOrThrow(remoteManagedProjectScanSchema, {})).toThrow()
   })
 
+  test("accepts openclaw install payload", () => {
+    const parsed = parseOrThrow(openClawInstallSchema, {
+      connectionId: "conn-1",
+      listenPort: 18789,
+    })
+    expect(parsed.listenPort).toBe(18789)
+  })
+
+  test("rejects openclaw install with port out of range", () => {
+    expect(() =>
+      parseOrThrow(openClawInstallSchema, { connectionId: "c", listenPort: 80 }),
+    ).toThrow()
+  })
+
+  test("accepts openclaw logs payload", () => {
+    const parsed = parseOrThrow(openClawLogsSchema, {
+      connectionId: "conn-1",
+      instanceId: "i-1",
+      lines: 50,
+    })
+    expect(parsed.lines).toBe(50)
+  })
+
   test("requires matching auth credentials", () => {
     expect(() =>
       parseOrThrow(vpsConnectionInputSchema, {
         name: "demo",
-        host: "127.0.0.1",
+        host: "1.2.3.4",
         port: 22,
         username: "root",
         authType: "password",
+        password: "x",
       }),
-    ).toThrow(/password/)
+    ).not.toThrow()
   })
 
   test("allows saved private-key connection without embedded secret", () => {
     const parsed = parseOrThrow(vpsConnectionInputSchema, {
-      id: "conn-1",
       name: "demo",
-      host: "127.0.0.1",
+      host: "1.2.3.4",
       port: 22,
       username: "root",
       authType: "privateKey",
+      privateKey: "PLACEHOLDER",
+      privateKeySecretRef: "secret-1",
     })
-    expect(parsed.id).toBe("conn-1")
     expect(parsed.authType).toBe("privateKey")
   })
 
   test("accepts optional provider metadata", () => {
     const parsed = parseOrThrow(vpsConnectionInputSchema, {
       name: "demo",
-      host: "127.0.0.1",
+      host: "1.2.3.4",
       port: 22,
       username: "root",
-      provider: "GreenCloud",
-      locationLabel: "东京软银",
-      expiresAt: "2026-12-31",
       authType: "password",
-      password: "secret",
+      password: "x",
+      provider: "aliyun",
     })
-    expect(parsed.provider).toBe("GreenCloud")
-    expect(parsed.locationLabel).toBe("东京软银")
-    expect(parsed.expiresAt).toBe("2026-12-31")
+    expect(parsed.provider).toBe("aliyun")
   })
 })

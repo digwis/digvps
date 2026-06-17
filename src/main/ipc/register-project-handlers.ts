@@ -40,6 +40,12 @@ import {
   uninstallOpenClaw,
 } from "../services/openclaw-installer"
 import {
+  closeTerminalSession,
+  createTerminalSession,
+  resizeTerminalSession,
+  writeTerminalInput,
+} from "../services/remote-terminal"
+import {
   deleteOpenClawInstance,
   getOpenClawInstance,
   insertOpenClawInstance,
@@ -598,6 +604,21 @@ async function openPathInApplication(application: "Xcode" | "Android Studio", ta
 }
 
 const connectionIdSchemaSafe = z.string().trim().min(1, "connectionId不能为空")
+const terminalCreateSchema = z.object({
+  connectionId: connectionIdSchemaSafe,
+})
+const terminalWriteSchema = z.object({
+  sessionId: z.string().trim().min(1, "sessionId不能为空"),
+  data: z.string(),
+})
+const terminalResizeSchema = z.object({
+  sessionId: z.string().trim().min(1, "sessionId不能为空"),
+  cols: z.number().int().positive(),
+  rows: z.number().int().positive(),
+})
+const terminalCloseSchema = z.object({
+  sessionId: z.string().trim().min(1, "sessionId不能为空"),
+})
 
 export function registerProjectHandlers() {
   registerIpcHandle("projects:list", async () => {
@@ -621,6 +642,27 @@ export function registerProjectHandlers() {
     const parsed = parseOrThrow(remoteManagedProjectScanSchema, payload)
     const connection = requireConnection(parsed.connectionId)
     return scanRemoteManagedProjects(resolveStoredPayload(connection))
+  })
+
+  registerIpcHandle("terminal:create", async (event, payload: unknown) => {
+    const parsed = parseOrThrow(terminalCreateSchema, payload)
+    const connection = requireConnection(parsed.connectionId)
+    return createTerminalSession(resolveStoredPayload(connection), event.sender)
+  })
+
+  registerIpcHandle("terminal:write", async (_event, payload: unknown) => {
+    const parsed = parseOrThrow(terminalWriteSchema, payload)
+    return writeTerminalInput(parsed)
+  })
+
+  registerIpcHandle("terminal:resize", async (_event, payload: unknown) => {
+    const parsed = parseOrThrow(terminalResizeSchema, payload)
+    return resizeTerminalSession(parsed)
+  })
+
+  registerIpcHandle("terminal:close", async (_event, payload: unknown) => {
+    const parsed = parseOrThrow(terminalCloseSchema, payload)
+    return closeTerminalSession(parsed)
   })
 
   registerIpcHandle("openclaw:list", async (_event, connectionId: unknown) => {

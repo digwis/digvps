@@ -1,4 +1,3 @@
-import type { CmsApi } from "./cms"
 import type { ManagedProjectsApi } from "./projects"
 
 export type DigwisIpcError = {
@@ -352,8 +351,6 @@ export type DigwisApi = {
     uploadRemoteEntries: (payload: { connectionId: string; remotePath: string }) => Promise<RemoteFileUploadResult>
     downloadRemoteEntry: (payload: { connectionId: string } & RemoteFileDownloadInput) => Promise<RemoteFileMutationResult>
   }
-  cms: CmsApi
-
   bitcoin: {
     getPrice: () => Promise<BitcoinPrice>
   }

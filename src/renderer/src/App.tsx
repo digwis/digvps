@@ -17,7 +17,6 @@ import {
   ShieldAlert,
   SquareArrowOutUpRight,
   SquarePen,
-  FileText,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -37,7 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { CmsOverviewPage } from "@/components/cms-overview-page"
+
 import { cn } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { useProjectStore } from "@/store/project-store"
@@ -58,7 +57,7 @@ import type {
   VpsInspection,
 } from "../../shared/vps"
 
-type NavKey = "monitor" | "deps" | "projects" | "files" | "cms" | "settings"
+type NavKey = "monitor" | "deps" | "projects" | "files" | "settings"
 
 type AppLocation = {
   nav: NavKey
@@ -76,9 +75,8 @@ const TELEMETRY_FRESH_MS = 20_000
 const navItems: Array<{ key: NavKey; label: string; icon: typeof Server }> = [
   { key: "monitor", label: "主机概览", icon: Server },
   { key: "deps", label: "运行环境", icon: HardDriveDownload },
-  { key: "projects", label: "项目部署", icon: FolderKanban },
+  { key: "projects", label: "项目管理", icon: FolderKanban },
   { key: "files", label: "文件管理", icon: FolderOpen },
-  { key: "cms", label: "内容管理", icon: FileText },
 ]
 
 function isNavKey(value: string): value is NavKey {
@@ -359,7 +357,7 @@ function expirationPresentation(expiresAt?: string) {
 }
 
 export default function App() {
-  const { projects, loadProjects, isLoading: isProjectsLoading } = useProjectStore()
+  const { isScanning: isProjectsLoading } = useProjectStore()
   const {
     connections,
     selectedConnectionId,
@@ -453,18 +451,8 @@ export default function App() {
   useEffect(() => {
     if (!searchOpen) {
       setSearchQuery("")
-      return
     }
-    if (projects.length === 0 && !isProjectsLoading) {
-      void loadProjects()
-    }
-  }, [isProjectsLoading, loadProjects, projects.length, searchOpen])
-
-  useEffect(() => {
-    if (selectedConnectionId && projects.length === 0 && !isProjectsLoading) {
-      void loadProjects()
-    }
-  }, [isProjectsLoading, loadProjects, projects.length, selectedConnectionId])
+  }, [searchOpen])
 
   const selectedConnection = connections.find((item: VpsConnectionRecord) => item.id === selectedConnectionId)
   const selectedConnectionListed = Boolean(
@@ -496,22 +484,21 @@ export default function App() {
       })),
     [connections],
   )
-  const projectResults = useMemo(
-    () =>
-      projects.map((project) => ({
-        id: project.id,
-        title: project.displayName,
-        subtitle: project.localPath,
-        remotePath: project.lastRemotePath ?? undefined,
-        keywords: [
-          project.displayName,
-          project.localPath,
-          project.lastRemotePath ?? "",
-          project.lastConnectionId ?? "",
-        ],
-      })),
-    [projects],
-  )
+  const projectResults = useMemo(() => {
+    const store = useProjectStore.getState()
+    const remoteProjects = store.scanResult?.projects ?? []
+    return remoteProjects.map((project) => ({
+      id: project.id,
+      title: project.domain,
+      subtitle: project.projectPath ?? project.proxyTarget,
+      remotePath: project.projectPath,
+      keywords: [
+        project.domain,
+        project.projectPath ?? "",
+        project.proxyTarget,
+      ],
+    }))
+  }, [isProjectsLoading])
   const hasSearchResults = serverResults.length > 0 || projectResults.length > 0
 
   // 只用「选中的 id + 是否已在列表中」作为依赖：inspect 结束后的 loadConnections 会替换
@@ -908,8 +895,6 @@ export default function App() {
                     }
                     navigateTo({ nav: "monitor" })
                   }} />
-                ) : activeNav === "cms" ? (
-                  <CmsOverviewPage />
                 ) : activeNav === "projects" ? (
                   <ProjectManagementPanel
                     connections={connections}

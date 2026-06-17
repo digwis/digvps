@@ -25,7 +25,6 @@ import { buildProjectScriptEnv, resolveStoredPayload } from "./ipc/helpers"
 import { runProjectRemoteBackup } from "./services/project-backup"
 import { registerProjectHandlers } from "./ipc/register-project-handlers"
 import { registerVpsHandlers } from "./ipc/register-vps-handlers"
-import { registerCmsHandlers } from "./ipc/register-cms-handlers"
 import type { ProjectBackupSchedule } from "../shared/projects"
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
@@ -220,7 +219,6 @@ app.whenReady().then(() => {
   }, 60_000)
   registerProjectHandlers()
   registerVpsHandlers()
-  registerCmsHandlers()
 
   ipcMain.handle("bitcoin:get-price", async () => {
     return fetchBitcoinPrice()

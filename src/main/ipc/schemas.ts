@@ -238,12 +238,6 @@ export const openClawLogsSchema = openClawInstanceIdSchema.extend({
   lines: z.number().int().min(10).max(500),
 })
 
-export const dependencyServiceSchema = z.object({
-  dependencyId: nonEmptyString("dependencyId"),
-  action: z.enum(["restart", "stop", "start"]),
-  systemdUnit: z.string().trim().optional(),
-})
-
 export const forceRefreshOptionsSchema = z
   .object({
     forceRefresh: z.boolean().optional(),

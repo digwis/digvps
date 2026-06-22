@@ -10,38 +10,34 @@ import {
 import { disposeAllRemoteFileSessions } from "./services/remote-files"
 import { disposeAllRemoteInspectionSessions } from "./services/remote-inspection-session-manager"
 import { fetchBitcoinPrice } from "./services/bitcoin"
-import { readPackageJsonScriptNames, runLocalNpmScript } from "./services/project-local-npm"
+
 import {
-  getProjectBackupSchedule,
   initializeProjectActionState,
   markProjectActionRun,
-  markProjectBackupRun,
 } from "./services/project-action-state"
 import {
   initializeProjectOperationLog,
 } from "./services/project-operation-log"
-import { readProjectDeployConfig } from "./services/project-deploy-profile"
-import { buildProjectScriptEnv, resolveStoredPayload } from "./ipc/helpers"
-import { runProjectRemoteBackup } from "./services/project-backup"
+
+import { resolveStoredPayload } from "./ipc/helpers"
+
 import { registerProjectHandlers } from "./ipc/register-project-handlers"
 import { registerVpsHandlers } from "./ipc/register-vps-handlers"
-import type { ProjectBackupSchedule } from "../shared/projects"
+
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
-const appDisplayName = "digwis-panel"
+const appDisplayName = "CloudRoost"
 const aboutPanelCopyright = "西山懒懒翁"
 const appDisplayVersion = "0.01"
-const userDataDirectoryName = "digwis-panel"
-let backupScheduler: NodeJS.Timeout | null = null
-const runningBackupProjects = new Set<string>()
+const userDataDirectoryName = "CloudRoost"
 const currentDir = path.dirname(fileURLToPath(import.meta.url))
 
 function getAppIconPath() {
-  const appBundleResource = path.join(process.resourcesPath, "digwis-panel.png")
+  const appBundleResource = path.join(process.resourcesPath, "cloud-roost.png")
   if (fs.existsSync(appBundleResource)) {
     return appBundleResource
   }
-  return path.join(app.getAppPath(), "resources", "digwis-panel.png")
+  return path.join(app.getAppPath(), "resources", "cloud-roost.png")
 }
 
 function configureAppIdentity() {
@@ -134,78 +130,6 @@ function createWindow() {
   }
 }
 
-function backupDue(schedule: ProjectBackupSchedule, nextRunAt?: string | null) {
-  if (schedule === "off" || !nextRunAt) {
-    return false
-  }
-  return new Date(nextRunAt).getTime() <= Date.now()
-}
-
-async function runDueBackupTasks() {
-  const projects = listLocalProjects()
-  for (const project of projects) {
-    const backup = getProjectBackupSchedule(project.id)
-    if (!backupDue(backup.schedule, backup.nextRunAt)) {
-      continue
-    }
-    if (runningBackupProjects.has(project.id)) {
-      continue
-    }
-    runningBackupProjects.add(project.id)
-    try {
-      if (!project.lastConnectionId) {
-        markProjectBackupRun(project.id)
-        continue
-      }
-      const connection = getVpsConnectionInput(project.lastConnectionId)
-      if (!connection) {
-        markProjectBackupRun(project.id)
-        continue
-      }
-      const config = readProjectDeployConfig(project.localPath)
-      const scripts = readPackageJsonScriptNames(project.localPath)
-      const backupScript = scripts.includes("backup:vps") ? "backup:vps" : scripts.includes("backup") ? "backup" : null
-      if (!backupScript) {
-        const remoteAppDir = project.lastRemotePath || config?.deploy?.remoteAppDir?.trim()
-        if (!remoteAppDir) {
-          markProjectBackupRun(project.id)
-          continue
-        }
-        const result = await runProjectRemoteBackup({
-          connection: resolveStoredPayload(connection),
-          projectId: project.id,
-          remoteAppDir,
-        })
-        if (result.ok) {
-          markProjectActionRun(project.id, "backup")
-        }
-        markProjectBackupRun(project.id)
-        continue
-      }
-      const result = await runLocalNpmScript(project.localPath, backupScript, {
-        timeoutMs: 2 * 60 * 60 * 1000,
-        env: buildProjectScriptEnv({
-          projectId: project.id,
-          projectPath: project.localPath,
-          connection: resolveStoredPayload(connection),
-          configRemoteAppDir: config?.deploy?.remoteAppDir?.trim() || undefined,
-          configRemoteService: config?.deploy?.remoteService?.trim() || undefined,
-          configPublicCheckUrl: config?.deploy?.publicCheckUrl?.trim() || undefined,
-          configEnv: config?.deploy?.env,
-        }),
-      })
-      if (result.ok) {
-        markProjectActionRun(project.id, "backup")
-      }
-      markProjectBackupRun(project.id)
-    } catch {
-      markProjectBackupRun(project.id)
-    } finally {
-      runningBackupProjects.delete(project.id)
-    }
-  }
-}
-
 app.whenReady().then(() => {
   configureAppIdentity()
   Menu.setApplicationMenu(null)
@@ -213,10 +137,6 @@ app.whenReady().then(() => {
   initializeDatabase(userDataPath)
   initializeProjectActionState(userDataPath)
   initializeProjectOperationLog(userDataPath)
-  void runDueBackupTasks()
-  backupScheduler = setInterval(() => {
-    void runDueBackupTasks()
-  }, 60_000)
   registerProjectHandlers()
   registerVpsHandlers()
 
@@ -240,10 +160,6 @@ app.on("window-all-closed", () => {
 })
 
 app.on("before-quit", () => {
-  if (backupScheduler) {
-    clearInterval(backupScheduler)
-    backupScheduler = null
-  }
   void disposeAllRemoteFileSessions()
   void disposeAllRemoteInspectionSessions()
 })

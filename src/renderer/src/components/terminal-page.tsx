@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { LoaderCircle, RotateCw, TerminalSquare } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { useEffect, useRef } from "react"
+import { useTranslation } from "react-i18next"
+import { Terminal } from "@xterm/xterm"
+import { FitAddon } from "@xterm/addon-fit"
+import { WebLinksAddon } from "@xterm/addon-web-links"
+import "@xterm/xterm/css/xterm.css"
 import { getDesktopApi } from "@/lib/desktop-api"
-import { deriveTerminalPageView, type TerminalPagePhase } from "./terminal-page-state"
 import type {
-  TerminalCreateResult,
   TerminalDataEvent,
   TerminalErrorEvent,
   TerminalExitEvent,
@@ -18,153 +19,134 @@ export function TerminalPage({
   connections: VpsConnectionRecord[]
   selectedConnectionId?: string
 }) {
-  const selectedConnection = useMemo(
-    () => connections.find((item) => item.id === selectedConnectionId),
-    [connections, selectedConnectionId],
-  )
-  const [phase, setPhase] = useState<TerminalPagePhase>("idle")
-  const [message, setMessage] = useState<string | undefined>(undefined)
-  const [output, setOutput] = useState("")
-  const [reconnectToken, setReconnectToken] = useState(0)
-  const inputRef = useRef<HTMLInputElement>(null)
-  const sessionIdRef = useRef<string | undefined>(undefined)
+  const { t } = useTranslation()
+  const containerRef = useRef<HTMLDivElement>(null)
+  const sessionRef = useRef<string | undefined>(undefined)
+  const selectedConnection = connections.find((item) => item.id === selectedConnectionId)
 
   useEffect(() => {
-    if (!selectedConnectionId) {
-      sessionIdRef.current = undefined
-      setPhase("idle")
-      setMessage(undefined)
-      setOutput("")
-      return
-    }
+    if (!selectedConnectionId || !containerRef.current) return
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: '"JetBrains Mono", "Menlo", "Courier New", monospace',
+      fontSize: 13,
+      lineHeight: 1.25,
+      theme: {
+        background: "#000000",
+        foreground: "#22c55e",
+        cursor: "#22c55e",
+        selectionBackground: "#14532d",
+      },
+      allowProposedApi: true,
+      scrollback: 5000,
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.loadAddon(new WebLinksAddon())
+    term.open(containerRef.current)
+    fit.fit()
+    term.writeln("\x1b[36mConnecting...\x1b[0m")
 
     let disposed = false
-    let currentSessionId: string | undefined
-
-    setPhase("connecting")
-    setMessage(undefined)
-    setOutput("")
+    let pendingResize: { cols: number; rows: number } | null = null
 
     const offData = getDesktopApi().terminal.onData((event: TerminalDataEvent) => {
-      if (event.sessionId === sessionIdRef.current) {
-        setOutput((current) => current + event.data)
-      }
+      if (event.sessionId === sessionRef.current) term.write(event.data)
     })
     const offExit = getDesktopApi().terminal.onExit((event: TerminalExitEvent) => {
-      if (event.sessionId === sessionIdRef.current) {
-        sessionIdRef.current = undefined
-        setPhase("closed")
-        setMessage(event.code != null ? `远端会话已退出（code ${event.code}）` : "远端会话已关闭")
-      }
+      if (event.sessionId !== sessionRef.current) return
+      sessionRef.current = undefined
+      const reason =
+        event.code != null ? `exit code ${event.code}` : event.signal ? `signal ${event.signal}` : "closed"
+      term.write(`\r\n\x1b[31m[connection ${reason}]\x1b[0m\r\n`)
     })
     const offError = getDesktopApi().terminal.onError((event: TerminalErrorEvent) => {
-      if (event.sessionId === sessionIdRef.current) {
-        setPhase("error")
-        setMessage(event.message)
+      if (event.sessionId !== sessionRef.current) return
+      term.write(`\r\n\x1b[31m[error] ${event.message}\x1b[0m\r\n`)
+    })
+
+    const dataDisp = term.onData((data) => {
+      const sid = sessionRef.current
+      if (!sid) return
+      void getDesktopApi().terminal.writeInput({ sessionId: sid, data })
+    })
+    const resizeDisp = term.onResize(({ cols, rows }) => {
+      const sid = sessionRef.current
+      if (!sid) {
+        pendingResize = { cols, rows }
+        return
       }
+      void getDesktopApi().terminal.resize({ sessionId: sid, cols, rows })
     })
 
     void getDesktopApi().terminal
       .createSession({ connectionId: selectedConnectionId })
-      .then((result: TerminalCreateResult) => {
+      .then((result) => {
         if (disposed) {
           void getDesktopApi().terminal.closeSession({ sessionId: result.sessionId })
           return
         }
-        currentSessionId = result.sessionId
-        sessionIdRef.current = result.sessionId
-        setPhase("connected")
+        sessionRef.current = result.sessionId
+        term.clear()
+        fit.fit()
+        if (pendingResize) {
+          void getDesktopApi().terminal.resize({
+            sessionId: result.sessionId,
+            cols: pendingResize.cols,
+            rows: pendingResize.rows,
+          })
+          pendingResize = null
+        }
       })
       .catch((error: unknown) => {
         if (disposed) return
-        setPhase("error")
-        setMessage(error instanceof Error ? error.message : "终端连接失败")
+        const message = error instanceof Error ? error.message : "终端连接失败"
+        term.write(`\r\n\x1b[31m${message}\x1b[0m\r\n`)
       })
+
+    const onWinResize = () => fit.fit()
+    window.addEventListener("resize", onWinResize)
+
+    const ro = new ResizeObserver(() => fit.fit())
+    ro.observe(containerRef.current)
 
     return () => {
       disposed = true
+      window.removeEventListener("resize", onWinResize)
+      ro.disconnect()
+      dataDisp.dispose()
+      resizeDisp.dispose()
       offData()
       offExit()
       offError()
-      sessionIdRef.current = undefined
-      if (currentSessionId) {
-        void getDesktopApi().terminal.closeSession({ sessionId: currentSessionId })
+      if (sessionRef.current) {
+        const sid = sessionRef.current
+        sessionRef.current = undefined
+        void getDesktopApi().terminal.closeSession({ sessionId: sid })
       }
+      term.dispose()
     }
-  }, [selectedConnectionId, reconnectToken])
-
-  const sendLine = useCallback(async () => {
-    const value = inputRef.current?.value ?? ""
-    const sessionId = sessionIdRef.current
-    if (!value.trim() || !sessionId || phase !== "connected") return
-    await getDesktopApi().terminal.writeInput({ sessionId, data: `${value}\n` })
-    if (inputRef.current) {
-      inputRef.current.value = ""
-    }
-  }, [phase])
-
-  const view = deriveTerminalPageView({
-    hasConnection: Boolean(selectedConnection),
-    phase,
-    message,
-  })
+  }, [selectedConnectionId])
 
   return (
     <div className="flex h-full min-h-[min(520px,70svh)] flex-col gap-4 rounded-3xl border border-border/70 bg-card/70 p-5">
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-foreground">
-            {selectedConnection ? `${selectedConnection.name} 的终端` : view.title}
+            {selectedConnection ? `${selectedConnection.name} · ${t("terminal.title")}` : t("terminal.title")}
           </h2>
           <p className="text-sm text-muted-foreground">
             {selectedConnection
               ? `${selectedConnection.username}@${selectedConnection.host}:${selectedConnection.port}`
-              : view.detail}
+              : t("terminal.selectPrompt")}
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!selectedConnectionId || phase === "connecting" || !view.canReconnect}
-          onClick={() => setReconnectToken((value) => value + 1)}
-        >
-          {phase === "connecting" ? (
-            <LoaderCircle className="size-4 animate-spin" />
-          ) : (
-            <RotateCw className="size-4" />
-          )}
-          重连
-        </Button>
       </div>
-
-      {phase !== "connected" ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/70 bg-muted/20 px-6 text-center">
-          <TerminalSquare className="size-8 text-muted-foreground" />
-          <p className="text-base font-medium text-foreground">{view.title}</p>
-          <p className="max-w-md text-sm text-muted-foreground">{view.detail}</p>
-        </div>
-      ) : (
-        <>
-          <pre className="flex-1 overflow-auto rounded-2xl bg-black p-4 text-xs leading-relaxed text-green-400">
-            {output || "# 已连接，等待远端输出...\n"}
-          </pre>
-          <div className="flex gap-2">
-            <input
-              ref={inputRef}
-              className="flex-1 rounded-2xl border border-border bg-background px-4 py-2 text-sm outline-none"
-              placeholder="输入命令后回车，例如：pwd"
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  void sendLine()
-                }
-              }}
-            />
-            <Button onClick={() => void sendLine()} disabled={!sessionIdRef.current}>
-              发送
-            </Button>
-          </div>
-        </>
-      )}
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-hidden rounded-2xl bg-black p-2"
+      />
     </div>
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 import {
   ChevronDown,
   ChevronLeft,
@@ -56,7 +57,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { toast } from "@/hooks/use-toast"
-import { cn } from "@/lib/utils"
+import { cn, createDebouncedStorageWriter } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { Switch } from "@/components/ui/switch"
 import type {
@@ -77,37 +78,46 @@ export type FileBrowserPanelProps = {
 }
 
 const DEFAULT_REMOTE_DIRECTORY = "/var/www"
-const BROWSE_CACHE_STORAGE_KEY = "digwis:file-browser-cache"
+const BROWSE_CACHE_STORAGE_KEY = "cloudroost:file-browser-cache"
 const BROWSE_CACHE_FRESH_TTL_MS = 10_000
 const BROWSE_CACHE_STORAGE_TTL_MS = 12 * 60 * 60 * 1000
-const SHOW_HIDDEN_STORAGE_KEY = "digwis:file-browser-show-hidden"
-const EXPANDED_PATHS_STORAGE_KEY = "digwis:file-browser-expanded"
-const PERMISSION_PRESETS = [
-  {
-    label: "标准目录",
-    mode: "755",
-    description: "所有人可读执行",
-    className: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-200",
-  },
-  {
-    label: "协作目录",
-    mode: "775",
-    description: "组可写",
-    className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
-  },
-  {
-    label: "安全目录",
-    mode: "750",
-    description: "仅组可读",
-    className: "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-200",
-  },
-  {
-    label: "私有目录",
-    mode: "700",
-    description: "仅所有者",
-    className: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200",
-  },
-] as const
+const SHOW_HIDDEN_STORAGE_KEY = "cloudroost:file-browser-show-hidden"
+const EXPANDED_PATHS_STORAGE_KEY = "cloudroost:file-browser-expanded"
+type PermissionPreset = {
+  label: string
+  mode: string
+  description: string
+  className: string
+}
+
+function getPermissionPresets(t: (key: string) => string): PermissionPreset[] {
+  return [
+    {
+      label: t("fileBrowser.preset.standard"),
+      mode: "755",
+      description: t("fileBrowser.preset.standardDesc"),
+      className: "border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-200",
+    },
+    {
+      label: t("fileBrowser.preset.collaborative"),
+      mode: "775",
+      description: t("fileBrowser.preset.collaborativeDesc"),
+      className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200",
+    },
+    {
+      label: t("fileBrowser.preset.secure"),
+      mode: "750",
+      description: t("fileBrowser.preset.secureDesc"),
+      className: "border-slate-500/40 bg-slate-500/10 text-slate-700 dark:text-slate-200",
+    },
+    {
+      label: t("fileBrowser.preset.private"),
+      mode: "700",
+      description: t("fileBrowser.preset.privateDesc"),
+      className: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+    },
+  ]
+}
 
 type CachedBrowseEntry = {
   cachedAt: number
@@ -230,11 +240,11 @@ function getRelativeRemotePath(basePath: string, targetPath: string) {
   return targetPath
 }
 
-function buildPathSegments(currentPath: string, rootPath: string) {
+function buildPathSegments(currentPath: string, rootPath: string, t: (key: string, options?: Record<string, unknown>) => string) {
   const current = currentPath.split("/").filter(Boolean)
   const root = rootPath.split("/").filter(Boolean)
   const items: Array<{ label: string; path: string }> = [
-    { label: rootPath === "/" ? "根目录" : rootPath, path: rootPath },
+    { label: rootPath === "/" ? t("fileBrowser.rootPath") : rootPath, path: rootPath },
   ]
   let composed = ""
   for (const [index, part] of current.entries()) {
@@ -254,12 +264,12 @@ function isHiddenRemoteEntry(entry: RemoteFileEntry) {
   return entry.name.startsWith(".")
 }
 
-function describePermissionMode(mode: string) {
+function describePermissionMode(mode: string, t: (key: string, options?: Record<string, unknown>) => string) {
   const normalized = mode.trim()
   const threeDigits = normalized.length === 4 ? normalized.slice(1) : normalized
   const [owner, group, others] = threeDigits.padStart(3, "0").split("").map((item) => Number.parseInt(item, 10))
-  const toText = (value: number) => [value & 4 ? "读" : null, value & 2 ? "写" : null, value & 1 ? "执行" : null].filter(Boolean).join("") || "无"
-  return `所有者: ${toText(owner)}，组: ${toText(group)}，其他: ${toText(others)}`
+  const toText = (value: number) => [value & 4 ? t("fileBrowser.permission.read") : null, value & 2 ? t("fileBrowser.permission.write") : null, value & 1 ? t("fileBrowser.permission.execute") : null].filter(Boolean).join("") || t("fileBrowser.permission.none")
+  return `${t("fileBrowser.permission.owner")}: ${toText(owner)}，${t("fileBrowser.permission.group")}: ${toText(group)}，${t("fileBrowser.permission.other")}: ${toText(others)}`
 }
 
 export function FileBrowserPanel({
@@ -268,6 +278,8 @@ export function FileBrowserPanel({
   requestedPath,
   requestToken,
 }: FileBrowserPanelProps) {
+  const { t } = useTranslation()
+  const permissionPresets = useMemo(() => getPermissionPresets(t), [t])
   const [displayMode, setDisplayMode] = useState<"tree" | "cards">("tree")
   const [browser, setBrowser] = useState<RemoteFileBrowseResult | null>(null)
   const [trash, setTrash] = useState<RemoteTrashListResult | null>(null)
@@ -332,46 +344,63 @@ export function FileBrowserPanel({
     if (!browser) {
       return [] as TreeRow[]
     }
-    const rows: TreeRow[] = []
+    const filterLower = normalizedFilter
     const entryMatchesFilter = (entry: RemoteFileEntry): boolean => {
-      if (!normalizedFilter) {
+      if (!filterLower) {
         return true
       }
       const name = entry.name.toLowerCase()
       const path = entry.path.toLowerCase()
-      return name.includes(normalizedFilter) || path.includes(normalizedFilter)
+      return name.includes(filterLower) || path.includes(filterLower)
     }
-    const subtreeHasMatch = (entry: RemoteFileEntry, visited = new Set<string>()): boolean => {
+    const subtreeHasMatch = (entry: RemoteFileEntry, chain: Set<string>): boolean => {
       if (entryMatchesFilter(entry)) {
         return true
       }
-      if (entry.type !== "directory" || visited.has(entry.path)) {
+      if (entry.type !== "directory" || chain.has(entry.path)) {
         return false
       }
       const cached = getCachedBrowseResult(entry.path)
       if (!cached) {
         return false
       }
-      const nextVisited = new Set(visited)
-      nextVisited.add(entry.path)
-      return cached.entries
-        .filter((child) => showHiddenFiles || !isHiddenRemoteEntry(child))
-        .some((child) => subtreeHasMatch(child, nextVisited))
+      chain.add(entry.path)
+      const children = cached.entries
+      for (let i = 0; i < children.length; i += 1) {
+        const child = children[i]
+        if (showHiddenFiles || !isHiddenRemoteEntry(child)) {
+          if (subtreeHasMatch(child, chain)) {
+            chain.delete(entry.path)
+            return true
+          }
+        }
+      }
+      chain.delete(entry.path)
+      return false
     }
+    const rows: TreeRow[] = []
     const walk = (
       entries: RemoteFileEntry[],
       depth: number,
-      parentPath: string,
       parentChain: Set<string>,
     ) => {
-      const matchingEntries = normalizedFilter
-        ? entries.filter((entry) => subtreeHasMatch(entry))
-        : entries
-      const directories = matchingEntries.filter((entry) => entry.type === "directory")
-      const files = matchingEntries.filter((entry) => entry.type !== "directory")
-      for (const entry of directories) {
+      const directories: RemoteFileEntry[] = []
+      const files: RemoteFileEntry[] = []
+      for (let i = 0; i < entries.length; i += 1) {
+        const entry = entries[i]
+        if (entry.type === "directory") {
+          directories.push(entry)
+        } else {
+          files.push(entry)
+        }
+      }
+      for (let i = 0; i < directories.length; i += 1) {
+        const entry = directories[i]
+        if (filterLower && !subtreeHasMatch(entry, parentChain)) {
+          continue
+        }
         rows.push({ kind: "entry", entry, depth })
-        if (entry.type !== "directory" || !expandedPaths.has(entry.path) || parentChain.has(entry.path)) {
+        if (!expandedPaths.has(entry.path) || parentChain.has(entry.path)) {
           continue
         }
         if (treeLoadingPaths.has(entry.path)) {
@@ -387,16 +416,18 @@ export function FileBrowserPanel({
         if (!next) {
           continue
         }
-        const childEntries = next.entries.filter((child) => showHiddenFiles || !isHiddenRemoteEntry(child))
+        const childEntries = showHiddenFiles
+          ? next.entries
+          : next.entries.filter((child) => !isHiddenRemoteEntry(child))
         const nextChain = new Set(parentChain)
         nextChain.add(entry.path)
-        walk(childEntries, depth + 1, entry.path, nextChain)
+        walk(childEntries, depth + 1, nextChain)
       }
-      for (const entry of files) {
-        rows.push({ kind: "entry", entry, depth })
+      for (let i = 0; i < files.length; i += 1) {
+        rows.push({ kind: "entry", entry: files[i], depth })
       }
     }
-    walk(visibleEntries, 0, browser.currentPath, new Set<string>())
+    walk(visibleEntries, 0, new Set<string>())
     return rows
   }, [browser, expandedPaths, normalizedFilter, showHiddenFiles, treeLoadingPaths, visibleEntries])
 
@@ -569,8 +600,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "远端目录读取失败",
-        description: error instanceof Error ? error.message : "无法浏览服务器文件",
+        title: t("fileBrowser.toast.browseFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.browseFailedDesc"),
       })
     } finally {
       setLoading(false)
@@ -620,8 +651,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "回收站读取失败",
-        description: error instanceof Error ? error.message : "无法读取远端回收站",
+        title: t("fileBrowser.toast.trashReadFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.trashReadFailedDesc"),
       })
     } finally {
       setTrashLoading(false)
@@ -711,8 +742,8 @@ export function FileBrowserPanel({
       setPermissionTarget(null)
       toast({
         variant: "destructive",
-        title: "权限信息读取失败",
-        description: error instanceof Error ? error.message : "无法读取当前权限",
+        title: t("fileBrowser.toast.permissionReadFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.permissionReadFailedDesc"),
       })
     } finally {
       setPermissionLoading(false)
@@ -750,8 +781,8 @@ export function FileBrowserPanel({
       setEditorOpen(false)
       toast({
         variant: "destructive",
-        title: "文件打开失败",
-        description: error instanceof Error ? error.message : "无法读取远端文件",
+        title: t("fileBrowser.toast.openFileFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.openFileFailedDesc"),
       })
     } finally {
       setEditorLoading(false)
@@ -770,7 +801,7 @@ export function FileBrowserPanel({
         content: editorContent,
       })
       toast({
-        title: editorMode === "create" ? "文本文件已创建" : "文本文件已保存",
+        title: editorMode === "create" ? t("fileBrowser.toast.fileCreated") : t("fileBrowser.toast.fileSaved"),
         description: result.path,
       })
       invalidateBrowseCache(getParentRemotePath(result.path))
@@ -779,8 +810,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "保存失败",
-        description: error instanceof Error ? error.message : "无法写入远端文件",
+        title: t("fileBrowser.toast.saveFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.saveFailedDesc"),
       })
     } finally {
       setEditorSaving(false)
@@ -800,7 +831,7 @@ export function FileBrowserPanel({
         directoryName: newFolderName,
       })
       toast({
-        title: "目录已创建",
+        title: t("fileBrowser.toast.dirCreated"),
         description: result.path,
       })
       invalidateBrowseCache(parentPath, getParentRemotePath(result.path))
@@ -811,8 +842,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "创建目录失败",
-        description: error instanceof Error ? error.message : "无法创建目录",
+        title: t("fileBrowser.toast.createDirFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.createDirFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -831,7 +862,7 @@ export function FileBrowserPanel({
         nextName: renameName,
       })
       toast({
-        title: "名称已更新",
+        title: t("fileBrowser.toast.renamed"),
         description: result.path,
       })
       invalidateBrowseCache(renameTarget.path, result.path, getParentRemotePath(renameTarget.path), getParentRemotePath(result.path))
@@ -841,8 +872,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "重命名失败",
-        description: error instanceof Error ? error.message : "无法重命名该项",
+        title: t("fileBrowser.toast.renameFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.renameFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -857,8 +888,8 @@ export function FileBrowserPanel({
     if (!/^[0-7]{3,4}$/.test(nextMode)) {
       toast({
         variant: "destructive",
-        title: "权限格式不正确",
-        description: "请输入 3 到 4 位八进制数字，例如 755、775、750、700。",
+        title: t("fileBrowser.permission.octalInvalid"),
+        description: t("fileBrowser.permission.octalInvalidDesc"),
       })
       return
     }
@@ -871,7 +902,7 @@ export function FileBrowserPanel({
         recursive: permissionTarget.type === "directory" ? permissionRecursive : false,
       })
       toast({
-        title: "权限已更新",
+        title: t("fileBrowser.toast.permissionUpdated"),
         description: `${result.path} -> ${nextMode}`,
       })
       invalidateBrowseCache(result.path, getParentRemotePath(result.path))
@@ -882,8 +913,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "修改权限失败",
-        description: error instanceof Error ? error.message : "无法更新目标权限",
+        title: t("fileBrowser.toast.permissionFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.permissionFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -903,7 +934,7 @@ export function FileBrowserPanel({
       })
       invalidateBrowseCache(deleteTarget.path, currentPath)
       toast({
-        title: deleteTarget.type === "directory" ? "目录已移入回收站" : "文件已移入回收站",
+        title: deleteTarget.type === "directory" ? t("fileBrowser.toast.deleted", { type: t("fileBrowser.type.directory") }) : t("fileBrowser.toast.deleted", { type: t("fileBrowser.type.file") }),
         description: result.path,
       })
       setDeleteTarget(null)
@@ -914,8 +945,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "删除失败",
-        description: error instanceof Error ? error.message : "无法删除该项",
+        title: t("fileBrowser.toast.deleteFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.deleteFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -933,7 +964,7 @@ export function FileBrowserPanel({
         trashId: entry.id,
       })
       toast({
-        title: "已恢复",
+        title: t("fileBrowser.toast.restored"),
         description: result.path,
       })
       await loadTrash()
@@ -943,8 +974,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "恢复失败",
-        description: error instanceof Error ? error.message : "无法恢复该项",
+        title: t("fileBrowser.toast.restoreFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.restoreFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -962,7 +993,7 @@ export function FileBrowserPanel({
         trashId: purgeTarget.id,
       })
       toast({
-        title: "已彻底删除",
+        title: t("fileBrowser.toast.purged"),
         description: result.path,
       })
       setPurgeTarget(null)
@@ -970,8 +1001,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "彻底删除失败",
-        description: error instanceof Error ? error.message : "无法彻底删除该项",
+        title: t("fileBrowser.toast.purgeFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.purgeFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -989,7 +1020,7 @@ export function FileBrowserPanel({
         remotePath: browser.currentPath,
       })
       toast({
-        title: "上传完成",
+        title: t("fileBrowser.toast.uploaded"),
         description: result.message,
       })
       invalidateBrowseCache(browser.currentPath)
@@ -997,8 +1028,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "上传失败",
-        description: error instanceof Error ? error.message : "无法上传文件到服务器",
+        title: t("fileBrowser.toast.uploadFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.uploadFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -1019,14 +1050,14 @@ export function FileBrowserPanel({
         type: entry.type,
       })
       toast({
-        title: "下载完成",
+        title: t("fileBrowser.toast.downloaded"),
         description: result.message,
       })
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "下载失败",
-        description: error instanceof Error ? error.message : "无法下载该项",
+        title: t("fileBrowser.toast.downloadFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.downloadFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -1098,14 +1129,14 @@ export function FileBrowserPanel({
         })
       }
       toast({
-        title: "批量下载完成",
-        description: `${selectedEntries.length} 个项目已下载`,
+        title: t("fileBrowser.toast.bulkDownloaded"),
+        description: t("fileBrowser.toast.bulkDownloadedDesc", { count: selectedEntries.length }),
       })
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "批量下载失败",
-        description: error instanceof Error ? error.message : "无法下载选中项目",
+        title: t("fileBrowser.toast.bulkDownloadFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.bulkDownloadFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -1138,8 +1169,8 @@ export function FileBrowserPanel({
         invalidateBrowseCache(entry.path, getParentRemotePath(entry.path), currentPath)
       }
       toast({
-        title: "批量删除完成",
-        description: `${bulkDeleteTargets.length} 个项目已移入回收站`,
+        title: t("fileBrowser.toast.bulkDeleted"),
+        description: t("fileBrowser.toast.bulkDeletedDesc", { count: bulkDeleteTargets.length }),
       })
       setBulkDeleteTargets([])
       setSelectedPaths(new Set<string>())
@@ -1150,8 +1181,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "批量删除失败",
-        description: error instanceof Error ? error.message : "无法删除选中项目",
+        title: t("fileBrowser.toast.bulkDeleteFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.bulkDeleteFailedDesc"),
       })
     } finally {
       setBusyKey(undefined)
@@ -1162,14 +1193,14 @@ export function FileBrowserPanel({
     try {
       await navigator.clipboard.writeText(value)
       toast({
-        title: `${label}已复制`,
+        title: t("fileBrowser.toast.deleted", { type: "" }).replace("", label) || `${label}`,
         description: value,
       })
     } catch (error) {
       toast({
         variant: "destructive",
-        title: `${label}复制失败`,
-        description: error instanceof Error ? error.message : "无法写入剪贴板",
+        title: t("common.copyFailed"),
+        description: error instanceof Error ? error.message : t("common.copyFailedDesc"),
       })
     }
   }
@@ -1199,8 +1230,8 @@ export function FileBrowserPanel({
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "子目录读取失败",
-        description: error instanceof Error ? error.message : "无法展开该目录",
+        title: t("fileBrowser.toast.subdirReadFailed"),
+        description: error instanceof Error ? error.message : t("fileBrowser.toast.subdirReadFailedDesc"),
       })
       throw error
     } finally {
@@ -1284,31 +1315,31 @@ export function FileBrowserPanel({
     <>
       <DropdownMenuItem onClick={() => void openEntry(entry)}>
         {entry.type === "directory" ? <FolderOpen className="size-4" /> : <FileCode2 className="size-4" />}
-        {entry.type === "directory" ? "打开目录" : "编辑文本"}
+        {entry.type === "directory" ? t("fileBrowser.action.openDir") : t("fileBrowser.action.editText")}
       </DropdownMenuItem>
       {entry.type === "directory" ? (
         <>
           <DropdownMenuItem onClick={() => void openTextEditor(undefined, entry.path)}>
             <FileCode2 className="size-4" />
-            在此新建文件
+            {t("fileBrowser.action.newFileHere")}
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => openNewFolderDialog(entry.path)}>
             <FolderPlus className="size-4" />
-            在此新建目录
+            {t("fileBrowser.action.newDirHere")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
         </>
       ) : null}
-      <DropdownMenuItem onClick={() => void copyText(entry.path, "绝对路径")}>
+      <DropdownMenuItem onClick={() => void copyText(entry.path, t("fileBrowser.toast.absolutePath"))}>
         <FileCode2 className="size-4" />
-        复制路径
+        {t("fileBrowser.action.copyAbsolutePath")}
       </DropdownMenuItem>
       {browser ? (
         <DropdownMenuItem
-          onClick={() => void copyText(getRelativeRemotePath(browser.currentPath, entry.path), "相对路径")}
+          onClick={() => void copyText(getRelativeRemotePath(browser.currentPath, entry.path), t("fileBrowser.toast.relativePath"))}
         >
           <FileCode2 className="size-4" />
-          复制相对路径
+          {t("fileBrowser.action.copyRelativePath")}
         </DropdownMenuItem>
       ) : null}
       <DropdownMenuSeparator />
@@ -1318,15 +1349,15 @@ export function FileBrowserPanel({
         ) : (
           <Download className="size-4" />
         )}
-        下载
+        {t("fileBrowser.action.download")}
       </DropdownMenuItem>
       <DropdownMenuItem onClick={() => startRename(entry)}>
         <Pencil className="size-4" />
-        重命名
+        {t("fileBrowser.action.rename")}
       </DropdownMenuItem>
       <DropdownMenuItem onClick={() => void openPermissionEditor(entry)}>
         <Shield className="size-4" />
-        修改权限
+        {t("fileBrowser.action.chmod")}
       </DropdownMenuItem>
         <DropdownMenuItem
           className="text-destructive focus:text-destructive"
@@ -1336,7 +1367,7 @@ export function FileBrowserPanel({
           }}
         >
           <Trash2 className="size-4" />
-        删除
+        {t("common.delete")}
       </DropdownMenuItem>
     </>
   )
@@ -1349,14 +1380,14 @@ export function FileBrowserPanel({
         ) : (
           <RotateCcw className="size-4" />
         )}
-        恢复
+        {t("common.restore")}
       </DropdownMenuItem>
       <DropdownMenuItem
         className="text-destructive focus:text-destructive"
         onClick={() => setPurgeTarget(entry)}
       >
         <Trash2 className="size-4" />
-        彻底删除
+        {t("fileBrowser.action.purge")}
       </DropdownMenuItem>
     </>
   )
@@ -1365,7 +1396,7 @@ export function FileBrowserPanel({
     if (visibleEntries.length === 0) {
       return (
         <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-          {showHiddenFiles ? "当前目录为空" : "当前目录没有可见文件"}
+          {showHiddenFiles ? t("fileBrowser.empty.hidden") : t("fileBrowser.empty.visible")}
         </div>
       )
     }
@@ -1472,7 +1503,7 @@ export function FileBrowserPanel({
                           isSelected && "text-foreground/70 dark:text-white/70",
                         )}
                       >
-                        <span>{entry.type === "symlink" ? "链接" : "文件"}</span>
+                        <span>{entry.type === "symlink" ? t("fileBrowser.type.symlink") : t("fileBrowser.type.file")}</span>
                         <span className="font-mono">{formatFileSize(entry.size)}</span>
                       </div>
                       <p
@@ -1499,7 +1530,7 @@ export function FileBrowserPanel({
       return (
         <TableRow>
           <TableCell colSpan={5} className="h-24 text-center text-sm text-muted-foreground">
-            {showHiddenFiles ? "当前目录为空" : "当前目录没有可见文件"}
+            {showHiddenFiles ? t("fileBrowser.empty.hidden") : t("fileBrowser.empty.visible")}
           </TableCell>
         </TableRow>
       )
@@ -1515,7 +1546,7 @@ export function FileBrowserPanel({
                 style={{ paddingLeft: `${row.depth * 18}px` }}
               >
                 <LoaderCircle className="size-3.5 animate-spin" />
-                <span>正在读取子目录…</span>
+                <span>{t("fileBrowser.loading.subDir")}</span>
               </div>
             </TableCell>
             <TableCell className="text-[11px] text-muted-foreground">-</TableCell>
@@ -1558,7 +1589,7 @@ export function FileBrowserPanel({
                   variant="ghost"
                   size="icon"
                   className="size-6 shrink-0 rounded-md"
-                  title={isExpanded ? "收起子目录" : "展开子目录"}
+                  title={isExpanded ? t("fileBrowser.title.collapseSubdir") : t("fileBrowser.title.expandSubdir")}
                   onClick={(event) => {
                     event.stopPropagation()
                     void toggleTreeDirectory(entry)
@@ -1595,7 +1626,7 @@ export function FileBrowserPanel({
             </div>
           </TableCell>
           <TableCell className="text-[11px] text-muted-foreground">
-            {entry.type === "directory" ? "目录" : entry.type === "symlink" ? "链接" : "文件"}
+            {entry.type === "directory" ? t("fileBrowser.type.directory") : entry.type === "symlink" ? t("fileBrowser.type.symlink") : t("fileBrowser.type.file")}
           </TableCell>
           <TableCell className="text-right font-mono text-[11px] text-muted-foreground">
             {entry.type === "directory" ? "-" : formatFileSize(entry.size)}
@@ -1633,14 +1664,14 @@ export function FileBrowserPanel({
     if (trashLoading && !trash) {
       return (
         <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-          正在读取回收站…
+          {t("fileBrowser.loading.trash")}
         </div>
       )
     }
     if ((trash?.entries.length ?? 0) === 0) {
       return (
         <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-          回收站为空
+          {t("fileBrowser.empty.trash")}
         </div>
       )
     }
@@ -1671,7 +1702,7 @@ export function FileBrowserPanel({
                 </div>
                 <p className="mt-2 truncate text-[11px] text-muted-foreground">{entry.trashedPath}</p>
                 <div className="mt-3 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
-                  <span>{entry.type === "directory" ? "目录" : entry.type === "symlink" ? "链接" : "文件"}</span>
+                  <span>{entry.type === "directory" ? t("fileBrowser.type.directory") : entry.type === "symlink" ? t("fileBrowser.type.symlink") : t("fileBrowser.type.file")}</span>
                   <span className="font-mono">{entry.type === "directory" ? "-" : formatFileSize(entry.size)}</span>
                 </div>
                 <p className="mt-2 text-[11px] text-muted-foreground">{new Date(entry.deletedAt).toLocaleString()}</p>
@@ -1687,8 +1718,8 @@ export function FileBrowserPanel({
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-3xl border border-dashed border-border/70 bg-muted/[0.06] px-8 py-16 text-center dark:border-white/10 dark:bg-white/[0.02]">
         <FolderTree className="size-8 text-muted-foreground" />
-        <p className="text-base font-medium text-foreground">先选择一台服务器</p>
-        <p className="max-w-md text-sm text-muted-foreground">选择连接后即可浏览远端目录、上传文件、编辑文本文件和下载内容。</p>
+        <p className="text-base font-medium text-foreground">{t("fileBrowser.selectServer")}</p>
+        <p className="max-w-md text-sm text-muted-foreground">{t("fileBrowser.selectServerDesc")}</p>
       </div>
     )
   }
@@ -1703,7 +1734,7 @@ export function FileBrowserPanel({
               variant="outline"
               size="icon"
               className="size-10 rounded-2xl"
-              title="返回上级"
+              title={t("fileBrowser.title.goUp")}
               onClick={() => void loadBrowser(browser?.parentPath ?? browser?.rootPath)}
               disabled={!browser?.parentPath || loading}
             >
@@ -1713,7 +1744,7 @@ export function FileBrowserPanel({
               className="h-10 flex-1 rounded-2xl border-0 bg-muted/60 font-mono text-xs shadow-none dark:bg-white/[0.04]"
               value={pathDraft}
               onChange={(event) => setPathDraft(event.target.value)}
-              placeholder="输入远端路径后回车即可跳转"
+              placeholder={t("fileBrowser.placeholder.path")}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault()
@@ -1725,11 +1756,11 @@ export function FileBrowserPanel({
               className="h-10 w-[220px] rounded-2xl border-0 bg-muted/60 text-xs shadow-none dark:bg-white/[0.04]"
               value={filterDraft}
               onChange={(event) => setFilterDraft(event.target.value)}
-              placeholder="过滤当前树中的名称或路径"
+              placeholder={t("fileBrowser.placeholder.filter")}
             />
             <div className="ml-auto flex items-center gap-2 px-1 py-1">
               <Label htmlFor="show-hidden-files" className="text-xs font-normal text-muted-foreground">
-                显示隐藏文件
+                {t("fileBrowser.toggle.showHidden")}
               </Label>
               <Switch
                 id="show-hidden-files"
@@ -1739,7 +1770,7 @@ export function FileBrowserPanel({
             </div>
             {browser?.transport === "sftp" ? (
               <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-600 dark:text-amber-300">
-                降级模式
+                {t("fileBrowser.toggle.fallbackMode")}
               </span>
             ) : null}
             <div className="flex items-center rounded-2xl bg-muted/[0.08] p-1 dark:bg-white/[0.03]">
@@ -1748,7 +1779,7 @@ export function FileBrowserPanel({
                 variant={displayMode === "tree" ? "secondary" : "ghost"}
                 size="icon"
                 className="size-8 rounded-xl"
-                title="树形列表"
+                title={t("fileBrowser.toggle.treeView")}
                 onClick={() => setDisplayMode("tree")}
               >
                 <FolderTree className="size-4" />
@@ -1758,7 +1789,7 @@ export function FileBrowserPanel({
                 variant={displayMode === "cards" ? "secondary" : "ghost"}
                 size="icon"
                 className="size-8 rounded-xl"
-                title="卡片视图"
+                title={t("fileBrowser.toggle.cardView")}
                 onClick={() => setDisplayMode("cards")}
               >
                 <LayoutGrid className="size-4" />
@@ -1769,7 +1800,7 @@ export function FileBrowserPanel({
               variant="outline"
               size="icon"
               className="size-9 rounded-2xl"
-              title="新建文件"
+              title={t("fileBrowser.title.newFile")}
               onClick={() => void openTextEditor()}
               disabled={!browser}
             >
@@ -1780,7 +1811,7 @@ export function FileBrowserPanel({
               variant="outline"
               size="icon"
               className="size-9 rounded-2xl"
-              title="新建目录"
+              title={t("fileBrowser.title.newDir")}
               onClick={() => openNewFolderDialog()}
               disabled={!browser}
             >
@@ -1791,7 +1822,7 @@ export function FileBrowserPanel({
               variant="outline"
               size="icon"
               className="size-9 rounded-2xl"
-              title="上传"
+              title={t("common.upload")}
               onClick={() => void uploadEntries()}
               disabled={!browser || busyKey === "upload"}
             >
@@ -1802,7 +1833,7 @@ export function FileBrowserPanel({
               variant="outline"
               size="icon"
               className="size-9 rounded-2xl"
-              title="刷新"
+              title={t("common.refresh")}
               onClick={() => void loadBrowser(browser?.currentPath, { forceRefresh: true })}
               disabled={loading}
             >
@@ -1813,7 +1844,7 @@ export function FileBrowserPanel({
               variant="outline"
               size="icon"
               className="size-9 rounded-2xl"
-              title="打开回收站"
+              title={t("fileBrowser.title.openTrash")}
               onClick={() => setTrashDialogOpen(true)}
             >
               <Trash2 className="size-4" />
@@ -1825,16 +1856,16 @@ export function FileBrowserPanel({
           {loading && !browser ? (
             <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
               <LoaderCircle className="size-4 animate-spin" />
-              正在连接远端目录…
+              {t("fileBrowser.loading.connecting")}
             </div>
           ) : browser ? (
             <div className="flex h-full flex-col">
               <div className="flex items-center justify-between px-5 py-3 text-[11px] text-muted-foreground">
                 <span>
-                  {visibleEntries.length} 个项目
-                  {displayMode === "tree" ? ` · ${treeSummary.directories} 个目录 · ${treeSummary.files} 个文件` : ""}
-                  {normalizedFilter ? ` · 已过滤: ${filterDraft}` : ""}
-                  {selectedEntries.length > 0 ? ` · 已选 ${selectedEntries.length} 项` : ""}
+                  {t("fileBrowser.summary.items", { count: visibleEntries.length })}
+                  {displayMode === "tree" ? t("fileBrowser.summary.treeDirs", { count: treeSummary.directories }) + t("fileBrowser.summary.treeFiles", { count: treeSummary.files }) : ""}
+                  {normalizedFilter ? t("fileBrowser.summary.filtered", { value: filterDraft }) : ""}
+                  {selectedEntries.length > 0 ? t("fileBrowser.summary.selected", { count: selectedEntries.length }) : ""}
                 </span>
                 <div className="flex items-center gap-2">
                   {selectedEntries.length > 0 ? (
@@ -1848,7 +1879,7 @@ export function FileBrowserPanel({
                         disabled={busyKey === "download:selected" || busyKey === "delete:selected"}
                       >
                         {busyKey === "download:selected" ? <LoaderCircle className="size-4 animate-spin" /> : <Download className="size-4" />}
-                        下载所选
+                        {t("fileBrowser.bulkAction.downloadSelected")}
                       </Button>
                       <Button
                         type="button"
@@ -1859,7 +1890,7 @@ export function FileBrowserPanel({
                         disabled={busyKey === "download:selected" || busyKey === "delete:selected"}
                       >
                         {busyKey === "delete:selected" ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                        删除所选
+                        {t("fileBrowser.bulkAction.deleteSelected")}
                       </Button>
                       <Button
                         type="button"
@@ -1871,11 +1902,11 @@ export function FileBrowserPanel({
                           setSelectedPaths(new Set<string>())
                         }}
                       >
-                        清除选择
+                        {t("fileBrowser.bulkAction.clearSelection")}
                       </Button>
                     </>
                   ) : null}
-                  {loading ? <span>显示缓存内容，正在刷新…</span> : browser.transport === "sftp" ? <span>当前使用 SFTP 回退</span> : <span>helper 已连接</span>}
+                  {loading ? <span>{t("fileBrowser.loading.showCache")}</span> : browser.transport === "sftp" ? <span>{t("fileBrowser.loading.sftpFallback")}</span> : <span>{t("fileBrowser.loading.helperConnected")}</span>}
                 </div>
               </div>
               <div
@@ -1887,11 +1918,11 @@ export function FileBrowserPanel({
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>名称</TableHead>
-                        <TableHead className="w-[84px]">类型</TableHead>
-                        <TableHead className="w-[104px] text-right">大小</TableHead>
-                        <TableHead className="w-[168px]">修改时间</TableHead>
-                        <TableHead className="w-[72px] text-right">操作</TableHead>
+                        <TableHead>{t("fileBrowser.tableHeader.name")}</TableHead>
+                        <TableHead className="w-[84px]">{t("fileBrowser.tableHeader.type")}</TableHead>
+                        <TableHead className="w-[104px] text-right">{t("fileBrowser.tableHeader.size")}</TableHead>
+                        <TableHead className="w-[168px]">{t("fileBrowser.tableHeader.modified")}</TableHead>
+                        <TableHead className="w-[72px] text-right">{t("fileBrowser.tableHeader.action")}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>{renderTreeRows()}</TableBody>
@@ -1900,7 +1931,7 @@ export function FileBrowserPanel({
               </div>
             </div>
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">还没有读取到目录内容</div>
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">{t("fileBrowser.empty.noContent")}</div>
           )}
         </div>
       </div>
@@ -1931,127 +1962,132 @@ export function FileBrowserPanel({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <Dialog open={trashDialogOpen} onOpenChange={setTrashDialogOpen}>
-        <DialogContent className="max-w-6xl">
-          <DialogHeader>
-            <DialogTitle>回收站</DialogTitle>
-            <DialogDescription>删除项目会先进入这里，可恢复或彻底删除。</DialogDescription>
-          </DialogHeader>
-          <div className="flex min-h-[520px] flex-col">
-            <div className="flex items-center justify-between px-1 pb-3 text-[11px] text-muted-foreground">
-              <span>{trash?.entries.length ?? 0} 个项目</span>
-              <div className="flex items-center gap-2">
-                <span>{trashLoading ? "正在刷新回收站…" : "仅展示当前连接的回收站内容"}</span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="rounded-2xl"
-                  onClick={() => void loadTrash()}
-                  disabled={trashLoading}
-                >
-                  {trashLoading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                  刷新
-                </Button>
+      {trashDialogOpen && (
+        <Dialog open={trashDialogOpen} onOpenChange={setTrashDialogOpen}>
+          <DialogContent className="max-w-6xl">
+            <DialogHeader>
+              <DialogTitle>{t("fileBrowser.trashDialog.title")}</DialogTitle>
+              <DialogDescription>{t("fileBrowser.trashDialog.desc")}</DialogDescription>
+            </DialogHeader>
+            <div className="flex min-h-[520px] flex-col">
+              <div className="flex items-center justify-between px-1 pb-3 text-[11px] text-muted-foreground">
+                <span>{t("fileBrowser.trashDialog.itemsCount", { count: trash?.entries.length ?? 0 })}</span>
+                <div className="flex items-center gap-2">
+                  <span>{trashLoading ? t("fileBrowser.loading.refreshingTrash") : t("fileBrowser.trashDialog.note")}</span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="rounded-2xl"
+                    onClick={() => void loadTrash()}
+                    disabled={trashLoading}
+                  >
+                    {trashLoading ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                    {t("common.refresh")}
+                  </Button>
+                </div>
               </div>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto">
-              {displayMode === "cards" ? renderTrashCards() : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>名称</TableHead>
-                      <TableHead>原路径</TableHead>
-                      <TableHead className="w-[84px]">类型</TableHead>
-                      <TableHead className="w-[104px] text-right">大小</TableHead>
-                      <TableHead className="w-[168px]">删除时间</TableHead>
-                      <TableHead className="w-[72px] text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {trashLoading && !trash ? (
+              <div className="min-h-0 flex-1 overflow-auto">
+                {displayMode === "cards" ? renderTrashCards() : (
+                  <Table>
+                    <TableHeader>
                       <TableRow>
-                        <TableCell colSpan={6} className="h-24 text-center text-sm text-muted-foreground">
-                          正在读取回收站…
-                        </TableCell>
+                        <TableHead>{t("fileBrowser.tableHeader.name")}</TableHead>
+                        <TableHead>{t("fileBrowser.tableHeader.originalPath")}</TableHead>
+                        <TableHead className="w-[84px]">{t("fileBrowser.tableHeader.type")}</TableHead>
+                        <TableHead className="w-[104px] text-right">{t("fileBrowser.tableHeader.size")}</TableHead>
+                        <TableHead className="w-[168px]">{t("fileBrowser.tableHeader.deletedAt")}</TableHead>
+                        <TableHead className="w-[72px] text-right">{t("fileBrowser.tableHeader.action")}</TableHead>
                       </TableRow>
-                    ) : (trash?.entries.length ?? 0) === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={6} className="h-24 text-center text-sm text-muted-foreground">
-                          回收站为空
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      trash!.entries.map((entry) => (
-                        <TableRow key={entry.id}>
-                          <TableCell>
-                            <div className="min-w-0">
-                              <span className="block truncate font-mono text-xs text-foreground">{entry.name}</span>
-                              <span className="block truncate text-[11px] text-muted-foreground">{entry.trashedPath}</span>
-                            </div>
-                          </TableCell>
-                          <TableCell className="font-mono text-[11px] text-muted-foreground">
-                            <span className="block truncate">{entry.originalPath}</span>
-                          </TableCell>
-                          <TableCell className="text-[11px] text-muted-foreground">
-                            {entry.type === "directory" ? "目录" : entry.type === "symlink" ? "链接" : "文件"}
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-[11px] text-muted-foreground">
-                            {entry.type === "directory" ? "-" : formatFileSize(entry.size)}
-                          </TableCell>
-                          <TableCell className="text-[11px] text-muted-foreground">
-                            {new Date(entry.deletedAt).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button type="button" variant="ghost" size="icon" className="size-8 rounded-lg">
-                                  <MoreHorizontal className="size-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                {renderTrashActions(entry)}
-                              </DropdownMenuContent>
-                            </DropdownMenu>
+                    </TableHeader>
+                    <TableBody>
+                      {trashLoading && !trash ? (
+                        <TableRow>
+                          <TableCell colSpan={6} className="h-24 text-center text-sm text-muted-foreground">
+                            {t("fileBrowser.loading.trash")}
                           </TableCell>
                         </TableRow>
-                      ))
-                    )}
-                  </TableBody>
-                </Table>
-              )}
+                      ) : (trash?.entries.length ?? 0) === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={6} className="h-24 text-center text-sm text-muted-foreground">
+                            {t("fileBrowser.empty.trash")}
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        trash!.entries.map((entry) => (
+                          <TableRow key={entry.id}>
+                            <TableCell>
+                              <div className="min-w-0">
+                                <span className="block truncate font-mono text-xs text-foreground">{entry.name}</span>
+                                <span className="block truncate text-[11px] text-muted-foreground">{entry.trashedPath}</span>
+                              </div>
+                            </TableCell>
+                            <TableCell className="font-mono text-[11px] text-muted-foreground">
+                              <span className="block truncate">{entry.originalPath}</span>
+                            </TableCell>
+                            <TableCell className="text-[11px] text-muted-foreground">
+                              {entry.type === "directory" ? t("fileBrowser.type.directory") : entry.type === "symlink" ? t("fileBrowser.type.symlink") : t("fileBrowser.type.file")}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-[11px] text-muted-foreground">
+                              {entry.type === "directory" ? "-" : formatFileSize(entry.size)}
+                            </TableCell>
+                            <TableCell className="text-[11px] text-muted-foreground">
+                              {new Date(entry.deletedAt).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button type="button" variant="ghost" size="icon" className="size-8 rounded-lg">
+                                    <MoreHorizontal className="size-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  {renderTrashActions(entry)}
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
             </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+          </DialogContent>
+        </Dialog>
+      )}
 
-      <Dialog open={newFolderOpen} onOpenChange={setNewFolderOpen}>
+      {newFolderOpen && (
+        <Dialog open={newFolderOpen} onOpenChange={setNewFolderOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>新建目录</DialogTitle>
+            <DialogTitle>{t("fileBrowser.newDirDialog.title")}</DialogTitle>
             <DialogDescription>{newFolderParentPath || browser?.currentPath}</DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">目录名</Label>
+            <Label className="text-xs text-muted-foreground">{t("fileBrowser.newDirDialog.label")}</Label>
             <Input
               className="h-9 rounded-lg"
               value={newFolderName}
               onChange={(event) => setNewFolderName(event.target.value)}
-              placeholder="例如 uploads 或 backup"
+              placeholder={t("fileBrowser.newDirDialog.placeholder")}
             />
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setNewFolderOpen(false)}>
-              取消
+              {t("common.cancel")}
             </Button>
             <Button type="button" onClick={() => void createFolder()} disabled={!newFolderName.trim() || busyKey === "mkdir"}>
               {busyKey === "mkdir" ? <LoaderCircle className="size-4 animate-spin" /> : <FolderPlus className="size-4" />}
-              创建
+              {t("common.create")}
             </Button>
           </DialogFooter>
         </DialogContent>
-      </Dialog>
+        </Dialog>
+      )}
 
+      {renameTarget && (
       <Dialog
         open={Boolean(renameTarget)}
         onOpenChange={(open) => {
@@ -2063,11 +2099,11 @@ export function FileBrowserPanel({
       >
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>重命名</DialogTitle>
+            <DialogTitle>{t("fileBrowser.renameDialog.title")}</DialogTitle>
             <DialogDescription>{renameTarget?.path}</DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">新名称</Label>
+            <Label className="text-xs text-muted-foreground">{t("fileBrowser.renameDialog.label")}</Label>
             <Input
               className="h-9 rounded-lg"
               value={renameName}
@@ -2076,16 +2112,18 @@ export function FileBrowserPanel({
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setRenameTarget(null)}>
-              取消
+              {t("common.cancel")}
             </Button>
             <Button type="button" onClick={() => void renameEntry()} disabled={!renameName.trim() || busyKey === `rename:${renameTarget?.path}`}>
               {busyKey === `rename:${renameTarget?.path}` ? <LoaderCircle className="size-4 animate-spin" /> : <Pencil className="size-4" />}
-              保存
+              {t("common.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
+      {permissionTarget && (
       <Dialog
         open={Boolean(permissionTarget)}
         onOpenChange={(open) => {
@@ -2098,24 +2136,24 @@ export function FileBrowserPanel({
       >
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>修改权限</DialogTitle>
+            <DialogTitle>{t("fileBrowser.chmodDialog.title")}</DialogTitle>
             <DialogDescription>{permissionTarget?.path}</DialogDescription>
           </DialogHeader>
           <div className="space-y-5">
             <div className="rounded-2xl border border-border/60 bg-muted/[0.08] px-4 py-4 dark:border-white/10 dark:bg-white/[0.03]">
               <div className="text-lg font-semibold text-foreground">{permissionTarget?.name}</div>
               <div className="mt-2 text-sm text-muted-foreground">
-                {permissionLoading ? "正在读取当前权限…" : `当前: ${permissionDetails?.permissions?.symbolic ?? "-"} · 八进制: ${permissionDetails?.permissions?.octal ?? "-"}`}
+                {permissionLoading ? t("fileBrowser.loading.permission") : t("fileBrowser.chmodDialog.currentPrefix") + (permissionDetails?.permissions?.symbolic ?? "-") + t("fileBrowser.chmodDialog.octalPrefix") + (permissionDetails?.permissions?.octal ?? "-")}
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
-                {permissionLoading ? "请稍候" : describePermissionMode(permissionDetails?.permissions?.octal ?? permissionMode)}
+                {permissionLoading ? t("fileBrowser.loading.pleaseWait") : describePermissionMode(permissionDetails?.permissions?.octal ?? permissionMode, t)}
               </div>
             </div>
 
             <div className="space-y-3">
-              <div className="text-sm font-medium text-foreground">快速设置</div>
+              <div className="text-sm font-medium text-foreground">{t("fileBrowser.chmodDialog.quickSet")}</div>
               <div className="grid gap-3 sm:grid-cols-2">
-                {PERMISSION_PRESETS.map((preset) => {
+                {permissionPresets.map((preset) => {
                   const selected = permissionMode.trim() === preset.mode
                   return (
                     <button
@@ -2137,7 +2175,7 @@ export function FileBrowserPanel({
             </div>
 
             <div className="space-y-2">
-              <Label className="text-sm font-medium text-foreground">手动设置</Label>
+              <Label className="text-sm font-medium text-foreground">{t("fileBrowser.chmodDialog.manualSet")}</Label>
               <Input
                 className="h-14 rounded-xl border-border/60 bg-background font-mono text-3xl text-center tracking-normal dark:border-white/10"
                 value={permissionMode}
@@ -2145,15 +2183,15 @@ export function FileBrowserPanel({
                 onChange={(event) => setPermissionMode(event.target.value.replace(/[^0-7]/g, "").slice(0, 4))}
                 disabled={permissionLoading || busyKey === `chmod:${permissionTarget?.path}`}
               />
-              <p className="text-xs text-muted-foreground">{describePermissionMode(permissionMode || "000")}</p>
+              <p className="text-xs text-muted-foreground">{describePermissionMode(permissionMode || "000", t)}</p>
             </div>
 
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="text-sm font-medium text-foreground">递归修改子文件夹权限</div>
+                  <div className="text-sm font-medium text-foreground">{t("fileBrowser.chmodDialog.recursive")}</div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {permissionTarget?.type === "directory" ? "会同步更新当前目录下的子目录和文件权限。" : "仅目录支持递归修改。"}
+                    {permissionTarget?.type === "directory" ? t("fileBrowser.chmodDialog.recursiveDirDesc") : t("fileBrowser.chmodDialog.recursiveFileDesc")}
                   </div>
                 </div>
                 <Switch
@@ -2166,7 +2204,7 @@ export function FileBrowserPanel({
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setPermissionTarget(null)}>
-              取消
+              {t("common.cancel")}
             </Button>
             <Button
               type="button"
@@ -2174,12 +2212,14 @@ export function FileBrowserPanel({
               disabled={permissionLoading || busyKey === `chmod:${permissionTarget?.path}` || !permissionMode.trim()}
             >
               {busyKey === `chmod:${permissionTarget?.path}` ? <LoaderCircle className="size-4 animate-spin" /> : <Shield className="size-4" />}
-              保存权限
+              {t("fileBrowser.chmodDialog.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
 
+      {deleteTarget && (
       <AlertDialog
         open={Boolean(deleteTarget)}
         onOpenChange={(open) => {
@@ -2190,27 +2230,29 @@ export function FileBrowserPanel({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除 {deleteTarget?.type === "directory" ? "目录" : "文件"}？</AlertDialogTitle>
+            <AlertDialogTitle>{t("fileBrowser.deleteDialog.title", { type: deleteTarget?.type === "directory" ? t("fileBrowser.type.directory") : t("fileBrowser.type.file") })}</AlertDialogTitle>
             <AlertDialogDescription>
               <span className="break-all">{deleteTarget?.path}</span>
               <span className="mt-2 block">
-                {deleteTarget?.type === "directory" ? "会将目录及其内容移入回收站。" : "删除后会先进入回收站，可稍后恢复或彻底删除。"}
+                {deleteTarget?.type === "directory" ? t("fileBrowser.deleteDialog.dirDesc") : t("fileBrowser.deleteDialog.fileDesc")}
               </span>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               className={cn("bg-destructive text-destructive-foreground hover:bg-destructive/90")}
               onClick={() => void removeEntry()}
             >
               {busyKey === `delete:${deleteTarget?.path}` ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-              移入回收站
+              {t("fileBrowser.deleteDialog.confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      )}
 
+      {bulkDeleteTargets.length > 0 && (
       <AlertDialog
         open={bulkDeleteTargets.length > 0}
         onOpenChange={(open) => {
@@ -2221,24 +2263,26 @@ export function FileBrowserPanel({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>移入回收站 {bulkDeleteTargets.length} 个项目？</AlertDialogTitle>
+            <AlertDialogTitle>{t("fileBrowser.bulkDeleteDialog.title", { count: bulkDeleteTargets.length })}</AlertDialogTitle>
             <AlertDialogDescription>
-              已选项目会移动到回收站，可稍后恢复或彻底删除。
+              {t("fileBrowser.bulkDeleteDialog.desc")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               className={cn("bg-destructive text-destructive-foreground hover:bg-destructive/90")}
               onClick={() => void confirmBulkRemove()}
             >
               {busyKey === "delete:selected" ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-              移入回收站
+              {t("fileBrowser.bulkDeleteDialog.confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      )}
 
+      {purgeTarget && (
       <AlertDialog
         open={Boolean(purgeTarget)}
         onOpenChange={(open) => {
@@ -2249,25 +2293,27 @@ export function FileBrowserPanel({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>彻底删除该项目？</AlertDialogTitle>
+            <AlertDialogTitle>{t("fileBrowser.purgeDialog.title")}</AlertDialogTitle>
             <AlertDialogDescription>
               <span className="break-all">{purgeTarget?.originalPath}</span>
-              <span className="mt-2 block">该操作会从回收站中永久移除，无法恢复。</span>
+              <span className="mt-2 block">{t("fileBrowser.purgeDialog.desc")}</span>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               className={cn("bg-destructive text-destructive-foreground hover:bg-destructive/90")}
               onClick={() => void purgeTrashEntry()}
             >
               {busyKey === `purge:${purgeTarget?.id}` ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-              彻底删除
+              {t("fileBrowser.purgeDialog.confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      )}
 
+      {editorOpen && (
       <Dialog
         open={editorOpen}
         onOpenChange={(open) => {
@@ -2280,12 +2326,12 @@ export function FileBrowserPanel({
       >
         <DialogContent className="max-w-5xl">
           <DialogHeader>
-            <DialogTitle>{editorMode === "create" ? "新建文本文件" : "编辑文本文件"}</DialogTitle>
-            <DialogDescription>{editorMeta?.modifiedAt ? `上次修改 ${new Date(editorMeta.modifiedAt).toLocaleString()}` : "支持 UTF-8 文本内容"}</DialogDescription>
+            <DialogTitle>{editorMode === "create" ? t("fileBrowser.editorDialog.titleCreate") : t("fileBrowser.editorDialog.titleEdit")}</DialogTitle>
+            <DialogDescription>{editorMeta?.modifiedAt ? t("fileBrowser.editorDialog.lastModified", { time: new Date(editorMeta.modifiedAt).toLocaleString() }) : t("fileBrowser.editorDialog.encoding")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">远端路径</Label>
+              <Label className="text-xs text-muted-foreground">{t("fileBrowser.editorDialog.fieldPath")}</Label>
               <Input
                 className="h-9 rounded-lg font-mono text-xs"
                 value={editorPath}
@@ -2295,12 +2341,12 @@ export function FileBrowserPanel({
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">
-                内容 {editorMeta ? `· ${formatFileSize(editorMeta.size)}` : ""}
+                {t("fileBrowser.editorDialog.contentLabel")}{editorMeta ? t("fileBrowser.editorDialog.contentSize", { size: formatFileSize(editorMeta.size) }) : ""}
               </Label>
               {editorLoading ? (
                 <div className="flex h-[420px] items-center justify-center gap-2 rounded-lg border border-border/70 text-sm text-muted-foreground">
                   <LoaderCircle className="size-4 animate-spin" />
-                  正在加载文件内容…
+                  {t("fileBrowser.loading.fileContent")}
                 </div>
               ) : (
                 <Textarea
@@ -2314,15 +2360,16 @@ export function FileBrowserPanel({
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setEditorOpen(false)} disabled={editorSaving}>
-              关闭
+              {t("common.close")}
             </Button>
             <Button type="button" onClick={() => void saveTextFile()} disabled={editorLoading || editorSaving || !editorPath.trim()}>
               {editorSaving ? <LoaderCircle className="size-4 animate-spin" /> : <FileCode2 className="size-4" />}
-              保存
+              {t("common.save")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      )}
     </>
   )
 }

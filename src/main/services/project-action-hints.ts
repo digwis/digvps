@@ -20,7 +20,6 @@ const CODE_EXCLUDE_DIRS = new Set([
   "coverage",
   "uploads",
   "data",
-  "backups",
 ])
 
 type DirSnapshot = {
@@ -57,30 +56,42 @@ async function getGitDirtySnapshot(projectPath: string): Promise<DirSnapshot | n
   }
 }
 
-function scanDirLatest(dirPath: string, options?: { exclude?: Set<string>; after?: number }): DirSnapshot {
-  if (!fs.existsSync(dirPath)) {
+async function scanDirLatest(dirPath: string, options?: { exclude?: Set<string>; after?: number }): Promise<DirSnapshot> {
+  try {
+    await fs.promises.access(dirPath)
+  } catch {
     return { latestIso: null, hasFiles: false }
   }
 
   let latest = 0
   let hasFiles = false
 
-  const walk = (current: string) => {
-    const entries = fs.readdirSync(current, { withFileTypes: true })
+  const walk = async (current: string): Promise<void> => {
+    let entries: fs.Dirent[]
+    try {
+      entries = await fs.promises.readdir(current, { withFileTypes: true })
+    } catch {
+      return
+    }
     for (const entry of entries) {
       const fullPath = path.join(current, entry.name)
       if (entry.isDirectory()) {
         if (options?.exclude?.has(entry.name)) {
           continue
         }
-        walk(fullPath)
+        await walk(fullPath)
         continue
       }
       if (!entry.isFile()) {
         continue
       }
       hasFiles = true
-      const stat = fs.statSync(fullPath)
+      let stat: fs.Stats
+      try {
+        stat = await fs.promises.stat(fullPath)
+      } catch {
+        continue
+      }
       const m = stat.mtimeMs
       if (m > latest) {
         latest = m
@@ -92,7 +103,7 @@ function scanDirLatest(dirPath: string, options?: { exclude?: Set<string>; after
     }
   }
 
-  walk(dirPath)
+  await walk(dirPath)
   return {
     latestIso: latest > 0 ? new Date(latest).toISOString() : null,
     hasFiles,
@@ -148,15 +159,14 @@ export async function inspectProjectActionHints(project: LocalProjectRecord): Pr
   const dataRunAt = getProjectActionRunAt(project.id, "data")
   const dataMarker = getProjectActionMarker(project.id, "data")
   const uploadsRunAt = getProjectActionRunAt(project.id, "uploads")
-  const backupRunAt = getProjectActionRunAt(project.id, "backup")
 
   const git = await getGitDirtySnapshot(project.localPath)
-  const codeLocal = git ?? scanDirLatest(project.localPath, { exclude: CODE_EXCLUDE_DIRS })
+  const codeLocal = git ?? await scanDirLatest(project.localPath, { exclude: CODE_EXCLUDE_DIRS })
   const currentLsn = await readLocalPostgresLsn(project.localPath)
-  const uploadsDir = fs.existsSync(path.join(project.localPath, "storage", "uploads"))
+  const uploadsDir = (await fs.promises.access(path.join(project.localPath, "storage", "uploads")).then(() => true).catch(() => false))
     ? path.join(project.localPath, "storage", "uploads")
     : path.join(project.localPath, "uploads")
-  const uploadsLocal = scanDirLatest(uploadsDir)
+  const uploadsLocal = await scanDirLatest(uploadsDir)
 
   const hints: ProjectActionHints["hints"] = [
     buildHint({
@@ -188,14 +198,6 @@ export async function inspectProjectActionHints(project: LocalProjectRecord): Pr
       missingReason: "未检测到上传文件目录",
       changedReason: "检测到上传文件有新增或修改",
     }),
-    {
-      action: "backup",
-      needsAttention:
-        !backupRunAt || Date.now() - new Date(backupRunAt).getTime() > 7 * 24 * 60 * 60 * 1000,
-      reason: backupRunAt ? "距离上次备份已超过 7 天" : "尚未执行过备份",
-      lastRunAt: backupRunAt,
-      localChangedAt: null,
-    },
   ]
 
   return {

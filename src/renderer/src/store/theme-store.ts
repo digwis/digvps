@@ -1,6 +1,6 @@
 import { create } from "zustand"
 
-const THEME_KEY = "digwis:theme"
+const THEME_KEY = "cloudroost:theme"
 const DARK_QUERY = "(prefers-color-scheme: dark)"
 
 export type Theme = "system" | "light" | "dark"

@@ -33,16 +33,12 @@ import {
   updateSshConfigCandidate,
 } from "../services/discovery"
 import { testConnection } from "../services/ssh"
-import { installRemoteDependency, uninstallRemoteDependency } from "../services/dependency-install"
-import { inspectDependencyUsage } from "../services/dependency-usage"
-import { runDependencyServiceAction } from "../services/service-control"
 import { inspectConnection } from "../services/inspection"
 import { applySystemUpgrade, checkSystemUpgrades } from "../services/system-upgrade"
 import { ensureSavedPayload, resolveStoredPayload } from "./helpers"
 import { registerIpcHandle } from "./ipc-error"
 import {
   connectionIdSchema,
-  dependencyServiceSchema,
   forceRefreshOptionsSchema,
   parseOrThrow,
   rawSshConfigSaveSchema,
@@ -61,7 +57,7 @@ import {
   vpsConnectionInputSchema,
 } from "./schemas"
 import { requireResolvedConnection, requireSenderWindow, runConnectionHealthTracked } from "./vps-runtime"
-import type { DependencyServiceAction, SshConfigMutationInput, VpsConnectionInput } from "../../shared/vps"
+import type { SshConfigMutationInput, VpsConnectionInput } from "../../shared/vps"
 
 export function registerVpsHandlers() {
   registerIpcHandle("vps:list", async () => {
@@ -222,37 +218,6 @@ export function registerVpsHandlers() {
     payload = parseOrThrow(vpsConnectionInputSchema, payload)
     return await runConnectionHealthTracked(payload, testConnection, "未知错误")
   })
-
-  registerIpcHandle("vps:install-dependency", async (_event, payload: VpsConnectionInput, dependencyId: string) => {
-    payload = parseOrThrow(vpsConnectionInputSchema, payload)
-    dependencyId = parseOrThrow(connectionIdSchema, dependencyId)
-    return installRemoteDependency(resolveStoredPayload(payload), dependencyId)
-  })
-
-  registerIpcHandle("vps:inspect-dependency-usage", async (_event, payload: VpsConnectionInput, dependencyId: string) => {
-    payload = parseOrThrow(vpsConnectionInputSchema, payload)
-    dependencyId = parseOrThrow(connectionIdSchema, dependencyId)
-    return inspectDependencyUsage(resolveStoredPayload(payload), dependencyId)
-  })
-
-  registerIpcHandle("vps:uninstall-dependency", async (_event, payload: VpsConnectionInput, dependencyId: string) => {
-    payload = parseOrThrow(vpsConnectionInputSchema, payload)
-    dependencyId = parseOrThrow(connectionIdSchema, dependencyId)
-    return uninstallRemoteDependency(resolveStoredPayload(payload), dependencyId)
-  })
-
-  registerIpcHandle(
-    "vps:dependency-service",
-    async (
-      _event,
-      payload: VpsConnectionInput,
-      options: { dependencyId: string; action: DependencyServiceAction; systemdUnit?: string },
-    ) => {
-      payload = parseOrThrow(vpsConnectionInputSchema, payload)
-      options = parseOrThrow(dependencyServiceSchema, options)
-      return runDependencyServiceAction(resolveStoredPayload(payload), options)
-    },
-  )
 
   registerIpcHandle("vps:inspect", async (_event, payload: VpsConnectionInput, options?: { forceRefresh?: boolean }) => {
     payload = parseOrThrow(vpsConnectionInputSchema, payload)

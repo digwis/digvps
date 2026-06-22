@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
+import { useTranslation } from "react-i18next"
+import { useShallow } from "zustand/react/shallow"
 import {
   AlertTriangle,
   ArrowLeft,
@@ -37,12 +39,11 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 
-import { cn } from "@/lib/utils"
+import { cn, createDebouncedStorageWriter } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { useProjectStore } from "@/store/project-store"
 import { useVpsStore } from "@/store/vps-store"
 import { AppSettingsPage } from "@/components/app-settings-page"
-import { DependencyCards } from "@/components/dependency-cards"
 import { InspectionTelemetryCards } from "@/components/inspection-telemetry-cards"
 import { SystemUpgradePrompt } from "@/components/system-upgrade-prompt"
 import { TerminalPage } from "@/components/terminal-page"
@@ -57,7 +58,7 @@ import type {
   VpsInspection,
 } from "../../shared/vps"
 
-type NavKey = "monitor" | "deps" | "projects" | "files" | "settings"
+type NavKey = "monitor" | "projects" | "files" | "settings"
 
 type AppLocation = {
   nav: NavKey
@@ -68,15 +69,17 @@ type AppLocation = {
   }
 }
 
-const LAST_ACTIVE_NAV_KEY = "digwis:last-active-nav"
-const SIDEBAR_COLLAPSED_KEY = "digwis:sidebar-collapsed"
+const LAST_ACTIVE_NAV_KEY = "cloudroost:last-active-nav"
+const SIDEBAR_COLLAPSED_KEY = "cloudroost:sidebar-collapsed"
 const TELEMETRY_FRESH_MS = 20_000
 
-const navItems: Array<{ key: NavKey; label: string; icon: typeof Server }> = [
-  { key: "monitor", label: "主机概览", icon: Server },
-  { key: "deps", label: "运行环境", icon: HardDriveDownload },
-  { key: "projects", label: "终端", icon: SquareTerminal },
-  { key: "files", label: "文件管理", icon: FolderOpen },
+const lastActiveNavWriter = createDebouncedStorageWriter(LAST_ACTIVE_NAV_KEY)
+const sidebarCollapsedWriter = createDebouncedStorageWriter(SIDEBAR_COLLAPSED_KEY)
+
+const navItems: Array<{ key: NavKey; icon: typeof Server }> = [
+  { key: "monitor", icon: Server },
+  { key: "projects", icon: SquareTerminal },
+  { key: "files", icon: FolderOpen },
 ]
 
 function isNavKey(value: string): value is NavKey {
@@ -93,11 +96,7 @@ function readLastActiveNav(): NavKey {
 }
 
 function writeLastActiveNav(nav: NavKey) {
-  try {
-    window.localStorage.setItem(LAST_ACTIVE_NAV_KEY, nav)
-  } catch {
-    // Ignore storage errors in desktop renderer.
-  }
+  lastActiveNavWriter.schedule(nav)
 }
 
 function readSidebarCollapsed() {
@@ -109,11 +108,7 @@ function readSidebarCollapsed() {
 }
 
 function writeSidebarCollapsed(collapsed: boolean) {
-  try {
-    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "true" : "false")
-  } catch {
-    // Ignore storage errors in desktop renderer.
-  }
+  sidebarCollapsedWriter.schedule(collapsed ? "true" : "false")
 }
 
 function sidebarItemClass(active: boolean, collapsed: boolean) {
@@ -136,36 +131,37 @@ function sidebarToolClass(collapsed: boolean) {
 function upgradeStatusPresentation(
   status: SystemUpgradeCheckResult | undefined,
   checking: boolean,
+  t: (key: string, options?: Record<string, unknown>) => string,
 ): { title: string; detail?: string; tone: "muted" | "ok" | "warn" | "danger" } {
   if (checking) {
-    return { title: "正在检测…", tone: "muted" }
+    return { title: t("monitor.loading"), tone: "muted" }
   }
   if (!status) {
-    return { title: "尚未检测", detail: "连接后会自动检测", tone: "muted" }
+    return { title: t("monitor.noSnapshot"), detail: t("monitor.loading"), tone: "muted" }
   }
   if (!status.supported) {
     if (status.reason === "no_apt") {
-      return { title: "非 APT 环境", detail: "仅支持 Debian/Ubuntu 系 apt 检测", tone: "muted" }
+      return { title: t("monitor.noSnapshot"), detail: t("monitor.noSnapshot"), tone: "muted" }
     }
     if (status.reason === "exec_error") {
       return {
-        title: "检测失败",
+        title: t("monitor.monitorIncomplete"),
         detail: status.hint ? status.hint.slice(0, 120) : undefined,
         tone: "danger",
       }
     }
-    return { title: "无法检测", tone: "muted" }
+    return { title: t("monitor.monitorIncomplete"), tone: "muted" }
   }
   if (status.upgradableCount > 0) {
     return {
-      title: `${status.upgradableCount} 个软件包可升级`,
-      detail: status.indexRefreshed ? "已尝试刷新 apt 索引" : "索引可能未刷新，数量可能偏保守",
+      title: t("upgrade.countDesc", { count: status.upgradableCount }),
+      detail: status.indexRefreshed ? t("upgrade.aptUpdateHint") : t("upgrade.aptUpdateHint"),
       tone: "warn",
     }
   }
   return {
-    title: "已是最新版本",
-    detail: status.indexRefreshed ? "apt 索引已刷新，无可升级项" : "基于当前缓存，无可升级项",
+    title: t("monitor.noSnapshot"),
+    detail: status.indexRefreshed ? t("monitor.noSnapshot") : t("monitor.noSnapshot"),
     tone: "ok",
   }
 }
@@ -177,6 +173,8 @@ function daemonPackages(packages: RemotePackageStatus[]) {
 function buildMonitorAlerts(
   inspection: VpsInspection,
   upgradeStatus: SystemUpgradeCheckResult | undefined,
+  daemonPackageList: RemotePackageStatus[],
+  t: (key: string, options?: Record<string, unknown>) => string,
 ): Array<{ key: string; label: string; tone: "danger" | "warn" | "ok" }> {
   const alerts: Array<{ key: string; label: string; tone: "danger" | "warn" | "ok" }> = []
   const telemetry = inspection.telemetry
@@ -185,60 +183,60 @@ function buildMonitorAlerts(
       alerts.push({ key: "cpu", label: `CPU ${telemetry.cpuPercent.toFixed(0)}%`, tone: "danger" })
     }
     if (telemetry.memoryPercent >= 85) {
-      alerts.push({ key: "memory", label: `内存 ${telemetry.memoryPercent.toFixed(0)}%`, tone: "danger" })
+      alerts.push({ key: "memory", label: `${t("monitor.metric.memory")} ${telemetry.memoryPercent.toFixed(0)}%`, tone: "danger" })
     }
     if (telemetry.diskPercent >= 90) {
-      alerts.push({ key: "disk", label: `系统盘 ${telemetry.diskPercent.toFixed(0)}%`, tone: "danger" })
+      alerts.push({ key: "disk", label: `${t("monitor.metric.disk")} ${telemetry.diskPercent.toFixed(0)}%`, tone: "danger" })
     }
     if (telemetry.loadPercent >= 75) {
-      alerts.push({ key: "load", label: `负载 ${telemetry.loadPercent.toFixed(0)}%`, tone: "warn" })
+      alerts.push({ key: "load", label: `${t("monitor.metric.load")} ${telemetry.loadPercent.toFixed(0)}%`, tone: "warn" })
     }
   }
   if (upgradeStatus?.supported && upgradeStatus.upgradableCount > 0) {
     alerts.push({
       key: "upgrade",
-      label: `${upgradeStatus.upgradableCount} 个包可升级`,
+      label: t("upgrade.countDesc", { count: upgradeStatus.upgradableCount }),
       tone: upgradeStatus.upgradableCount >= 10 ? "danger" : "warn",
     })
   }
-  for (const pkg of daemonPackages(inspection.packages)) {
+  for (const pkg of daemonPackageList) {
     if (pkg.installed && pkg.running === false) {
-      alerts.push({ key: `svc-${pkg.id}`, label: `${pkg.name} 未运行`, tone: "warn" })
+      alerts.push({ key: `svc-${pkg.id}`, label: `${pkg.name} ${t("monitor.package.stopped")}`, tone: "warn" })
     }
   }
   if (alerts.length === 0) {
-    alerts.push({ key: "ok", label: "当前没有明显风险", tone: "ok" })
+    alerts.push({ key: "ok", label: t("monitor.noSnapshot"), tone: "ok" })
   }
   return alerts.slice(0, 4)
 }
 
-function inspectionFreshness(checkedAt: string, now: number) {
+function inspectionFreshness(checkedAt: string, now: number, t: (key: string, options?: Record<string, unknown>) => string) {
   const deltaMs = Math.max(0, now - new Date(checkedAt).getTime())
   const deltaSeconds = Math.round(deltaMs / 1000)
   const deltaMinutes = Math.round(deltaMs / 60_000)
   if (deltaMs <= TELEMETRY_FRESH_MS) {
     return {
-      label: "监控数据刚同步",
+      label: t("monitor.loading"),
       className: "bg-emerald-500/8 text-emerald-300",
       stale: false,
     }
   }
   if (deltaSeconds < 60) {
     return {
-      label: `${deltaSeconds} 秒前采样`,
+      label: `${deltaSeconds}s`,
       className: "bg-[#34301f] text-amber-300",
       stale: true,
     }
   }
   if (deltaMinutes <= 5) {
     return {
-      label: `${deltaMinutes} 分钟前采样`,
+      label: `${deltaMinutes}m`,
       className: "bg-[#34301f] text-amber-300",
       stale: true,
     }
   }
   return {
-    label: `${deltaMinutes} 分钟前采样`,
+    label: `${deltaMinutes}m`,
     className: "bg-[#34301f] text-amber-300",
     stale: true,
   }
@@ -257,7 +255,7 @@ function metricValue(inspection: VpsInspection, label: string) {
   return inspection.metrics.find((metric) => metric.label === label)?.value ?? "unknown"
 }
 
-function summarizeUptime(uptime: string) {
+function summarizeUptime(uptime: string, t: (key: string, options?: Record<string, unknown>) => string) {
   const normalized = uptime.toLowerCase()
   const valueOf = (unit: string) => {
     const match = normalized.match(new RegExp(`(\\d+)\\s+${unit}`))
@@ -273,15 +271,15 @@ function summarizeUptime(uptime: string) {
   const totalDays = weeks * 7 + days
 
   if (totalMonths > 0) {
-    return totalDays > 0 ? `已运行 ${totalMonths} 个月 ${totalDays} 天` : `已运行 ${totalMonths} 个月`
+    return totalDays > 0 ? `${totalMonths}m ${totalDays}d` : `${totalMonths}m`
   }
   if (totalDays > 0) {
-    return hours > 0 ? `已运行 ${totalDays} 天 ${hours} 小时` : `已运行 ${totalDays} 天`
+    return hours > 0 ? `${totalDays}d ${hours}h` : `${totalDays}d`
   }
   if (hours > 0) {
-    return `已运行 ${hours} 小时`
+    return `${hours}h`
   }
-  return "刚启动"
+  return ""
 }
 
 function simplifyOsLabel(os: string, kernel: string) {
@@ -314,7 +312,7 @@ function formatConnectionMeta(connection: Pick<VpsConnectionRecord, "provider" |
   return parts.length > 0 ? parts.join(" · ") : undefined
 }
 
-function expirationPresentation(expiresAt?: string) {
+function expirationPresentation(expiresAt: string | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
   if (!expiresAt) {
     return undefined
   }
@@ -328,63 +326,98 @@ function expirationPresentation(expiresAt?: string) {
   const diffDays = Math.ceil((time - startOfToday) / 86_400_000)
   if (diffDays < 0) {
     return {
-      label: `已到期 ${Math.abs(diffDays)} 天`,
+      label: `${diffDays}d`,
       tone: "danger" as const,
     }
   }
   if (diffDays === 0) {
     return {
-      label: "今天到期",
+      label: `0d`,
       tone: "danger" as const,
     }
   }
   if (diffDays <= 7) {
     return {
-      label: `还有 ${diffDays} 天到期`,
+      label: `${diffDays}d`,
       tone: "danger" as const,
     }
   }
   if (diffDays <= 30) {
     return {
-      label: `还有 ${diffDays} 天到期`,
+      label: `${diffDays}d`,
       tone: "warn" as const,
     }
   }
   return {
-    label: `还有 ${diffDays} 天到期`,
+    label: `${diffDays}d`,
     tone: "ok" as const,
   }
 }
 
+type FreshnessIndicatorProps = {
+  checkedAt: string
+  t: (key: string, options?: Record<string, unknown>) => string
+}
+
+function FreshnessIndicator({ checkedAt, t }: FreshnessIndicatorProps) {
+  const [nowTick, setNowTick] = useState(() => Date.now())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowTick(Date.now()), 5_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const freshness = inspectionFreshness(checkedAt, nowTick, t)
+  if (!freshness.stale) {
+    return null
+  }
+  return <p className="mt-8 text-sm text-muted-foreground">{freshness.label}</p>
+}
+
 export default function App() {
-  const { isScanning: isProjectsLoading } = useProjectStore()
+  const { t } = useTranslation()
   const {
     connections,
     selectedConnectionId,
     inspection,
-    isLoading,
     isInspecting,
     info,
     error,
     upgradeStatusMap,
     isCheckingUpgrade,
+  } = useVpsStore(
+    useShallow((state) => ({
+      connections: state.connections,
+      selectedConnectionId: state.selectedConnectionId,
+      inspection: state.inspection,
+      isInspecting: state.isInspecting,
+      info: state.info,
+      error: state.error,
+      upgradeStatusMap: state.upgradeStatusMap,
+      isCheckingUpgrade: state.isCheckingUpgrade,
+    })),
+  )
+  const {
     loadConnections,
     inspectConnection,
-    installDependency,
-    inspectDependencyUsage,
-    uninstallDependency,
-    dependencyServiceAction,
-    isInstallingDependency,
-    installingDependencyId,
-    isDependencyServicePending,
-    dependencyServicePendingKey,
     checkSystemUpgradesAfterInspect,
     checkAllConnectionsUpgrades,
     prewarmInspectionCache,
     reopenUpgradePrompt,
     deleteConnection,
     selectConnection,
-  } = useVpsStore()
+  } = useVpsStore(
+    useShallow((state) => ({
+      loadConnections: state.loadConnections,
+      inspectConnection: state.inspectConnection,
+      checkSystemUpgradesAfterInspect: state.checkSystemUpgradesAfterInspect,
+      checkAllConnectionsUpgrades: state.checkAllConnectionsUpgrades,
+      prewarmInspectionCache: state.prewarmInspectionCache,
+      reopenUpgradePrompt: state.reopenUpgradePrompt,
+      deleteConnection: state.deleteConnection,
+      selectConnection: state.selectConnection,
+    })),
+  )
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogPreset, setDialogPreset] = useState<Partial<VpsConnectionInput> | null>(null)
   const [activeNav, setActiveNav] = useState<NavKey>(() => readLastActiveNav())
@@ -393,7 +426,6 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("")
   const [highlightedProjectId, setHighlightedProjectId] = useState<string>()
   const [fileBrowserRequest, setFileBrowserRequest] = useState<{ connectionId: string; path: string; token: number }>()
-  const [nowTick, setNowTick] = useState(() => Date.now())
   const [navHistoryState, setNavHistoryState] = useState<{
     entries: AppLocation[]
     index: number
@@ -449,25 +481,83 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    const flushWriters = () => {
+      lastActiveNavWriter.flush()
+      sidebarCollapsedWriter.flush()
+    }
+    window.addEventListener("beforeunload", flushWriters)
+    window.addEventListener("pagehide", flushWriters)
+    return () => {
+      flushWriters()
+      window.removeEventListener("beforeunload", flushWriters)
+      window.removeEventListener("pagehide", flushWriters)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!searchOpen) {
       setSearchQuery("")
     }
   }, [searchOpen])
 
-  const selectedConnection = connections.find((item: VpsConnectionRecord) => item.id === selectedConnectionId)
-  const selectedConnectionListed = Boolean(
-    selectedConnectionId && connections.some((item: VpsConnectionRecord) => item.id === selectedConnectionId),
+  const selectedConnection = useMemo(
+    () => connections.find((item: VpsConnectionRecord) => item.id === selectedConnectionId),
+    [connections, selectedConnectionId],
   )
-  const upgradeStatus = selectedConnection ? upgradeStatusMap[selectedConnection.id] : undefined
-  const expirationStatus = expirationPresentation(selectedConnection?.expiresAt)
-  const isCheckingUpdates = Boolean(
-    selectedConnectionId &&
-      inspection &&
-      inspection.connectionId === selectedConnectionId &&
-      isCheckingUpgrade,
+  const selectedConnectionListed = useMemo(
+    () =>
+      Boolean(
+        selectedConnectionId && connections.some((item: VpsConnectionRecord) => item.id === selectedConnectionId),
+      ),
+    [connections, selectedConnectionId],
   )
-  const upgradePresentation = upgradeStatusPresentation(upgradeStatus, isCheckingUpdates)
-  const trimmedSearch = searchQuery.trim()
+  const upgradeStatus = useMemo(
+    () => (selectedConnection ? upgradeStatusMap[selectedConnection.id] : undefined),
+    [selectedConnection, upgradeStatusMap],
+  )
+  const expirationStatus = useMemo(
+    () => expirationPresentation(selectedConnection?.expiresAt, t),
+    [selectedConnection?.expiresAt, t],
+  )
+  const isCheckingUpdates = useMemo(
+    () =>
+      Boolean(
+        selectedConnectionId &&
+          inspection &&
+          inspection.connectionId === selectedConnectionId &&
+          isCheckingUpgrade,
+      ),
+    [inspection, isCheckingUpgrade, selectedConnectionId],
+  )
+  const upgradePresentation = useMemo(
+    () => upgradeStatusPresentation(upgradeStatus, isCheckingUpdates, t),
+    [upgradeStatus, isCheckingUpdates, t],
+  )
+  const connectionMeta = useMemo(
+    () => formatConnectionMeta(selectedConnection),
+    [selectedConnection],
+  )
+  const daemonPackageList = useMemo(
+    () => daemonPackages(inspection?.packages ?? []),
+    [inspection?.packages],
+  )
+  const monitorAlerts = useMemo(
+    () => (inspection ? buildMonitorAlerts(inspection, upgradeStatus, daemonPackageList, t) : []),
+    [inspection, upgradeStatus, daemonPackageList, t],
+  )
+  const uptimeSummary = useMemo(
+    () => (inspection ? summarizeUptime(inspection.uptime, t) : ""),
+    [inspection, t],
+  )
+  const osLabel = useMemo(
+    () => (inspection ? simplifyOsLabel(inspection.os, inspection.kernel) : ""),
+    [inspection],
+  )
+  const showAlias = useMemo(
+    () => Boolean(inspection && shouldShowConnectionAlias(selectedConnection?.name, inspection.hostname)),
+    [inspection, selectedConnection?.name],
+  )
+  const trimmedSearch = useMemo(() => searchQuery.trim(), [searchQuery])
   const serverResults = useMemo(
     () =>
       connections.map((connection) => ({
@@ -498,7 +588,7 @@ export default function App() {
         project.proxyTarget,
       ],
     }))
-  }, [isProjectsLoading])
+  }, [])
   const hasSearchResults = serverResults.length > 0 || projectResults.length > 0
 
   // 只用「选中的 id + 是否已在列表中」作为依赖：inspect 结束后的 loadConnections 会替换
@@ -550,11 +640,6 @@ export default function App() {
     }
     void checkSystemUpgradesAfterInspect(conn as VpsConnectionInput)
   }, [checkSystemUpgradesAfterInspect, inspection, isInspecting, selectedConnectionId])
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowTick(Date.now()), 5_000)
-    return () => window.clearInterval(timer)
-  }, [])
 
   const openCreateDialog = (preset?: Partial<VpsConnectionInput>) => {
     setDialogPreset(preset ?? null)
@@ -629,18 +714,19 @@ export default function App() {
   return (
     <div className="h-screen overflow-hidden bg-background text-foreground">
       <Toaster />
+      {searchOpen && (
       <CommandDialog open={searchOpen} onOpenChange={setSearchOpen}>
         <CommandInput
           value={searchQuery}
           onValueChange={setSearchQuery}
-          placeholder="搜索服务器、主机、项目路径…"
+          placeholder={t("common.search")}
         />
         <CommandList>
           <CommandEmpty>
-            {trimmedSearch ? "没有找到匹配的服务器或项目" : hasSearchResults ? "输入关键字开始筛选" : "还没有可搜索的服务器或项目"}
+            {trimmedSearch ? t("common.noData") : hasSearchResults ? t("common.search") : t("common.noData")}
           </CommandEmpty>
           {serverResults.length > 0 ? (
-            <CommandGroup heading="服务器">
+            <CommandGroup heading={t("common.search")}>
               {serverResults.map((connection) => (
                 <CommandItem
                   key={connection.id}
@@ -653,14 +739,14 @@ export default function App() {
                     <div className="truncate text-sm font-medium text-foreground">{connection.title}</div>
                     <div className="truncate text-xs text-muted-foreground">{connection.subtitle}</div>
                   </div>
-                  <CommandShortcut>服务器</CommandShortcut>
+                  <CommandShortcut>{t("common.search")}</CommandShortcut>
                 </CommandItem>
               ))}
             </CommandGroup>
           ) : null}
           {serverResults.length > 0 && projectResults.length > 0 ? <CommandSeparator /> : null}
           {projectResults.length > 0 ? (
-            <CommandGroup heading="项目">
+            <CommandGroup heading={t("common.search")}>
               {projectResults.map((project) => (
                 <CommandItem
                   key={project.id}
@@ -674,13 +760,14 @@ export default function App() {
                     <div className="truncate text-xs text-muted-foreground">{project.subtitle}</div>
                     {project.remotePath ? <div className="truncate text-[11px] text-muted-foreground/80">{project.remotePath}</div> : null}
                   </div>
-                  <CommandShortcut>项目</CommandShortcut>
+                  <CommandShortcut>{t("common.search")}</CommandShortcut>
                 </CommandItem>
               ))}
             </CommandGroup>
           ) : null}
         </CommandList>
       </CommandDialog>
+      )}
       <SystemUpgradePrompt connection={selectedConnection} />
       <VpsConnectionDialog open={dialogOpen} onOpenChange={setDialogOpen} preset={dialogPreset} />
 
@@ -692,7 +779,7 @@ export default function App() {
             size="icon"
             className="pointer-events-auto size-11 rounded-2xl text-muted-foreground transition-all duration-300 hover:bg-background/45 hover:text-foreground"
             type="button"
-            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+            title={sidebarCollapsed ? t("common.back") : t("common.cancel")}
             onClick={() => setSidebarCollapsed((current) => !current)}
           >
             <PanelLeft
@@ -707,7 +794,7 @@ export default function App() {
             size="icon"
             className="pointer-events-auto size-10 rounded-xl text-muted-foreground/85 transition-all duration-300 hover:bg-background/45 hover:text-foreground disabled:pointer-events-none disabled:text-muted-foreground/35 dark:hover:bg-white/5"
             type="button"
-            title="后退"
+            title={t("common.back")}
             disabled={!canGoBack}
             onClick={() => moveHistory("back")}
           >
@@ -718,7 +805,7 @@ export default function App() {
             size="icon"
             className="pointer-events-auto size-10 rounded-xl text-muted-foreground/85 transition-all duration-300 hover:bg-background/45 hover:text-foreground disabled:pointer-events-none disabled:text-muted-foreground/35 dark:hover:bg-white/5"
             type="button"
-            title="前进"
+            title={t("common.back")}
             disabled={!canGoForward}
             onClick={() => moveHistory("forward")}
           >
@@ -744,7 +831,7 @@ export default function App() {
               onClick={() => setSearchOpen(true)}
             >
               <Search className="size-[18px] shrink-0" />
-              <span className="whitespace-nowrap text-[15px] transition-all duration-200">搜索</span>
+              <span className="whitespace-nowrap text-[15px] transition-all duration-200">{t("common.search")}</span>
             </button>
             <button
               type="button"
@@ -752,7 +839,7 @@ export default function App() {
               onClick={() => openCreateDialog()}
             >
               <SquarePen className="size-[18px] shrink-0" />
-              <span className="whitespace-nowrap text-[15px] transition-all duration-200">新建服务器</span>
+              <span className="whitespace-nowrap text-[15px] transition-all duration-200">{t("connection.newTitle")}</span>
             </button>
           </div>
 
@@ -762,13 +849,13 @@ export default function App() {
               "gap-1 px-1",
             )}
           >
-            <div className="px-3.5 pb-2 text-[12px] font-medium text-muted-foreground/65">工作区</div>
+            <div className="px-3.5 pb-2 text-[12px] font-medium text-muted-foreground/65">{t("nav.monitor")}</div>
             {navItems.map((item) => (
               (() => {
                 const active = item.key === activeNav
                 return (
               <button
-                key={item.label}
+                key={item.key}
                 type="button"
                 onClick={() => navigateTo({ nav: item.key })}
                 className={sidebarItemClass(active, false)}
@@ -779,7 +866,7 @@ export default function App() {
                     active ? "text-foreground/80" : "opacity-70",
                   )}
                 />
-                <span className="whitespace-nowrap text-[15px] transition-all duration-200">{item.label}</span>
+                <span className="whitespace-nowrap text-[15px] transition-all duration-200">{t(`nav.${item.key}`)}</span>
               </button>
                 )
               })()
@@ -794,7 +881,7 @@ export default function App() {
               onClick={() => navigateTo({ nav: "settings" })}
             >
               <Settings className="size-[22px] shrink-0 opacity-85" />
-              <span className="whitespace-nowrap text-[16px] font-medium tracking-normal">设置</span>
+              <span className="whitespace-nowrap text-[16px] font-medium tracking-normal">{t("nav.settings")}</span>
             </Button>
           </div>
         </aside>
@@ -823,12 +910,12 @@ export default function App() {
                     }}
                   >
                     <SelectTrigger className="h-9 w-[148px] rounded-2xl border-border/60 bg-muted/55 shadow-none hover:bg-muted/70 dark:border-transparent dark:bg-white/[0.05] sm:w-[220px]">
-                      <SelectValue placeholder="选择服务器" />
+                      <SelectValue placeholder={t("connection.fieldHost")} />
                     </SelectTrigger>
                     <SelectContent>
                       {connections.length === 0 ? (
                         <SelectItem value="__empty__" disabled>
-                          暂无服务器
+                          {t("common.noData")}
                         </SelectItem>
                       ) : (
                         connections.map((connection: VpsConnectionRecord) => (
@@ -844,7 +931,7 @@ export default function App() {
                     size="icon"
                     variant="outline"
                     className="size-9 rounded-2xl border-border/60 bg-muted/55 shadow-none hover:bg-muted/75 dark:border-transparent dark:bg-white/[0.05] dark:hover:bg-white/[0.08]"
-                    title="编辑当前服务器"
+                    title={t("connection.editTitle")}
                     onClick={() => {
                       if (!selectedConnection) {
                         return
@@ -860,7 +947,7 @@ export default function App() {
                     size="icon"
                     variant="outline"
                     className="size-9 rounded-2xl border-border/60 bg-muted/55 shadow-none hover:bg-muted/75 dark:border-transparent dark:bg-white/[0.05] dark:hover:bg-white/[0.08]"
-                    title="添加服务器"
+                    title={t("connection.newTitle")}
                     onClick={() => openCreateDialog()}
                   >
                     <Plus className="size-4" />
@@ -887,7 +974,18 @@ export default function App() {
 
               <div className="flex min-h-0 flex-1 flex-col gap-5">
                 <div className="flex min-h-[min(520px,70svh)] flex-1 flex-col gap-5">
-                {activeNav === "settings" ? (
+                <div
+                  className={cn(
+                    "flex min-h-[min(520px,70svh)] flex-1 flex-col gap-5",
+                    activeNav !== "projects" && "hidden",
+                  )}
+                >
+                  <TerminalPage
+                    connections={connections}
+                    selectedConnectionId={selectedConnectionId}
+                  />
+                </div>
+                {activeNav !== "projects" && (activeNav === "settings" ? (
                   <AppSettingsPage onExit={() => {
                     if (canGoBack) {
                       moveHistory("back")
@@ -895,11 +993,6 @@ export default function App() {
                     }
                     navigateTo({ nav: "monitor" })
                   }} />
-                ) : activeNav === "projects" ? (
-                  <TerminalPage
-                    connections={connections}
-                    selectedConnectionId={selectedConnectionId}
-                  />
                 ) : activeNav === "files" ? (
                   <FileBrowserPanel
                     selectedConnection={selectedConnection}
@@ -910,10 +1003,10 @@ export default function App() {
                 ) : !selectedConnection ? (
                   <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/20 px-8 py-16 text-center dark:border-white/10 dark:bg-white/[0.03]">
                     <p className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-                      接下来要管理哪台服务器？
+                      {t("monitor.selectServer")}
                     </p>
                     <p className="max-w-md text-sm leading-relaxed text-muted-foreground">
-                      在右上角新建或选择一条 VPS 连接，即可查看主机名、内核、资源与软件包状态。
+                      {t("monitor.selectServerDesc")}
                     </p>
                     <Button
                       type="button"
@@ -921,35 +1014,17 @@ export default function App() {
                       onClick={() => openCreateDialog()}
                     >
                       <SquarePen className="size-4" />
-                      新建连接
+                      {t("monitor.newConnection")}
                     </Button>
                   </div>
                 ) : isInspecting && !inspection ? (
                   <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/15 px-6 py-16 text-center dark:border-white/10 dark:bg-white/[0.03]">
                     <LoaderCircle className="size-8 animate-spin text-muted-foreground" />
-                    <p className="text-sm text-muted-foreground">正在拉取远程环境信息…</p>
+                    <p className="text-sm text-muted-foreground">{t("monitor.loadingRemoteEnv")}</p>
                   </div>
                 ) : inspection ? (
-                  activeNav === "deps" ? (
-                    <DependencyCards
-                      packages={inspection.packages}
-                      connection={selectedConnection as VpsConnectionInput}
-                      installDependency={installDependency}
-                      inspectDependencyUsage={inspectDependencyUsage}
-                      uninstallDependency={uninstallDependency}
-                      dependencyServiceAction={dependencyServiceAction}
-                      isInstallingDependency={isInstallingDependency}
-                      installingDependencyId={installingDependencyId}
-                      isDependencyServicePending={isDependencyServicePending}
-                      dependencyServicePendingKey={dependencyServicePendingKey}
-                    />
-                  ) : (
-                    (() => {
-                      const alerts = buildMonitorAlerts(inspection, upgradeStatus)
-                      const freshness = inspectionFreshness(inspection.checkedAt, nowTick)
-                      const connectionMeta = formatConnectionMeta(selectedConnection)
-                      return (
-                        <div className="space-y-6">
+                  (
+                    <div className="space-y-6">
                           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(360px,0.9fr)]">
                             <div className="rounded-[32px] border border-[#e5e7eb] bg-[#fbfcfe] px-8 py-8 shadow-[0_8px_24px_rgba(15,23,42,0.04)] dark:border-white/10 dark:bg-[#242424] dark:shadow-none">
                               <div className="flex items-start gap-5">
@@ -957,7 +1032,7 @@ export default function App() {
                                   <Server className="size-7" />
                                 </div>
                                 <div className="min-w-0 flex-1">
-                                  {shouldShowConnectionAlias(selectedConnection?.name, inspection.hostname) ? (
+                                  {showAlias ? (
                                     <p className="mb-3 text-sm font-medium uppercase tracking-[0.16em] text-muted-foreground">
                                       {selectedConnection?.name}
                                     </p>
@@ -969,17 +1044,17 @@ export default function App() {
                                     {inspection.hostname}
                                   </h3>
                                   <p className="mt-3 text-[18px] text-muted-foreground">
-                                    {simplifyOsLabel(inspection.os, inspection.kernel)}
+                                    {osLabel}
                                   </p>
                                   <div className="mt-8 flex flex-wrap gap-3 text-[14px] text-muted-foreground">
                                     <span className="inline-flex items-center gap-2 rounded-full border border-[#e5e7eb] bg-[#f3f6fa] px-4 py-2 dark:border-transparent dark:bg-white/[0.04]">
                                       <Clock3 className="size-4" />
-                                      <span className="text-muted-foreground">运行时间</span>
-                                      <span className="text-foreground">{summarizeUptime(inspection.uptime)}</span>
+                                      <span className="text-muted-foreground">{t("monitor.metric.uptime")}</span>
+                                      <span className="text-foreground">{uptimeSummary}</span>
                                     </span>
                                     <span className="inline-flex items-center gap-2 rounded-full border border-[#e5e7eb] bg-[#f3f6fa] px-4 py-2 dark:border-transparent dark:bg-white/[0.04]">
                                       <span className="text-muted-foreground">IP</span>
-                                      <span className="text-foreground">{selectedConnection.host}</span>
+                                      <span className="text-foreground">{selectedConnection?.host}</span>
                                     </span>
                                     {expirationStatus ? (
                                       <span
@@ -1011,12 +1086,12 @@ export default function App() {
                             >
                               <div className="flex items-start justify-between gap-4">
                                 <div>
-                                  <p className="text-sm font-medium text-muted-foreground">运行状态</p>
+                                  <p className="text-sm font-medium text-muted-foreground">{t("monitor.monitorIncomplete")}</p>
                                   <p className="mt-3 text-3xl font-semibold text-foreground">
-                                    {alerts[0]?.tone === "ok" ? "运行平稳" : "需要关注"}
+                                    {monitorAlerts[0]?.tone === "ok" ? t("monitor.noSnapshot") : t("monitor.alertTitle")}
                                   </p>
                                 </div>
-                                {alerts[0]?.tone === "ok" ? (
+                                {monitorAlerts[0]?.tone === "ok" ? (
                                   <CheckCircle2 className="size-8 text-emerald-400" />
                                 ) : (
                                   <AlertTriangle className="size-8 text-amber-400" />
@@ -1024,7 +1099,7 @@ export default function App() {
                               </div>
 
                               <div className="mt-6 flex flex-wrap gap-2">
-                                {alerts.slice(0, 3).map((item) => (
+                                {monitorAlerts.slice(0, 3).map((item) => (
                                   <span
                                     key={item.key}
                                     className={cn(
@@ -1041,7 +1116,7 @@ export default function App() {
 
                               <div className="mt-10">
                                 <div className="flex items-center justify-between gap-3">
-                                  <p className="text-sm font-medium text-muted-foreground">软件包更新</p>
+                                  <p className="text-sm font-medium text-muted-foreground">{t("monitor.monitorIncomplete")}</p>
                                   {upgradeStatus?.supported && upgradeStatus.upgradableCount > 0 ? (
                                     <Button
                                       type="button"
@@ -1071,11 +1146,7 @@ export default function App() {
                                 ) : null}
                               </div>
 
-                              {freshness.stale ? (
-                                <p className="mt-8 text-sm text-muted-foreground">
-                                  监控数据较早，最近一次采样为 {freshness.label}
-                                </p>
-                              ) : null}
+                              {inspection.checkedAt ? <FreshnessIndicator checkedAt={inspection.checkedAt} t={t} /> : null}
                             </div>
                           </div>
 
@@ -1086,26 +1157,24 @@ export default function App() {
                             />
                           ) : (
                             <div className="rounded-[32px] border border-[#e5e7eb] bg-[#fbfcfe] px-8 py-8 text-sm text-muted-foreground shadow-[0_8px_24px_rgba(15,23,42,0.04)] dark:border-white/10 dark:bg-[#242424] dark:shadow-none">
-                              暂未返回监控数据，请稍后再次采样。
+                              {t("monitor.noSnapshot")}
                             </div>
                           )}
                         </div>
-                      )
-                    })()
                   )
                 ) : error ? (
                   <div className="flex flex-1 flex-col items-center justify-center gap-4 rounded-2xl border border-dashed border-amber-500/25 bg-amber-500/[0.04] px-6 py-12 text-center">
                     <ShieldAlert className="text-amber-500 dark:text-amber-300" />
                     <div className="flex flex-col gap-2">
-                      <p className="text-base font-medium text-foreground">服务器监控没有完成</p>
+                      <p className="text-base font-medium text-foreground">{t("monitor.monitorIncomplete")}</p>
                       <p className="text-sm leading-6 text-amber-600 dark:text-amber-300">{error}</p>
                     </div>
                   </div>
                 ) : (
                   <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/80 bg-muted/15 px-6 py-16 text-center text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">
-                    这台服务器还没有监控快照
+                    {t("monitor.noSnapshot")}
                   </div>
-                )}
+                ))}
                 </div>
               </div>
             </div>

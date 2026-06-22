@@ -6,7 +6,6 @@ describe("resolveActionKindFromScript", () => {
     expect(resolveActionKindFromScript("deploy:panel")).toBe("code")
     expect(resolveActionKindFromScript("sync:vps:data")).toBe("data")
     expect(resolveActionKindFromScript("sync:vps:uploads")).toBe("uploads")
-    expect(resolveActionKindFromScript("backup:vps")).toBe("backup")
   })
 
   test("returns null for unknown scripts", () => {

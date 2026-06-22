@@ -48,5 +48,21 @@ export default defineConfig({
       },
     },
     plugins: [react()],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes("node_modules")) {
+              if (id.includes("lucide-react")) return "vendor-lucide"
+              if (id.includes("@radix-ui")) return "vendor-radix"
+              if (id.includes("cmdk")) return "vendor-cmdk"
+              if (id.includes("xterm")) return "vendor-xterm"
+              if (id.includes("i18next") || id.includes("react-i18next")) return "vendor-i18n"
+              if (id.includes("zustand")) return "vendor-zustand"
+            }
+          },
+        },
+      },
+    },
   },
 })

@@ -1,6 +1,5 @@
 import { contextBridge, ipcRenderer } from "./electron-shim"
 import type {
-  DependencyServiceAction,
   DigwisApi,
   TerminalDataEvent,
   TerminalErrorEvent,
@@ -9,7 +8,6 @@ import type {
   VpsConnectionInput,
 } from "../shared/vps"
 import type {
-  ProjectBackupSchedule,
   LocalProjectInput,
   ProjectDeployInput,
   ProjectDeployLogEvent,
@@ -74,11 +72,6 @@ const api: DigwisApi = {
     initializeProject: (payload: ProjectInitializeInput) => ipcRenderer.invoke("projects:initialize", payload),
     deployProject: (payload: ProjectDeployInput) => ipcRenderer.invoke("projects:deploy", payload),
     getProjectActionHints: (projectId: string) => ipcRenderer.invoke("projects:get-action-hints", projectId),
-    getProjectBackupSchedule: (projectId: string) =>
-      ipcRenderer.invoke("projects:get-backup-schedule", projectId),
-    setProjectBackupSchedule: (payload: { projectId: string; schedule: ProjectBackupSchedule }) =>
-      ipcRenderer.invoke("projects:set-backup-schedule", payload),
-    runProjectBackup: (payload: ProjectEnvInput) => ipcRenderer.invoke("projects:run-backup", payload),
     migrateProject: (payload: ProjectMigrationInput) => ipcRenderer.invoke("projects:migrate", payload),
     listOperationLogs: (payload?: { limit?: number }) =>
       ipcRenderer.invoke("projects:list-operation-logs", payload),
@@ -135,17 +128,7 @@ const api: DigwisApi = {
       ipcRenderer.invoke("vps:test", payload),
     inspectConnection: (payload: VpsConnectionInput, options?: { forceRefresh?: boolean }) =>
       ipcRenderer.invoke("vps:inspect", payload, options),
-    installDependency: (payload: VpsConnectionInput, dependencyId: string) =>
-      ipcRenderer.invoke("vps:install-dependency", payload, dependencyId),
-    inspectDependencyUsage: (payload: VpsConnectionInput, dependencyId: string) =>
-      ipcRenderer.invoke("vps:inspect-dependency-usage", payload, dependencyId),
-    uninstallDependency: (payload: VpsConnectionInput, dependencyId: string) =>
-      ipcRenderer.invoke("vps:uninstall-dependency", payload, dependencyId),
-    dependencyServiceAction: (
-      payload: VpsConnectionInput,
-      options: { dependencyId: string; action: DependencyServiceAction; systemdUnit?: string },
-    ) => ipcRenderer.invoke("vps:dependency-service", payload, options),
-    checkSystemUpgrades: (payload: VpsConnectionInput) =>
+checkSystemUpgrades: (payload: VpsConnectionInput) =>
       ipcRenderer.invoke("vps:upgrade-check", payload),
     applySystemUpgrade: (payload: VpsConnectionInput, options: { reboot: boolean }) =>
       ipcRenderer.invoke("vps:upgrade-apply", payload, options),

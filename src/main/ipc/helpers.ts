@@ -16,9 +16,6 @@ export function resolveActionKindFromScript(script?: string): ProjectActionKind 
   if (script === "sync:vps:uploads" || script === "sync:uploads:vps") {
     return "uploads"
   }
-  if (script === "backup:vps" || script === "backup") {
-    return "backup"
-  }
   return null
 }
 

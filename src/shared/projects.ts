@@ -518,9 +518,7 @@ export type OpenClawLogsInput = {
   lines: number
 }
 
-export type ProjectActionKind = "code" | "data" | "uploads" | "backup"
-export type ProjectBackupSchedule = "off" | "daily" | "weekly" | "monthly"
-
+export type ProjectActionKind = "code" | "data" | "uploads"
 export type ProjectActionHint = {
   action: ProjectActionKind
   needsAttention: boolean
@@ -533,13 +531,6 @@ export type ProjectActionHints = {
   projectId: string
   checkedAt: string
   hints: ProjectActionHint[]
-}
-
-export type ProjectBackupScheduleState = {
-  projectId: string
-  schedule: ProjectBackupSchedule
-  nextRunAt?: string | null
-  lastRunAt?: string | null
 }
 
 export type ProjectMigrationInput = {
@@ -587,11 +578,6 @@ export type ManagedProjectsApi = {
   initializeProject: (payload: ProjectInitializeInput) => Promise<ProjectDeployResult>
   deployProject: (payload: ProjectDeployInput) => Promise<ProjectDeployResult>
   getProjectActionHints: (projectId: string) => Promise<ProjectActionHints>
-  getProjectBackupSchedule: (projectId: string) => Promise<ProjectBackupScheduleState>
-  setProjectBackupSchedule: (
-    payload: { projectId: string; schedule: ProjectBackupSchedule },
-  ) => Promise<ProjectBackupScheduleState>
-  runProjectBackup: (payload: ProjectEnvInput) => Promise<ProjectOperationResult>
   migrateProject: (payload: ProjectMigrationInput) => Promise<ProjectMigrationResult>
   listOperationLogs: (payload?: { limit?: number }) => Promise<ProjectOperationLogEntry[]>
   appendProjectOperationLog: (payload: ProjectOperationLogAppendInput) => Promise<ProjectOperationLogEntry>

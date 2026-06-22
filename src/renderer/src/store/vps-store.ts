@@ -2,9 +2,6 @@ import { create } from "zustand"
 import { getDesktopApi } from "@/lib/desktop-api"
 import type {
   ConnectionTestResult,
-  DependencyUsageReport,
-  DependencyInstallResult,
-  DependencyServiceAction,
   DiscoveredHostCandidate,
   RawSshConfigFile,
   SshConfigCandidate,
@@ -24,9 +21,9 @@ type VpsOperationLogEntry = {
   detail: string
 }
 
-const LAST_SELECTED_CONNECTION_KEY = "digwis:last-selected-connection-id"
-const INSPECTION_CACHE_KEY = "digwis:inspection-cache"
-const DISMISSED_UPGRADE_PROMPTS_KEY = "digwis:dismissed-upgrade-prompts"
+const LAST_SELECTED_CONNECTION_KEY = "cloudroost:last-selected-connection-id"
+const INSPECTION_CACHE_KEY = "cloudroost:inspection-cache"
+const DISMISSED_UPGRADE_PROMPTS_KEY = "cloudroost:dismissed-upgrade-prompts"
 const INSPECTION_CACHE_TTL_MS = 30 * 60_000
 const UPGRADE_STATUS_TTL_MS = 24 * 60 * 60_000
 
@@ -238,10 +235,6 @@ type VpsState = {
   isCheckingUpgrade: boolean
   isCheckingAllUpgrades: boolean
   isApplyingUpgrade: boolean
-  isInstallingDependency: boolean
-  installingDependencyId?: string
-  isDependencyServicePending: boolean
-  dependencyServicePendingKey?: string
   upgradePrompt?: SystemUpgradeCheckResult
   upgradePromptForConnectionId?: string
   upgradePromptSource?: "auto" | "manual"
@@ -267,22 +260,6 @@ type VpsState = {
     payload: VpsConnectionInput,
     options?: { forceRefresh?: boolean; backgroundRefresh?: boolean },
   ) => Promise<VpsInspection>
-  installDependency: (
-    payload: VpsConnectionInput,
-    dependencyId: string,
-  ) => Promise<DependencyInstallResult>
-  inspectDependencyUsage: (
-    payload: VpsConnectionInput,
-    dependencyId: string,
-  ) => Promise<DependencyUsageReport>
-  uninstallDependency: (
-    payload: VpsConnectionInput,
-    dependencyId: string,
-  ) => Promise<DependencyInstallResult>
-  dependencyServiceAction: (
-    payload: VpsConnectionInput,
-    options: { dependencyId: string; action: DependencyServiceAction; systemdUnit?: string },
-  ) => Promise<DependencyInstallResult>
   checkSystemUpgradesAfterInspect: (payload: VpsConnectionInput) => Promise<void>
   checkAllConnectionsUpgrades: () => Promise<void>
   reopenUpgradePrompt: (connectionId: string) => void
@@ -318,10 +295,6 @@ export const useVpsStore = create<VpsState>((set, get) => ({
   isCheckingUpgrade: false,
   isCheckingAllUpgrades: false,
   isApplyingUpgrade: false,
-  isInstallingDependency: false,
-  installingDependencyId: undefined,
-  isDependencyServicePending: false,
-  dependencyServicePendingKey: undefined,
   upgradePrompt: undefined,
   upgradePromptForConnectionId: undefined,
   upgradePromptSource: undefined,
@@ -352,7 +325,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
     } catch (error) {
       set({
         isLoading: false,
-        error: error instanceof Error ? error.message : "连接列表加载失败",
+        error: error instanceof Error ? error.message : "Failed to load connections",
       })
     }
   },
@@ -368,14 +341,29 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       return !getCachedInspection(connection.id)
     })
 
-    for (const connection of targets) {
-      try {
-        const inspection = await getDesktopApi().vps.inspectConnection(connection)
-        writeInspectionCache(connection.id, inspection)
-      } catch {
-        // Ignore background prewarm errors.
-      }
+    if (targets.length === 0) {
+      return
     }
+
+    const PARALLEL_LIMIT = 4
+    let cursor = 0
+    const workers = Array.from({ length: Math.min(PARALLEL_LIMIT, targets.length) }, async () => {
+      while (true) {
+        const index = cursor
+        cursor += 1
+        if (index >= targets.length) {
+          return
+        }
+        const connection = targets[index]
+        try {
+          const inspection = await getDesktopApi().vps.inspectConnection(connection)
+          writeInspectionCache(connection.id, inspection)
+        } catch {
+          // Ignore background prewarm errors.
+        }
+      }
+    })
+    await Promise.allSettled(workers)
   },
   loadDiscoveredHosts: async () => {
     set({ isDiscoveringHosts: true, error: undefined })
@@ -385,7 +373,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
     } catch (error) {
       set({
         isDiscoveringHosts: false,
-        error: error instanceof Error ? error.message : "历史主机加载失败",
+        error: error instanceof Error ? error.message : "Failed to load known hosts",
       })
     }
   },
@@ -398,7 +386,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
     } catch (error) {
       set({
         isLoadingSshConfigCandidates: false,
-        error: error instanceof Error ? error.message : "SSH 配置读取失败",
+        error: error instanceof Error ? error.message : "Failed to read SSH config",
       })
     }
   },
@@ -424,11 +412,11 @@ export const useVpsStore = create<VpsState>((set, get) => ({
         rawSshConfig,
         sshConfigCandidates,
         isSavingRawSshConfig: false,
-        info: "本机 SSH 配置已保存",
+        info: "Local SSH config saved",
       })
       return rawSshConfig
     } catch (error) {
-      const message = error instanceof Error ? error.message : "SSH 配置保存失败"
+      const message = error instanceof Error ? error.message : "Failed to save SSH config"
       set({ isSavingRawSshConfig: false, error: message })
       throw error
     }
@@ -440,11 +428,11 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       set({
         sshConfigCandidates,
         isUpdatingSshConfigCandidate: false,
-        info: "本机 SSH 配置已新增",
+        info: "Local SSH config entry added",
       })
       return sshConfigCandidates
     } catch (error) {
-      const message = error instanceof Error ? error.message : "SSH 配置新增失败"
+      const message = error instanceof Error ? error.message : "Failed to add SSH config entry"
       set({ isUpdatingSshConfigCandidate: false, error: message })
       throw error
     }
@@ -456,11 +444,11 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       set({
         sshConfigCandidates,
         isUpdatingSshConfigCandidate: false,
-        info: "本机 SSH 配置已更新",
+        info: "Local SSH config updated",
       })
       return sshConfigCandidates
     } catch (error) {
-      const message = error instanceof Error ? error.message : "SSH 配置更新失败"
+      const message = error instanceof Error ? error.message : "Failed to update SSH config"
       set({ isUpdatingSshConfigCandidate: false, error: message })
       throw error
     }
@@ -472,11 +460,11 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       set({
         sshConfigCandidates,
         isDeletingSshConfigCandidate: false,
-        info: "本机 SSH 配置项已删除",
+        info: "Local SSH config entry removed",
       })
       return sshConfigCandidates
     } catch (error) {
-      const message = error instanceof Error ? error.message : "SSH 配置删除失败"
+      const message = error instanceof Error ? error.message : "Failed to delete SSH config"
       set({ isDeletingSshConfigCandidate: false, error: message })
       throw error
     }
@@ -498,7 +486,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       writeLastSelectedConnectionId(selectedConnectionId)
       return connection
     } catch (error) {
-      const message = error instanceof Error ? error.message : "保存失败"
+      const message = error instanceof Error ? error.message : "Save failed"
       set({ isSaving: false, error: message })
       throw error
     }
@@ -513,7 +501,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       }
       return result
     } catch (error) {
-      const message = error instanceof Error ? error.message : "测试连接失败"
+      const message = error instanceof Error ? error.message : "Connection test failed"
       set({ isTesting: false, error: message })
       if (payload.id) {
         await get().loadConnections()
@@ -566,7 +554,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       }
       return inspection
     } catch (error) {
-      const message = error instanceof Error ? error.message : "环境检测失败"
+      const message = error instanceof Error ? error.message : "Inspection failed"
       const cachedInspection = getCachedInspection(payload.id)
       set({
         isInspecting: false,
@@ -579,175 +567,6 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       if (payload.id) {
         await get().loadConnections()
       }
-      throw error
-    }
-  },
-  installDependency: async (payload, dependencyId) => {
-    set({
-      isInstallingDependency: true,
-      installingDependencyId: dependencyId,
-      error: undefined,
-      info: undefined,
-    })
-    try {
-      const result = await getDesktopApi().vps.installDependency(payload, dependencyId)
-      if (!result.ok) {
-        set({
-          isInstallingDependency: false,
-          installingDependencyId: undefined,
-          operationLogs: appendOperationLog(get().operationLogs, {
-            id: `${dependencyId}-${Date.now()}`,
-            at: new Date().toISOString(),
-            level: "error",
-            title: `安装 ${dependencyId} 失败`,
-            detail: result.message,
-          }),
-          error: result.message,
-        })
-        return result
-      }
-      set({
-        isInstallingDependency: false,
-        installingDependencyId: undefined,
-        operationLogs: appendOperationLog(get().operationLogs, {
-          id: `${dependencyId}-${Date.now()}`,
-          at: new Date().toISOString(),
-          level: "info",
-          title: `安装 ${dependencyId} 完成`,
-          detail: result.message,
-        }),
-      })
-      await get().inspectConnection(payload, { forceRefresh: true })
-      set({ info: "依赖安装已完成，巡检已更新。" })
-      return result
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "依赖安装失败"
-      set({
-        isInstallingDependency: false,
-        installingDependencyId: undefined,
-        operationLogs: appendOperationLog(get().operationLogs, {
-          id: `${dependencyId}-${Date.now()}`,
-          at: new Date().toISOString(),
-          level: "error",
-          title: `安装 ${dependencyId} 失败`,
-          detail: message,
-        }),
-        error: message,
-      })
-      throw error
-    }
-  },
-  inspectDependencyUsage: async (payload, dependencyId) => {
-    return await getDesktopApi().vps.inspectDependencyUsage(payload, dependencyId)
-  },
-  uninstallDependency: async (payload, dependencyId) => {
-    set({
-      isInstallingDependency: true,
-      installingDependencyId: dependencyId,
-      error: undefined,
-      info: undefined,
-    })
-    try {
-      const result = await getDesktopApi().vps.uninstallDependency(payload, dependencyId)
-      if (!result.ok) {
-        set({
-          isInstallingDependency: false,
-          installingDependencyId: undefined,
-          operationLogs: appendOperationLog(get().operationLogs, {
-            id: `${dependencyId}-uninstall-${Date.now()}`,
-            at: new Date().toISOString(),
-            level: "error",
-            title: `卸载 ${dependencyId} 失败`,
-            detail: result.message,
-          }),
-          error: result.message,
-        })
-        return result
-      }
-      set({
-        isInstallingDependency: false,
-        installingDependencyId: undefined,
-        operationLogs: appendOperationLog(get().operationLogs, {
-          id: `${dependencyId}-uninstall-${Date.now()}`,
-          at: new Date().toISOString(),
-          level: "info",
-          title: `卸载 ${dependencyId} 完成`,
-          detail: result.message,
-        }),
-      })
-      await get().inspectConnection(payload, { forceRefresh: true })
-      set({ info: "依赖卸载已完成，巡检已更新。" })
-      return result
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "依赖卸载失败"
-      set({
-        isInstallingDependency: false,
-        installingDependencyId: undefined,
-        operationLogs: appendOperationLog(get().operationLogs, {
-          id: `${dependencyId}-uninstall-${Date.now()}`,
-          at: new Date().toISOString(),
-          level: "error",
-          title: `卸载 ${dependencyId} 失败`,
-          detail: message,
-        }),
-        error: message,
-      })
-      throw error
-    }
-  },
-  dependencyServiceAction: async (payload, options) => {
-    const pendingKey = `${options.dependencyId}-${options.action}`
-    set({
-      isDependencyServicePending: true,
-      dependencyServicePendingKey: pendingKey,
-      error: undefined,
-      info: undefined,
-    })
-    try {
-      const result = await getDesktopApi().vps.dependencyServiceAction(payload, options)
-      if (!result.ok) {
-        set({
-          isDependencyServicePending: false,
-          dependencyServicePendingKey: undefined,
-          operationLogs: appendOperationLog(get().operationLogs, {
-            id: `${pendingKey}-${Date.now()}`,
-            at: new Date().toISOString(),
-            level: "error",
-            title: `${options.dependencyId} ${options.action} 失败`,
-            detail: result.message,
-          }),
-          error: result.message,
-        })
-        return result
-      }
-      set({
-        isDependencyServicePending: false,
-        dependencyServicePendingKey: undefined,
-        operationLogs: appendOperationLog(get().operationLogs, {
-          id: `${pendingKey}-${Date.now()}`,
-          at: new Date().toISOString(),
-          level: "info",
-          title: `${options.dependencyId} ${options.action} 完成`,
-          detail: result.message,
-        }),
-      })
-      await get().inspectConnection(payload, { forceRefresh: true })
-      set({ info: "服务状态已刷新。" })
-      return result
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "服务操作失败"
-      set({
-        isDependencyServicePending: false,
-        dependencyServicePendingKey: undefined,
-        operationLogs: appendOperationLog(get().operationLogs, {
-          id: `${pendingKey}-${Date.now()}`,
-          at: new Date().toISOString(),
-          level: "error",
-          title: `${options.dependencyId} ${options.action} 失败`,
-          detail: message,
-        }),
-        error: message,
-      })
       throw error
     }
   },
@@ -929,7 +748,7 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       })
       return result
     } catch (error) {
-      const message = error instanceof Error ? error.message : "系统升级失败"
+      const message = error instanceof Error ? error.message : "System upgrade failed"
       set({ isApplyingUpgrade: false, error: message })
       throw error
     }
@@ -952,13 +771,13 @@ export const useVpsStore = create<VpsState>((set, get) => ({
       set({
         info:
           addedCount > 0
-            ? `已从本机 SSH 配置导入 ${addedCount} 个连接`
-            : "本机 SSH 配置已同步，没有发现新的可导入连接",
+            ? `Imported ${addedCount} connection(s) from local SSH config`
+            : "Local SSH config synced, no new importable connections",
       })
     } catch (error) {
       set({
         isImportingLocal: false,
-        error: error instanceof Error ? error.message : "本地 SSH 连接导入失败",
+        error: error instanceof Error ? error.message : "Failed to import local SSH connections",
       })
       throw error
     }

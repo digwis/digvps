@@ -67,7 +67,7 @@ function decryptSecret(value: string | null) {
 }
 
 function getDbFile(userDataPath: string) {
-  return path.join(userDataPath, "digwis-panel.sqlite")
+  return path.join(userDataPath, "cloudroost.sqlite")
 }
 
 function normalizeConnectionIdentity(value: string) {

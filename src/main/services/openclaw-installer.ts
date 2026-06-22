@@ -11,6 +11,7 @@ import type {
 export const OPENCLAW_BASE_PORT = 18789
 export const OPENCLAW_MAX_INSTANCES = 4
 export const OPENCLAW_MIN_MEMORY_MB = 350
+export const OPENCLAW_REQUIRED_NODE_VERSION = "22.19.0"
 
 export function ensurePortInRange(port: number): number {
   if (!Number.isInteger(port) || port < 1024 || port > 65535) {
@@ -39,11 +40,39 @@ export function parseSystemdUnitList(stdout: string): number[] {
   return ports
 }
 
+function parseSemverParts(version?: string): [number, number, number] | null {
+  if (!version) return null
+  const match = version.trim().match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/)
+  if (!match) return null
+  return [
+    Number(match[1] ?? 0),
+    Number(match[2] ?? 0),
+    Number(match[3] ?? 0),
+  ]
+}
+
+export function isVersionAtLeast(actual: string | undefined, required: string): boolean {
+  const actualParts = parseSemverParts(actual)
+  const requiredParts = parseSemverParts(required)
+  if (!actualParts || !requiredParts) return false
+  for (let index = 0; index < 3; index += 1) {
+    if (actualParts[index] > requiredParts[index]) return true
+    if (actualParts[index] < requiredParts[index]) return false
+  }
+  return true
+}
+
 export function detectStatusFromSystemctl(stdout: string): OpenClawInstanceStatus {
-  const trimmed = stdout.trim()
-  if (trimmed.includes("active (running)")) return "running"
-  if (trimmed.includes("inactive (dead)")) return "stopped"
-  if (trimmed.includes("failed")) return "failed"
+  const normalized = stdout.trim().toLowerCase()
+  if (normalized.includes("active (running)")) return "running"
+  if (normalized.includes("inactive (dead)")) return "stopped"
+  if (
+    normalized.includes("failed") ||
+    normalized.includes("activating (auto-restart)") ||
+    normalized.includes("result: exit-code")
+  ) {
+    return "failed"
+  }
   return "unknown"
 }
 
@@ -75,9 +104,8 @@ export function buildPrecheck(args: {
 }): OpenClawPrecheck {
   const reasons: OpenClawPrecheckReason[] = []
   if (!args.nodeVersion) reasons.push("node_missing")
-  else {
-    const major = Number(args.nodeVersion.replace(/^v/, "").split(".")[0])
-    if (Number.isFinite(major) && major < 20) reasons.push("node_too_old")
+  else if (!isVersionAtLeast(args.nodeVersion, OPENCLAW_REQUIRED_NODE_VERSION)) {
+    reasons.push("node_too_old")
   }
   if (
     typeof args.memoryAvailableMb === "number" &&
@@ -90,8 +118,9 @@ export function buildPrecheck(args: {
   if (args.existingInstances >= OPENCLAW_MAX_INSTANCES) {
     reasons.push("instance_limit_reached")
   }
+  const blockingReasons = reasons.filter((reason) => reason !== "node_too_old")
   return {
-    ready: reasons.length === 0,
+    ready: blockingReasons.length === 0,
     reasons,
     nodeVersion: args.nodeVersion,
     memoryAvailableMb: args.memoryAvailableMb,
@@ -105,6 +134,17 @@ export function generateInstanceId(): string {
 }
 
 export type { OpenClawInstance }
+
+async function detectInstalledOpenClawVersion(
+  payload: VpsConnectionInput,
+): Promise<string | undefined> {
+  const result = await runRemoteShellCommand(
+    payload,
+    "npm list -g openclaw --depth=0 2>/dev/null | awk -F@ '/ openclaw@/ {print $NF}' | tail -n 1 || true",
+    { timeoutMs: 5_000 },
+  )
+  return result.stdout.trim() || undefined
+}
 
 async function detectPackageManager(
   payload: VpsConnectionInput,
@@ -149,6 +189,39 @@ export async function precheckOpenClawInstall(
     runRemoteShellCommand(payload, "command -v systemctl", { timeoutMs: 5_000 }),
   ])
   const usedPorts = parseSystemdUnitList(units.stdout)
+  // #region debug-point H4:precheck
+  ;(() => {
+    import("node:fs").then((fs) => {
+      let u = "http://127.0.0.1:7777/event"
+      let s = "openclaw-install-status"
+      try {
+        const e = fs.readFileSync(".dbg/openclaw-install-status.env", "utf8")
+        u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1] || u
+        s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1] || s
+      } catch {}
+      fetch(u, {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId: s,
+          runId: "pre-fix",
+          hypothesisId: "H4",
+          location: "openclaw-installer.ts:precheckOpenClawInstall",
+          msg: "[DEBUG] openclaw precheck collected",
+          data: {
+            connectionId: payload.id ?? "",
+            listenPort: payload.listenPort,
+            nodeVersion: node.stdout.trim(),
+            memoryAvailableMb: mem.stdout.trim(),
+            portProbe: portLine.stdout.trim(),
+            units: units.stdout.trim(),
+            systemdCode: systemd.code,
+          },
+          ts: Date.now(),
+        }),
+      }).catch(() => {})
+    })
+  })()
+  // #endregion
   return buildPrecheck({
     nodeVersion: node.stdout.trim() || undefined,
     memoryAvailableMb: Number(mem.stdout.trim()) || undefined,
@@ -176,28 +249,64 @@ export async function installOpenClaw(
     "node --version 2>/dev/null || true",
     { timeoutMs: 5_000 },
   )
-  const major = Number(nodeCheck.stdout.trim().replace(/^v/, "").split(".")[0])
-  if (!nodeCheck.stdout.trim() || (Number.isFinite(major) && major < 20)) {
-    onProgress?.("安装 Node.js 20.x…")
+  let nodeVersion = nodeCheck.stdout.trim() || undefined
+  if (!isVersionAtLeast(nodeVersion, OPENCLAW_REQUIRED_NODE_VERSION)) {
+    onProgress?.("安装 Node.js 22.x…")
     if (pkg === "apt") {
       await runRemoteShellCommand(
         payload,
-        "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs",
+        "curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs",
         { timeoutMs: 240_000 },
       )
     } else {
       await runRemoteShellCommand(
         payload,
-        "curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - && (dnf install -y nodejs || yum install -y nodejs)",
+        "curl -fsSL https://rpm.nodesource.com/setup_22.x | bash - && (dnf install -y nodejs || yum install -y nodejs)",
         { timeoutMs: 240_000 },
       )
     }
+    const updatedNodeCheck = await runRemoteShellCommand(
+      payload,
+      "node --version 2>/dev/null || true",
+      { timeoutMs: 5_000 },
+    )
+    nodeVersion = updatedNodeCheck.stdout.trim() || undefined
   }
 
   onProgress?.("安装 OpenClaw…")
-  await runRemoteShellCommand(payload, "npm i -g openclaw@latest", {
+  const npmInstallResult = await runRemoteShellCommand(payload, "npm i -g openclaw@latest", {
     timeoutMs: 300_000,
   })
+  // #region debug-point H1:npm-install
+  ;(() => {
+    import("node:fs").then((fs) => {
+      let u = "http://127.0.0.1:7777/event"
+      let s = "openclaw-install-status"
+      try {
+        const e = fs.readFileSync(".dbg/openclaw-install-status.env", "utf8")
+        u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1] || u
+        s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1] || s
+      } catch {}
+      fetch(u, {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId: s,
+          runId: "pre-fix",
+          hypothesisId: "H1",
+          location: "openclaw-installer.ts:installOpenClaw:npm",
+          msg: "[DEBUG] openclaw npm install finished",
+          data: {
+            connectionId: payload.id ?? "",
+            code: npmInstallResult.code,
+            stdout: npmInstallResult.stdout.slice(-1200),
+            stderr: npmInstallResult.stderr.slice(-1200),
+          },
+          ts: Date.now(),
+        }),
+      }).catch(() => {})
+    })
+  })()
+  // #endregion
 
   const serviceName = `openclaw@${port}.service`
   const dataDir = `/root/.openclaw-${port}`
@@ -219,11 +328,41 @@ export async function installOpenClaw(
     `systemctl status ${serviceName} --no-pager || true`,
     { timeoutMs: 10_000 },
   )
-  const version = await runRemoteShellCommand(
-    payload,
-    "openclaw --version 2>/dev/null || true",
-    { timeoutMs: 5_000 },
-  )
+  const openclawVersion = await detectInstalledOpenClawVersion(payload)
+  // #region debug-point H1-H3:service-status
+  ;(() => {
+    import("node:fs").then((fs) => {
+      let u = "http://127.0.0.1:7777/event"
+      let s = "openclaw-install-status"
+      try {
+        const e = fs.readFileSync(".dbg/openclaw-install-status.env", "utf8")
+        u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1] || u
+        s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1] || s
+      } catch {}
+      fetch(u, {
+        method: "POST",
+        body: JSON.stringify({
+          sessionId: s,
+          runId: "pre-fix",
+          hypothesisId: "H1",
+          location: "openclaw-installer.ts:installOpenClaw:service",
+          msg: "[DEBUG] openclaw service status collected",
+          data: {
+            connectionId: payload.id ?? "",
+            serviceName,
+            detectStatus: detectStatusFromSystemctl(status.stdout),
+            statusCode: status.code,
+            statusStdout: status.stdout.slice(-2000),
+            statusStderr: status.stderr.slice(-1200),
+            nodeVersion,
+            openclawVersion,
+          },
+          ts: Date.now(),
+        }),
+      }).catch(() => {})
+    })
+  })()
+  // #endregion
 
   return {
     id: generateInstanceId(),
@@ -232,8 +371,8 @@ export async function installOpenClaw(
     listenPort: port,
     dataDir,
     serviceName,
-    nodeVersion: nodeCheck.stdout.trim() || undefined,
-    openclawVersion: version.stdout.trim() || undefined,
+    nodeVersion,
+    openclawVersion,
     status: detectStatusFromSystemctl(status.stdout),
     installedAt: new Date().toISOString(),
   }
@@ -294,12 +433,52 @@ export async function listOpenClawInstancesRemote(
   }>,
 ): Promise<OpenClawInstance[]> {
   const out: OpenClawInstance[] = []
+  const [nodeVersionResult, openclawVersion] = await Promise.all([
+    runRemoteShellCommand(payload, "node --version 2>/dev/null || true", {
+      timeoutMs: 5_000,
+    }).catch(() => ({ code: -1, stdout: "", stderr: "" })),
+    detectInstalledOpenClawVersion(payload).catch(() => undefined),
+  ])
+  const nodeVersion = nodeVersionResult.stdout.trim() || undefined
   for (const row of rows) {
     const status = await runRemoteShellCommand(
       payload,
       `systemctl status ${row.service_name} --no-pager || true`,
       { timeoutMs: 5_000 },
     ).catch(() => ({ code: -1, stdout: "", stderr: "" }))
+    // #region debug-point H2-H4:list-remote
+    ;(() => {
+      import("node:fs").then((fs) => {
+        let u = "http://127.0.0.1:7777/event"
+        let s = "openclaw-install-status"
+        try {
+          const e = fs.readFileSync(".dbg/openclaw-install-status.env", "utf8")
+          u = e.match(/DEBUG_SERVER_URL=(.+)/)?.[1] || u
+          s = e.match(/DEBUG_SESSION_ID=(.+)/)?.[1] || s
+        } catch {}
+        fetch(u, {
+          method: "POST",
+          body: JSON.stringify({
+            sessionId: s,
+            runId: "pre-fix",
+            hypothesisId: "H2",
+            location: "openclaw-installer.ts:listOpenClawInstancesRemote",
+            msg: "[DEBUG] openclaw remote status polled",
+            data: {
+              connectionId: payload.id ?? "",
+              instanceId: row.id,
+              serviceName: row.service_name,
+              statusCode: status.code,
+              parsedStatus: detectStatusFromSystemctl(status.stdout),
+              statusStdout: status.stdout.slice(-1600),
+              statusStderr: status.stderr.slice(-800),
+            },
+            ts: Date.now(),
+          }),
+        }).catch(() => {})
+      })
+    })()
+    // #endregion
     out.push({
       id: row.id,
       connectionId: row.connection_id,
@@ -307,6 +486,8 @@ export async function listOpenClawInstancesRemote(
       listenPort: row.listen_port,
       dataDir: row.data_dir,
       serviceName: row.service_name,
+      nodeVersion,
+      openclawVersion,
       status: detectStatusFromSystemctl(status.stdout),
       installedAt: row.installed_at,
       lastCheckedAt: new Date().toISOString(),

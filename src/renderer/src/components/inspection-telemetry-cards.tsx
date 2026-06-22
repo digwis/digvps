@@ -1,3 +1,5 @@
+import { useMemo } from "react"
+import { useTranslation } from "react-i18next"
 import { Activity, Cpu, HardDrive, Network, ServerCog, Waves } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { InspectionTelemetry, SystemMetric } from "../../../shared/vps"
@@ -46,49 +48,53 @@ type Props = {
   metrics: SystemMetric[]
 }
 
-export function InspectionTelemetryCards({ telemetry, metrics }: Props) {
+export function InspectionTelemetryCards({
+  telemetry,
+  metrics,
+}: Props) {
+  const { t } = useTranslation()
   const coreCount = metricValue(metrics, "逻辑核心") ?? "?"
-  const items: MetricCard[] = [
+  const items: MetricCard[] = useMemo(() => [
     {
       key: "cpu",
       label: "CPU",
       value: `${telemetry.cpuPercent.toFixed(1)}%`,
-      detail: `${coreCount} 核 · ${metricValue(metrics, "CPU") ?? "1s 采样"}`,
+      detail: `${t("monitor.metric.cpuCores", { count: coreCount })} · ${metricValue(metrics, t("monitor.metric.cpu")) ?? t("monitor.metric.sample1s")}`,
       percent: telemetry.cpuPercent,
       icon: Cpu,
       priority: "primary",
     },
     {
       key: "memory",
-      label: "内存",
+      label: t("monitor.metric.memory"),
       value: `${telemetry.memoryPercent.toFixed(1)}%`,
-      detail: metricValue(metrics, "内存占用") ?? "-",
+      detail: metricValue(metrics, t("monitor.metric.memUsage")) ?? "-",
       percent: telemetry.memoryPercent,
       icon: ServerCog,
       priority: "primary",
     },
     {
       key: "disk",
-      label: "磁盘",
+      label: t("monitor.metric.disk"),
       value: `${telemetry.diskPercent.toFixed(1)}%`,
-      detail: metricValue(metrics, "系统盘") ?? "-",
+      detail: metricValue(metrics, t("monitor.metric.systemDisk")) ?? "-",
       percent: telemetry.diskPercent,
       icon: HardDrive,
       priority: "primary",
     },
     {
       key: "network",
-      label: "网络",
+      label: t("monitor.metric.network"),
       value: `${formatBps(telemetry.netUpBps)} / ${formatBps(telemetry.netDownBps)}`,
-      detail: "上行 / 下行",
+      detail: t("monitor.metric.netUpDown"),
       icon: Network,
       priority: "primary",
     },
     {
       key: "load",
-      label: "负载",
+      label: t("monitor.metric.load"),
       value: `${telemetry.loadPercent.toFixed(1)}%`,
-      detail: `1m 平均 / ${coreCount} 核`,
+      detail: t("monitor.metric.loadAvg", { count: coreCount }),
       percent: telemetry.loadPercent,
       icon: Activity,
       priority: "secondary",
@@ -102,15 +108,15 @@ export function InspectionTelemetryCards({ telemetry, metrics }: Props) {
       icon: Waves,
       priority: "secondary",
     },
-  ]
+  ], [telemetry, metrics, t, coreCount])
 
-  const primaryItems = items.filter((item) => item.priority === "primary")
-  const secondaryItems = items.filter((item) => item.priority === "secondary")
+  const primaryItems = useMemo(() => items.filter((item) => item.priority === "primary"), [items])
+  const secondaryItems = useMemo(() => items.filter((item) => item.priority === "secondary"), [items])
 
   return (
     <div className="rounded-[32px] border border-[#e5e7eb] bg-[#fbfcfe] px-8 py-8 shadow-[0_8px_24px_rgba(15,23,42,0.04)] dark:border-white/10 dark:bg-[#242424] dark:shadow-none">
       <div className="mb-6">
-        <p className="text-2xl font-semibold tracking-tight text-foreground">核心监控</p>
+        <p className="text-2xl font-semibold tracking-tight text-foreground">{t("monitor.coreMonitoring")}</p>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-4">

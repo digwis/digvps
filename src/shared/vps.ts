@@ -189,28 +189,6 @@ export type RemotePackageStatus = {
   running?: boolean
 }
 
-export type DependencyInstallResult = {
-  ok: boolean
-  message: string
-  stdout: string
-}
-
-export type DependencyUsageProject = {
-  projectId: string
-  displayName: string
-  localPath: string
-  reasons: string[]
-}
-
-export type DependencyUsageReport = {
-  dependencyId: string
-  connectionId?: string
-  checkedAt: string
-  projects: DependencyUsageProject[]
-}
-
-export type DependencyServiceAction = "restart" | "stop" | "start"
-
 export type SystemMetric = {
   label: string
   value: string
@@ -350,22 +328,6 @@ export type DigwisApi = {
     saveConnection: (payload: VpsConnectionInput) => Promise<VpsConnectionRecord>
     testConnection: (payload: VpsConnectionInput) => Promise<ConnectionTestResult>
     inspectConnection: (payload: VpsConnectionInput, options?: { forceRefresh?: boolean }) => Promise<VpsInspection>
-    installDependency: (
-      payload: VpsConnectionInput,
-      dependencyId: string,
-    ) => Promise<DependencyInstallResult>
-    inspectDependencyUsage: (
-      payload: VpsConnectionInput,
-      dependencyId: string,
-    ) => Promise<DependencyUsageReport>
-    uninstallDependency: (
-      payload: VpsConnectionInput,
-      dependencyId: string,
-    ) => Promise<DependencyInstallResult>
-    dependencyServiceAction: (
-      payload: VpsConnectionInput,
-      options: { dependencyId: string; action: DependencyServiceAction; systemdUnit?: string },
-    ) => Promise<DependencyInstallResult>
     checkSystemUpgrades: (payload: VpsConnectionInput) => Promise<SystemUpgradeCheckResult>
     applySystemUpgrade: (
       payload: VpsConnectionInput,

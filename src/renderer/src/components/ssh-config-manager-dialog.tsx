@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next"
 import { useEffect, useRef, useState } from "react"
 import { Import, LoaderCircle, Plus, Save, Server } from "lucide-react"
 import {
@@ -22,7 +23,10 @@ const HOST_TEMPLATE = `Host new-host
   IdentityFile ~/.ssh/id_ed25519
 `
 
-export function SshConfigManagerDialog({ children }: Props) {
+export function SshConfigManagerDialog({
+  children,
+}: Props) {
+  const { t } = useTranslation()
   const {
     rawSshConfig,
     loadRawSshConfig,
@@ -89,10 +93,10 @@ export function SshConfigManagerDialog({ children }: Props) {
         <DialogHeader className="shrink-0 gap-2 border-b border-border px-6 py-5 pr-14">
           <DialogTitle className="flex items-center gap-2 text-xl">
             <Server data-icon="inline-start" />
-            管理本机 SSH 配置
+            {t("sshConfig.title")}
           </DialogTitle>
           <DialogDescription>
-            这里直接编辑 `~/.ssh/config` 原文件；修改后保存即写回本机 SSH 配置。
+            {t("sshConfig.desc")}
           </DialogDescription>
         </DialogHeader>
 
@@ -100,12 +104,12 @@ export function SshConfigManagerDialog({ children }: Props) {
           <div className="flex h-full flex-col gap-6">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-muted/50 px-4 py-3">
               <p className="text-sm text-muted-foreground">
-                直接文本编辑最灵活，`ProxyCommand`、`LocalForward`、`Include` 等高级配置也都能原样维护。
+                {t("sshConfig.rawNote")}
               </p>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" onClick={insertTemplate}>
                   <Plus />
-                  插入 Host 模板
+                  {t("sshConfig.insertHost")}
                 </Button>
                 <Button
                   variant="outline"
@@ -118,19 +122,19 @@ export function SshConfigManagerDialog({ children }: Props) {
                   disabled={isSavingRawSshConfig}
                 >
                   <Import />
-                  刷新
+                  {t("common.refresh")}
                 </Button>
                 <Button onClick={() => void handleSave()} disabled={!isDirty || isSavingRawSshConfig}>
                   {isSavingRawSshConfig ? <LoaderCircle className="animate-spin" /> : <Save />}
-                  保存原文件
+                  {t("sshConfig.saveRaw")}
                 </Button>
               </div>
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-border bg-muted/30 p-4">
               <div className="mb-3 flex items-center justify-between gap-3">
-                <p className="text-sm font-medium text-foreground">`~/.ssh/config` 原始内容</p>
-                <span className="text-xs text-muted-foreground">可直接自由编辑全文</span>
+                <p className="text-sm font-medium text-foreground">{t("sshConfig.rawTitle")}</p>
+                <span className="text-xs text-muted-foreground">{t("sshConfig.rawDesc")}</span>
               </div>
               <textarea
                 ref={textareaRef}

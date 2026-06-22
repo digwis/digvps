@@ -7,6 +7,7 @@ const MAX_LOG_LINES = 5000
 const DEFAULT_LIST_LIMIT = 300
 
 let logFilePath = ""
+let lineCount = 0
 
 export function initializeProjectOperationLog(userDataPath: string) {
   logFilePath = path.join(userDataPath, "project-operation-log.ndjson")
@@ -14,6 +15,9 @@ export function initializeProjectOperationLog(userDataPath: string) {
   if (!fs.existsSync(logFilePath)) {
     fs.writeFileSync(logFilePath, "", "utf-8")
   }
+  // Count existing lines for trim tracking
+  const raw = fs.readFileSync(logFilePath, "utf-8")
+  lineCount = raw.split("\n").filter((line) => line.trim()).length
 }
 
 function parseLines(raw: string): ProjectOperationLogEntry[] {
@@ -57,6 +61,7 @@ function rewriteAll(items: ProjectOperationLogEntry[]) {
   }
   const content = items.map((item) => JSON.stringify(item)).join("\n")
   fs.writeFileSync(logFilePath, content ? `${content}\n` : "", "utf-8")
+  lineCount = items.length
 }
 
 export function appendOperationLog(input: Omit<ProjectOperationLogEntry, "id" | "at"> & { at?: string }) {
@@ -67,9 +72,19 @@ export function appendOperationLog(input: Omit<ProjectOperationLogEntry, "id" | 
     chunk: input.chunk,
     at: input.at ?? new Date().toISOString(),
   }
+
+  // Fast path: append-only write when under the line limit
+  if (lineCount < MAX_LOG_LINES) {
+    const line = JSON.stringify(entry)
+    fs.appendFileSync(logFilePath, (lineCount === 0 ? "" : "\n") + line, "utf-8")
+    lineCount++
+    return entry
+  }
+
+  // Slow path: trim when over the limit
   const all = readAll()
   all.push(entry)
-  const trimmed = all.length > MAX_LOG_LINES ? all.slice(all.length - MAX_LOG_LINES) : all
+  const trimmed = all.slice(all.length - MAX_LOG_LINES)
   rewriteAll(trimmed)
   return entry
 }

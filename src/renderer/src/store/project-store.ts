@@ -20,7 +20,7 @@ export const useProjectStore = create<ProjectStoreState>((set) => ({
       const result = await getDesktopApi().projects.scanRemoteProjects({ connectionId })
       set({ scanResult: result, isScanning: false })
     } catch (error) {
-      set({ isScanning: false, scanError: error instanceof Error ? error.message : "远程项目扫描失败" })
+      set({ isScanning: false, scanError: error instanceof Error ? error.message : "Remote project scan failed" })
     }
   },
   clearScan: () => set({ scanResult: undefined, scanError: undefined }),

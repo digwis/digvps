@@ -1,9 +1,12 @@
 import { describe, expect, test } from "vitest"
 import {
+  buildPrecheck,
   buildSystemdUnit,
   detectStatusFromSystemctl,
   ensurePortInRange,
+  isVersionAtLeast,
   nextAvailablePort,
+  OPENCLAW_REQUIRED_NODE_VERSION,
   parseSystemdUnitList,
 } from "../openclaw-installer"
 
@@ -51,6 +54,45 @@ describe("detectStatusFromSystemctl", () => {
   })
   test("detects failed", () => {
     expect(detectStatusFromSystemctl("failed")).toBe("failed")
+  })
+  test("treats auto-restart crash loop as failed", () => {
+    expect(
+      detectStatusFromSystemctl(
+        "Active: activating (auto-restart) (Result: exit-code)\nMain PID: 123 (code=exited, status=1/FAILURE)",
+      ),
+    ).toBe("failed")
+  })
+})
+
+describe("isVersionAtLeast", () => {
+  test("accepts exact required node version", () => {
+    expect(isVersionAtLeast("v22.19.0", OPENCLAW_REQUIRED_NODE_VERSION)).toBe(true)
+  })
+  test("accepts newer node version", () => {
+    expect(isVersionAtLeast("v22.20.1", OPENCLAW_REQUIRED_NODE_VERSION)).toBe(true)
+  })
+  test("rejects older node major", () => {
+    expect(isVersionAtLeast("v20.19.2", OPENCLAW_REQUIRED_NODE_VERSION)).toBe(false)
+  })
+  test("rejects older node minor", () => {
+    expect(isVersionAtLeast("v22.18.0", OPENCLAW_REQUIRED_NODE_VERSION)).toBe(false)
+  })
+})
+
+describe("buildPrecheck", () => {
+  test("keeps install ready when node is old but auto-upgrade can fix it", () => {
+    expect(
+      buildPrecheck({
+        nodeVersion: "v20.19.2",
+        memoryAvailableMb: 2048,
+        portInUse: false,
+        existingInstances: 0,
+        systemdPresent: true,
+      }),
+    ).toMatchObject({
+      ready: true,
+      reasons: ["node_too_old"],
+    })
   })
 })
 

@@ -1,6 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
-import type { ProjectActionKind, ProjectBackupSchedule, ProjectBackupScheduleState } from "../../shared/projects"
+import type { ProjectActionKind } from "../../shared/projects"
 
 type ActionState = {
   at: string
@@ -9,11 +9,6 @@ type ActionState = {
 
 type StoredProjectState = {
   actions?: Partial<Record<ProjectActionKind, string | ActionState>>
-  backup?: {
-    schedule?: ProjectBackupSchedule
-    nextRunAt?: string | null
-    lastRunAt?: string | null
-  }
 }
 
 type StoredState = {
@@ -63,21 +58,6 @@ function saveState() {
   }
   fs.mkdirSync(path.dirname(stateFilePath), { recursive: true })
   fs.writeFileSync(stateFilePath, JSON.stringify(cachedState, null, 2), "utf-8")
-}
-
-function nextRunAt(schedule: ProjectBackupSchedule, fromIso: string): string | null {
-  if (schedule === "off") {
-    return null
-  }
-  const next = new Date(fromIso)
-  if (schedule === "daily") {
-    next.setDate(next.getDate() + 1)
-  } else if (schedule === "weekly") {
-    next.setDate(next.getDate() + 7)
-  } else {
-    next.setMonth(next.getMonth() + 1)
-  }
-  return next.toISOString()
 }
 
 function projectEntry(projectId: string): StoredProjectState {
@@ -132,38 +112,3 @@ export function markProjectActionRun(
   saveState()
 }
 
-export function getProjectBackupSchedule(projectId: string): ProjectBackupScheduleState {
-  const entry = projectEntry(projectId)
-  const schedule = entry.backup?.schedule ?? "off"
-  return {
-    projectId,
-    schedule,
-    nextRunAt: entry.backup?.nextRunAt ?? null,
-    lastRunAt: entry.backup?.lastRunAt ?? null,
-  }
-}
-
-export function setProjectBackupSchedule(projectId: string, schedule: ProjectBackupSchedule): ProjectBackupScheduleState {
-  const entry = projectEntry(projectId)
-  if (!entry.backup) {
-    entry.backup = {}
-  }
-  const nowIso = new Date().toISOString()
-  entry.backup.schedule = schedule
-  entry.backup.nextRunAt = nextRunAt(schedule, nowIso)
-  saveState()
-  return getProjectBackupSchedule(projectId)
-}
-
-export function markProjectBackupRun(projectId: string, atIso?: string): ProjectBackupScheduleState {
-  const entry = projectEntry(projectId)
-  if (!entry.backup) {
-    entry.backup = {}
-  }
-  const runAt = atIso ?? new Date().toISOString()
-  const schedule = entry.backup.schedule ?? "off"
-  entry.backup.lastRunAt = runAt
-  entry.backup.nextRunAt = nextRunAt(schedule, runAt)
-  saveState()
-  return getProjectBackupSchedule(projectId)
-}

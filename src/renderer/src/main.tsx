@@ -1,11 +1,14 @@
 import React from "react"
 import ReactDOM from "react-dom/client"
 import App from "./App"
+import "./i18n"
+import { useLocaleStore } from "./store/locale-store"
 import "./styles.css"
 
-// Apply saved theme before first render to avoid flash
-const savedTheme = localStorage.getItem("digwis:theme") ?? "dark"
+const savedTheme = localStorage.getItem("cloudroost:theme") ?? "dark"
 document.documentElement.classList.toggle("dark", savedTheme === "dark")
+
+void useLocaleStore.getState()
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

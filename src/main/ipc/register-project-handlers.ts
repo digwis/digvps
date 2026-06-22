@@ -37,16 +37,11 @@ import {
   resizeTerminalSession,
   writeTerminalInput,
 } from "../services/remote-terminal"
-import {
-  getProjectBackupSchedule,
-  markProjectActionRun,
-  markProjectBackupRun,
-  setProjectBackupSchedule,
-} from "../services/project-action-state"
+import { markProjectActionRun } from "../services/project-action-state"
 import { appendOperationLog, listOperationLogs } from "../services/project-operation-log"
 import { repairProjectNativeModules } from "../services/project-native-module-fix"
 import { readProjectLocalRuntime, writeProjectLocalRuntime } from "../services/project-local-runtime"
-import { runProjectRemoteBackup } from "../services/project-backup"
+
 import { migrateProjectBetweenServers } from "../services/project-migration"
 import { createProjectScaffold, getProjectConfig, setProjectRuntimeModules } from "../services/project-scaffold"
 import { buildProjectScriptEnv, resolveActionKindFromScript, resolveStoredPayload } from "./helpers"
@@ -56,7 +51,6 @@ import {
   operationLogAppendSchema,
   operationLogsQuerySchema,
   parseOrThrow,
-  projectBackupScheduleSchema,
   projectClientAppSchema,
   projectConnectionSchema,
   projectDeleteSchema,
@@ -80,7 +74,6 @@ import type {
   LocalProjectInput,
   ProjectClientAppInput,
   ProjectDeleteInput,
-  ProjectBackupSchedule,
   ProjectDeployInput,
   ProjectLocalPathUpdateInput,
   ProjectMigrationInput,
@@ -209,7 +202,7 @@ function checkUrlReachable(url: string, redirectCount = 0): Promise<ProjectUrlRe
         method: "GET",
         timeout: 2500,
         headers: {
-          "user-agent": "digwis-panel/1.0",
+          "user-agent": "CloudRoost/1.0",
           accept: "*/*",
         },
       },
@@ -887,7 +880,7 @@ export function registerProjectHandlers() {
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
     if (!config) {
-      throw new Error("项目缺少 digwis-panel.deploy.json")
+      throw new Error("项目缺少 cloudroost.deploy.json")
     }
     return await inspectProjectRemoteState({
       connection: resolveStoredPayload(connection),
@@ -1019,7 +1012,7 @@ export function registerProjectHandlers() {
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
     if (!config?.init) {
-      throw new Error("该项目未配置远端初始化模板（缺少 digwis-panel.deploy.json 中的 init 段）")
+      throw new Error("该项目未配置远端初始化模板（缺少 cloudroost.deploy.json 中的 init 段）")
     }
 
     appendOperationLog({
@@ -1176,58 +1169,6 @@ export function registerProjectHandlers() {
     projectId = parseOrThrow(projectIdSchema, projectId)
     const project = requireProject(projectId)
     return await inspectProjectActionHints(project)
-  })
-
-  registerIpcHandle("projects:get-backup-schedule", async (_event, projectId: string) => {
-    projectId = parseOrThrow(projectIdSchema, projectId)
-    const project = requireProject(projectId)
-    return getProjectBackupSchedule(project.id)
-  })
-
-  registerIpcHandle(
-    "projects:set-backup-schedule",
-    async (_event, payload: { projectId: string; schedule: ProjectBackupSchedule }) => {
-      payload = parseOrThrow(projectBackupScheduleSchema, payload)
-      const project = requireProject(payload.projectId)
-      const next = setProjectBackupSchedule(project.id, payload.schedule)
-      appendOperationLog({
-        projectId: project.id,
-        stream: "system",
-        chunk: `[backup-schedule] ${payload.schedule}\n`,
-      })
-      return next
-    },
-  )
-
-  registerIpcHandle("projects:run-backup", async (_event, payload: { projectId: string; connectionId: string }) => {
-    payload = parseOrThrow(projectConnectionSchema, payload)
-    const project = requireProject(payload.projectId)
-    const connection = requireConnection(payload.connectionId)
-    const config = readProjectDeployConfig(project.localPath)
-    const remoteAppDir = project.lastRemotePath || config?.deploy?.remoteAppDir?.trim()
-    if (!remoteAppDir) {
-      throw new Error("项目未配置 deploy.remoteAppDir，且还没有记录远端部署目录")
-    }
-    appendOperationLog({
-      projectId: project.id,
-      stream: "system",
-      chunk: "[start] remote backup\n",
-    })
-    const result = await runProjectRemoteBackup({
-      connection: resolveStoredPayload(connection),
-      projectId: project.id,
-      remoteAppDir,
-    })
-    appendOperationLog({
-      projectId: project.id,
-      stream: result.ok ? "system" : "stderr",
-      chunk: `[finish] ${result.ok ? "success" : "failed"} (${Math.round(result.durationMs / 1000)}s)\n${result.message}\n`,
-    })
-    if (result.ok) {
-      markProjectActionRun(project.id, "backup")
-      markProjectBackupRun(project.id)
-    }
-    return result
   })
 
   registerIpcHandle("projects:migrate", async (_event, payload: ProjectMigrationInput) => {

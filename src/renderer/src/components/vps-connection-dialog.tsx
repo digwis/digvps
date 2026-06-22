@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Eye, EyeOff, Import, KeyRound, LoaderCircle, LockKeyhole, Server, WandSparkles } from "lucide-react"
+import { useTranslation } from "react-i18next"
+import { Eye, EyeOff, Import, KeyRound, LoaderCircle, LockKeyhole, Server, Trash2, WandSparkles } from "lucide-react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import {
   Dialog,
   DialogContent,
@@ -17,6 +28,7 @@ import { toast } from "@/hooks/use-toast"
 import { getDesktopApi } from "@/lib/desktop-api"
 import type { SshConfigCandidate, VpsConnectionInput } from "../../../shared/vps"
 import { useVpsStore } from "@/store/vps-store"
+import { useShallow } from "zustand/react/shallow"
 
 type Props = {
   children?: React.ReactNode
@@ -41,10 +53,17 @@ const initialForm: VpsConnectionInput = {
 
 const STORED_SECRET_MASK = "********"
 
-export function VpsConnectionDialog({ children, open: openProp, onOpenChange: onOpenChangeProp, preset }: Props) {
+export function VpsConnectionDialog({
+  children,
+  open: openProp,
+  onOpenChange: onOpenChangeProp,
+  preset,
+}: Props) {
+  const { t } = useTranslation()
   const {
     saveConnection,
     testConnection,
+    deleteConnection,
     sshConfigCandidates,
     loadSshConfigCandidates,
     isSaving,
@@ -54,7 +73,22 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
     error,
     lastTestResult,
     clearFeedback,
-  } = useVpsStore()
+  } = useVpsStore(
+    useShallow((s) => ({
+      saveConnection: s.saveConnection,
+      testConnection: s.testConnection,
+      deleteConnection: s.deleteConnection,
+      sshConfigCandidates: s.sshConfigCandidates,
+      loadSshConfigCandidates: s.loadSshConfigCandidates,
+      isSaving: s.isSaving,
+      isTesting: s.isTesting,
+      isLoadingSshConfigCandidates: s.isLoadingSshConfigCandidates,
+      info: s.info,
+      error: s.error,
+      lastTestResult: s.lastTestResult,
+      clearFeedback: s.clearFeedback,
+    }))
+  )
   const [internalOpen, setInternalOpen] = useState(false)
   const [form, setForm] = useState<VpsConnectionInput>(initialForm)
   const [showSecret, setShowSecret] = useState(false)
@@ -64,7 +98,12 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
   const [isProvisioningKey, setIsProvisioningKey] = useState(false)
   const [provisionHint, setProvisionHint] = useState<string>()
   const [hasStoredPassword, setHasStoredPassword] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteConfirmName, setDeleteConfirmName] = useState("")
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [sshCandidatesLoaded, setSshCandidatesLoaded] = useState(false)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
+  const initializedPresetIdRef = useRef<string | null>(null)
   const open = openProp ?? internalOpen
   const isEditing = Boolean(preset?.id)
 
@@ -114,6 +153,9 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
     setIsProvisioningKey(false)
     setProvisionHint(undefined)
     setHasStoredPassword(false)
+    setDeleteDialogOpen(false)
+    setDeleteConfirmName("")
+    setIsDeleting(false)
     clearFeedback()
   }
 
@@ -121,14 +163,23 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
     if (!open) {
       return
     }
-    void loadSshConfigCandidates()
-    setForm((current) => ({
-      ...initialForm,
-      ...current,
-      ...preset,
-    }))
-    setHasStoredPassword(Boolean(preset?.id && preset?.authType === "password"))
-  }, [loadSshConfigCandidates, open, preset])
+    if (initializedPresetIdRef.current !== preset?.id) {
+      setForm((current) => ({
+        ...initialForm,
+        ...current,
+        ...preset,
+      }))
+      setHasStoredPassword(Boolean(preset?.id && preset?.authType === "password"))
+      initializedPresetIdRef.current = preset?.id ?? null
+    }
+  }, [open, preset])
+
+  useEffect(() => {
+    if (open || !sshCandidatesLoaded) {
+      return
+    }
+    setSshCandidatesLoaded(false)
+  }, [open, sshCandidatesLoaded])
 
   useEffect(() => {
     if (!selectedCandidateKey) {
@@ -185,7 +236,7 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
     try {
       const result = await testConnection(form)
       toast({
-        title: "测试连接成功",
+        title: t("connection.toastTestOk"),
         description: `${result.message}${result.workingDirectory ? ` · ${result.workingDirectory}` : ""}`,
       })
     } catch {
@@ -197,8 +248,8 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
     if (!form.host || !form.username || !form.port || (!(form.password ?? "").trim() && !hasStoredPassword)) {
       toast({
         variant: "destructive",
-        title: "缺少密码信息",
-        description: "请先填写可用的 SSH 密码，再执行一键创建私钥。",
+        title: t("connection.toastMissingPassword"),
+        description: t("connection.toastMissingPasswordDesc"),
       })
       return
     }
@@ -221,17 +272,63 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
       const testResult = await testConnection(nextForm)
       setProvisionHint(`${result.message}：${result.keyPath}`)
       toast({
-        title: result.created ? "私钥已创建" : "私钥已复用",
-        description: `${result.message}，并已更新 ${result.configPath} · ${testResult.message}`,
+        title: result.created ? t("connection.toastKeyCreated") : t("connection.toastKeyReused"),
+        description: t("connection.toastKeyDesc", { msg: result.message, path: result.configPath, test: testResult.message }),
       })
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "一键创建私钥失败",
-        description: error instanceof Error ? error.message : "无法生成并安装私钥",
+        title: t("connection.toastKeyFailed"),
+        description: error instanceof Error ? error.message : t("connection.toastKeyFailedDesc"),
       })
     } finally {
       setIsProvisioningKey(false)
+    }
+  }
+
+  const handleOpenDeleteDialog = () => {
+    if (!preset?.id) {
+      return
+    }
+    setDeleteConfirmName("")
+    setDeleteDialogOpen(true)
+  }
+
+  const handleCloseDeleteDialog = (nextOpen: boolean) => {
+    if (isDeleting) {
+      return
+    }
+    setDeleteDialogOpen(nextOpen)
+    if (!nextOpen) {
+      setDeleteConfirmName("")
+    }
+  }
+
+  const handleConfirmDelete = async () => {
+    if (!preset?.id) {
+      return
+    }
+    const trimmedName = form.name.trim()
+    if (!trimmedName || deleteConfirmName.trim() !== trimmedName) {
+      return
+    }
+    setIsDeleting(true)
+    try {
+      await deleteConnection(preset.id)
+      toast({
+        title: t("connection.toastDeleteOk", { name: trimmedName }),
+      })
+      setDeleteDialogOpen(false)
+      setDeleteConfirmName("")
+      onOpenChange(false)
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("connection.toastDeleteFailed"),
+        description: error instanceof Error ? error.message : t("connection.toastDeleteFailed"),
+      })
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -242,12 +339,12 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
         <DialogHeader className="shrink-0 gap-2 border-b border-border px-6 py-5 pr-14">
           <DialogTitle className="flex items-center gap-2 text-xl">
             <Server data-icon="inline-start" />
-            {isEditing ? "编辑 VPS 连接" : "新建 VPS 连接"}
+            {isEditing ? t("connection.editTitle") : t("connection.newTitle")}
           </DialogTitle>
           <DialogDescription>
             {isEditing
-              ? "修改已保存的服务器连接名称或参数，后续巡检与部署会继续使用这条记录。"
-              : "保存一台可复用的服务器连接，后续安装环境、上传项目和部署流程都会基于这里继续扩展。"}
+              ? t("connection.editDesc")
+              : t("connection.newDesc")}
           </DialogDescription>
         </DialogHeader>
 
@@ -256,20 +353,22 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
             {!isEditing ? (
               <div className="flex items-center justify-between gap-4 rounded-xl border border-border/80 bg-muted/35 px-4 py-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground">SSH 本地配置</p>
-                  <p className="mt-1 text-sm text-muted-foreground">如果你电脑里已经配好了 `~/.ssh/config`，点右侧按钮就能直接选一条导入。</p>
+                  <p className="text-sm font-medium text-foreground">{t("connection.sshLocalConfig")}</p>
+                  <p className="mt-1 text-sm text-muted-foreground">{t("connection.sshLocalConfigDesc")}</p>
                 </div>
                 <Button
                   variant="outline"
                   className="shrink-0"
                   onClick={() => {
-                    void loadSshConfigCandidates()
+                    if (!sshCandidatesLoaded) {
+                      void loadSshConfigCandidates().then(() => setSshCandidatesLoaded(true))
+                    }
                     setSshPickerOpen(true)
                   }}
                   disabled={isLoadingSshConfigCandidates}
                 >
                   {isLoadingSshConfigCandidates ? <LoaderCircle className="animate-spin" /> : <Import />}
-                  导入 SSH 配置
+                  {t("connection.importSshConfig")}
                 </Button>
               </div>
             ) : null}
@@ -278,11 +377,11 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
               <div className="rounded-xl border border-border/80 bg-muted/30 px-4 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground">已导入 SSH 配置</p>
+                    <p className="text-sm font-medium text-foreground">{t("connection.sshConfigImported")}</p>
                     <p className="mt-1 truncate text-sm text-muted-foreground">
                       {selectedCandidate.name} · {selectedCandidate.username}@{selectedCandidate.host}:{selectedCandidate.port}
                     </p>
-                    <p className="mt-1 text-xs text-muted-foreground">这只是导入一份到当前连接，不会自动跟随 `~/.ssh/config` 变化。</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{t("connection.sshConfigImportedDesc")}</p>
                   </div>
                   <Button
                     variant="outline"
@@ -292,7 +391,7 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                     }}
                     disabled={isLoadingSshConfigCandidates}
                   >
-                    重新导入
+                    {t("connection.reimport")}
                   </Button>
                 </div>
               </div>
@@ -300,7 +399,7 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
 
             <div className="grid gap-4 md:grid-cols-2">
               <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                连接备注名称
+                {t("connection.fieldName")}
                 <Input
                   ref={nameInputRef}
                   value={form.name}
@@ -308,11 +407,11 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                   placeholder="Production - Singapore"
                 />
                 <span className="text-xs text-muted-foreground">
-                  这是面板里显示的名字，方便你自己记，不会去修改 SSH 原配置。
+                  {t("connection.fieldNameDesc")}
                 </span>
               </label>
               <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                服务器地址
+                {t("connection.fieldHost")}
                 <Input
                   value={form.host}
                   onChange={(event) => updateField("host", event.target.value)}
@@ -320,7 +419,7 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                 />
               </label>
               <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                SSH 端口
+                {t("connection.fieldPort")}
                 <Input
                   type="number"
                   value={String(form.port)}
@@ -328,7 +427,7 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                 />
               </label>
               <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                登录用户
+                {t("connection.fieldUsername")}
                 <Input
                   value={form.username}
                   onChange={(event) => updateField("username", event.target.value)}
@@ -336,23 +435,23 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                 />
               </label>
               <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                服务商名称
+                {t("connection.fieldProvider")}
                 <Input
                   value={form.provider ?? ""}
                   onChange={(event) => updateField("provider", event.target.value)}
-                  placeholder="例如 GreenCloud"
+                  placeholder={t("connection.fieldProviderPlaceholder")}
                 />
               </label>
               <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                机房地点 / 线路
+                {t("connection.fieldLocation")}
                 <Input
                   value={form.locationLabel ?? ""}
                   onChange={(event) => updateField("locationLabel", event.target.value)}
-                  placeholder="例如 东京软银"
+                  placeholder={t("connection.fieldLocationPlaceholder")}
                 />
               </label>
               <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                到期时间
+                {t("connection.fieldExpiration")}
                 <Input
                   type="date"
                   value={form.expiresAt ?? ""}
@@ -376,22 +475,22 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                   {form.authType === "privateKey" ? (
                     <>
                       <KeyRound className="mr-1 size-3.5" />
-                      当前使用私钥认证
+                      {t("connection.usePrivateKey")}
                     </>
                   ) : (
                     <>
                       <LockKeyhole className="mr-1 size-3.5" />
-                      当前使用密码认证
+                      {t("connection.usePassword")}
                     </>
                   )}
                 </Badge>
                 {form.authType === "privateKey" ? (
                   <span className="text-xs text-muted-foreground">
-                    当前连接会优先使用私钥完成 SSH 登录。
+                    {t("connection.usePrivateKeyDesc")}
                   </span>
                 ) : (
                   <span className="text-xs text-muted-foreground">
-                    当前连接仍会使用密码完成 SSH 登录。
+                    {t("connection.usePasswordDesc")}
                   </span>
                 )}
               </div>
@@ -405,18 +504,18 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
               <TabsList className="grid h-11 w-full grid-cols-2 gap-1 bg-muted p-1">
                 <TabsTrigger value="password" className="gap-2">
                   <LockKeyhole />
-                  密码认证
+                  {t("connection.authPassword")}
                 </TabsTrigger>
                 <TabsTrigger value="privateKey" className="gap-2">
                   <KeyRound />
-                  私钥认证
+                  {t("connection.authPrivateKey")}
                 </TabsTrigger>
               </TabsList>
 
               <TabsContent value="password" className="mt-0">
                 <div className="flex flex-col gap-4">
                   <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                    SSH 密码
+                    {t("connection.fieldPassword")}
                     <div className="relative">
                       <Input
                         type={showSecret ? "text" : "password"}
@@ -430,7 +529,7 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                             setHasStoredPassword(false)
                           }
                         }}
-                        placeholder={hasStoredPassword ? "已保存密码" : "输入服务器密码"}
+                        placeholder={hasStoredPassword ? t("connection.passwordStored") : t("connection.fieldPassword")}
                         className="pr-10"
                       />
                       <button
@@ -446,9 +545,9 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                   <div className="rounded-xl border border-border/80 bg-muted/30 px-4 py-3">
                     <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-foreground">一键改为私钥登录</p>
+                        <p className="text-sm font-medium text-foreground">{t("connection.switchToKey")}</p>
                         <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          会在本机生成一把新的 ED25519 私钥，并用当前密码把公钥安装到服务器。
+                          {t("connection.switchToKeyDesc")}
                         </p>
                         {provisionHint ? <p className="mt-2 break-all text-xs text-emerald-600 dark:text-emerald-300">{provisionHint}</p> : null}
                       </div>
@@ -460,7 +559,7 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                         onClick={() => void handleProvisionKey()}
                       >
                         {isProvisioningKey ? <LoaderCircle className="animate-spin" /> : <WandSparkles className="size-4" />}
-                        一键创建私钥
+                        {t("connection.createKey")}
                       </Button>
                     </div>
                   </div>
@@ -469,7 +568,7 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
 
               <TabsContent value="privateKey" className="mt-0 flex flex-col gap-4">
                 <label className="flex min-h-0 flex-col gap-2 text-sm text-muted-foreground">
-                  私钥内容
+                  {t("connection.fieldPrivateKey")}
                   <textarea
                     value={form.privateKey ?? ""}
                     onChange={(event) => updateField("privateKey", event.target.value)}
@@ -478,12 +577,12 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                   />
                 </label>
                 <label className="flex flex-col gap-2 text-sm text-muted-foreground">
-                  私钥口令
+                  {t("connection.fieldKeyPassphrase")}
                   <Input
                     type={showSecret ? "text" : "password"}
                     value={form.passphrase ?? ""}
                     onChange={(event) => updateField("passphrase", event.target.value)}
-                    placeholder="如私钥已加密则填写"
+                    placeholder={t("connection.keyPassphrasePlaceholder")}
                   />
                 </label>
               </TabsContent>
@@ -499,8 +598,8 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                   <div className="flex flex-col gap-1 text-emerald-600 dark:text-emerald-300">
                     <p>{lastTestResult?.message}</p>
                     <p className="text-muted-foreground">
-                      延迟 {lastTestResult?.latencyMs}ms
-                      {lastTestResult?.workingDirectory ? ` · 工作目录 ${lastTestResult.workingDirectory}` : ""}
+                      {t("connection.testLatency", { ms: lastTestResult?.latencyMs })}
+                      {lastTestResult?.workingDirectory ? t("connection.testWorkingDir", { path: lastTestResult.workingDirectory }) : ""}
                     </p>
                   </div>
                 )}
@@ -511,17 +610,30 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
 
         <div className="shrink-0 border-t border-border bg-card px-6 py-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-            <p className="text-sm text-muted-foreground sm:min-w-0 sm:flex-1 sm:pr-2">
-              当前版本会把连接配置写入本地 SQLite，方便后续继续做部署编排。
-            </p>
+            <div className="flex min-w-0 flex-1 flex-col gap-2 sm:pr-2">
+              {isEditing ? (
+                <Button
+                  variant="outline"
+                  className="w-fit border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={handleOpenDeleteDialog}
+                  disabled={!form.name?.trim() || isDeleting}
+                >
+                  <Trash2 />
+                  {t("connection.deleteButton")}
+                </Button>
+              ) : null}
+              <p className="text-sm text-muted-foreground">
+                {t("connection.versionNote")}
+              </p>
+            </div>
             <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 sm:justify-end">
               <Button variant="outline" onClick={handleTest} disabled={!isValid || isTesting}>
                 {isTesting ? <LoaderCircle className="animate-spin" /> : null}
-                测试连接
+                {t("connection.testConnection")}
               </Button>
               <Button onClick={handleSave} disabled={!isValid || isSaving}>
                 {isSaving ? <LoaderCircle className="animate-spin" /> : null}
-                保存连接
+                {t("connection.saveConnection")}
               </Button>
             </div>
           </div>
@@ -531,22 +643,22 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
       <Dialog open={sshPickerOpen} onOpenChange={setSshPickerOpen}>
         <DialogContent className="max-w-xl border-border bg-card text-card-foreground">
           <DialogHeader>
-            <DialogTitle>导入本机 SSH 配置</DialogTitle>
+            <DialogTitle>{t("connection.importDialogTitle")}</DialogTitle>
             <DialogDescription>
-              选择一条 `~/.ssh/config` 里的配置，点一下就会直接带入当前表单。
+              {t("connection.importDialogDesc")}
             </DialogDescription>
           </DialogHeader>
 
           <Input
             value={sshSearch}
             onChange={(event) => setSshSearch(event.target.value)}
-            placeholder="搜索 Host、地址、用户名或端口"
+            placeholder={t("connection.importSearchPlaceholder")}
           />
 
           <div className="flex max-h-[min(22rem,55vh)] flex-col gap-2 overflow-y-auto">
             {filteredSshCandidates.length === 0 ? (
               <div className="rounded-xl border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                {sshConfigCandidates.length === 0 ? "当前没有可导入的 SSH 配置项。" : "没有找到匹配的 SSH 配置。"}
+                {sshConfigCandidates.length === 0 ? t("connection.importEmpty") : t("connection.importNoMatch")}
               </div>
             ) : (
               filteredSshCandidates.map((candidate) => {
@@ -565,7 +677,7 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
                       </p>
                     </div>
                     <span className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
-                      {candidate.authType === "privateKey" ? "私钥" : "密码"}
+                      {candidate.authType === "privateKey" ? t("connection.authType.privateKey") : t("connection.authType.password")}
                     </span>
                   </button>
                 )
@@ -574,6 +686,55 @@ export function VpsConnectionDialog({ children, open: openProp, onOpenChange: on
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={deleteDialogOpen} onOpenChange={handleCloseDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-destructive">
+              <Trash2 />
+              {t("connection.deleteDialogTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("connection.deleteDialogDesc")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex flex-col gap-2">
+            <p className="text-sm text-foreground">
+              {t("connection.deleteDialogPrompt", { name: form.name })}
+            </p>
+            <Input
+              value={deleteConfirmName}
+              onChange={(event) => setDeleteConfirmName(event.target.value)}
+              placeholder={t("connection.deleteDialogInputPlaceholder")}
+              disabled={isDeleting}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {deleteConfirmName.trim().length > 0 &&
+            deleteConfirmName.trim() !== form.name.trim() ? (
+              <p className="text-xs text-destructive">
+                {t("connection.deleteDialogInputMismatch")}
+              </p>
+            ) : null}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>
+              {t("connection.deleteDialogCancel")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isDeleting || deleteConfirmName.trim() !== form.name.trim()}
+              onClick={(event) => {
+                event.preventDefault()
+                void handleConfirmDelete()
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+              {t("connection.deleteDialogConfirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   )
 }

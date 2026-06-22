@@ -3,6 +3,7 @@
   "productName": "CloudRoost",
   "version": "1.0.0",
   "description": "云栖 — 轻量级 VPS 远程服务器管理面板",
+  "author": "西山懒懒翁",
   "license": "MIT",
   "type": "module",
   "main": "out/main/index.js",
@@ -99,7 +100,7 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["universal"]
+          "arch": ["arm64"]
         }
       ]
     },

@@ -3,7 +3,7 @@
   "productName": "CloudRoost",
   "version": "1.0.0",
   "description": "云栖 — 轻量级 VPS 远程服务器管理面板",
-  "author": "西山懒懒翁",
+  "author": "西山懒懒翁 <digwis@users.noreply.github.com>",
   "license": "MIT",
   "type": "module",
   "main": "out/main/index.js",

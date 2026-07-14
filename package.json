@@ -106,7 +106,7 @@
     },
     "linux": {
       "category": "Development",
-      "icon": "resources",
+      "icon": "resources/icons",
       "target": [
         {
           "target": "AppImage",

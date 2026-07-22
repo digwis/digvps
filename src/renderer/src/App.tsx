@@ -69,8 +69,8 @@ type AppLocation = {
   }
 }
 
-const LAST_ACTIVE_NAV_KEY = "cloudroost:last-active-nav"
-const SIDEBAR_COLLAPSED_KEY = "cloudroost:sidebar-collapsed"
+const LAST_ACTIVE_NAV_KEY = "openvps:last-active-nav"
+const SIDEBAR_COLLAPSED_KEY = "openvps:sidebar-collapsed"
 const TELEMETRY_FRESH_MS = 20_000
 
 const lastActiveNavWriter = createDebouncedStorageWriter(LAST_ACTIVE_NAV_KEY)

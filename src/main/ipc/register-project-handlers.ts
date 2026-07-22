@@ -202,7 +202,7 @@ function checkUrlReachable(url: string, redirectCount = 0): Promise<ProjectUrlRe
         method: "GET",
         timeout: 2500,
         headers: {
-          "user-agent": "CloudRoost/1.0",
+          "user-agent": "OpenVPS/1.0",
           accept: "*/*",
         },
       },
@@ -880,7 +880,7 @@ export function registerProjectHandlers() {
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
     if (!config) {
-      throw new Error("项目缺少 cloudroost.deploy.json")
+      throw new Error("项目缺少 openvps.deploy.json")
     }
     return await inspectProjectRemoteState({
       connection: resolveStoredPayload(connection),
@@ -1012,7 +1012,7 @@ export function registerProjectHandlers() {
     const connection = requireConnection(payload.connectionId)
     const config = readProjectDeployConfig(project.localPath)
     if (!config?.init) {
-      throw new Error("该项目未配置远端初始化模板（缺少 cloudroost.deploy.json 中的 init 段）")
+      throw new Error("该项目未配置远端初始化模板（缺少 openvps.deploy.json 中的 init 段）")
     }
 
     appendOperationLog({

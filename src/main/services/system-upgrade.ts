@@ -13,6 +13,12 @@ manager=none
 upgradable_count=0
 index_refreshed=0
 
+if [ "$(id -u)" -eq 0 ]; then
+  run_privileged() { "$@"; }
+else
+  run_privileged() { sudo -n "$@"; }
+fi
+
 if command -v apt >/dev/null 2>&1; then
   manager=apt
 elif command -v apt-get >/dev/null 2>&1; then
@@ -28,10 +34,8 @@ if [ "$manager" = "none" ]; then
   exit 0
 fi
 
-if sudo -n true 2>/dev/null; then
-  if sudo -n DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null; then
-    index_refreshed=1
-  fi
+if run_privileged env DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>/dev/null; then
+  index_refreshed=1
 fi
 
 if [ "$manager" = "apt" ]; then
@@ -96,15 +100,19 @@ export async function checkSystemUpgrades(payload: VpsConnectionInput): Promise<
 
 function buildApplyScript(reboot: boolean): string {
   const rebootLine = reboot
-    ? `sudo -n DEBIAN_FRONTEND=noninteractive shutdown -r +0 "digwis-panel maintenance reboot" || true\n`
+    ? `run_privileged env DEBIAN_FRONTEND=noninteractive shutdown -r +0 "digwis-panel maintenance reboot" || true\n`
     : ""
   return `
 set -e
 export DEBIAN_FRONTEND=noninteractive
-sudo -n true
-sudo -n apt-get update -qq
-sudo -n apt-get full-upgrade -y
-sudo -n apt-get autoremove -y
+if [ "$(id -u)" -eq 0 ]; then
+  run_privileged() { "$@"; }
+else
+  run_privileged() { sudo -n "$@"; }
+fi
+run_privileged apt-get update -qq
+run_privileged apt-get full-upgrade -y
+run_privileged apt-get autoremove -y
 printf '%s\\n' "DIGWIS_UPGRADE_DONE"
 ${rebootLine}`
 }
@@ -114,6 +122,24 @@ function tailText(text: string, max = 4000): string {
     return text
   }
   return text.slice(-max)
+}
+
+/** 判断错误是否属于 SSH 连接在执行期间被中断（socket 重置 / 对端关闭）。 */
+function isConnectionInterruption(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+  const code = (error as { code?: unknown }).code
+  const msg = error.message.toLowerCase()
+  return (
+    code === "ECONNRESET" ||
+    code === "ECONNABORTED" ||
+    code === "ETIMEDOUT" ||
+    msg.includes("econnreset") ||
+    msg.includes("connection closed") ||
+    msg.includes("socket hang up") ||
+    msg.includes("disconnected")
+  )
 }
 
 export async function applySystemUpgrade(
@@ -155,20 +181,23 @@ export async function applySystemUpgrade(
         : "升级与清理已完成。若内核有更新，请在服务器上自行执行重启以生效。",
     }
   } catch (error) {
-    if (options.reboot && error instanceof Error) {
-      const msg = error.message.toLowerCase()
-      if (
-        msg.includes("connection closed") ||
-        msg.includes("ecconnreset") ||
-        msg.includes("socket hang up") ||
-        msg.includes("disconnected")
-      ) {
+    // 连接在升级期间中断（如 apt 升级 openssh-server 触发 sshd 重启）。
+    // 此时升级可能已成功或仍在进行，不能当作硬失败，应触发重新检测。
+    if (isConnectionInterruption(error)) {
+      if (options.reboot) {
         return {
           ok: true,
           likelyRebooting: true,
           stdout: "",
           message: "连接已中断，主机可能正在重启。请稍后重新检测或重新连接。",
         }
+      }
+      return {
+        ok: false,
+        likelyInterrupted: true,
+        stdout: "",
+        message:
+          "升级期间 SSH 连接被中断，远程升级可能已成功或仍在进行。请稍后重新检测软件更新以确认结果。",
       }
     }
     return {

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🏔️ CloudRoost / 云栖
+# 🏔️ OpenVPS
 
 **轻量级 VPS 远程服务器管理面板**
 
@@ -17,7 +17,7 @@
 
 ## 🌐 English
 
-CloudRoost is an open-source desktop application for managing remote Linux VPS servers. Connect via SSH and monitor, inspect, and manage your servers through a clean, modern GUI — no more juggling terminal windows.
+OpenVPS is an open-source desktop application for managing remote Linux VPS servers. Connect via SSH and monitor, inspect, and manage your servers through a clean, modern GUI — no more juggling terminal windows.
 
 ### ✨ Features
 
@@ -65,8 +65,8 @@ Download the latest release for your platform:
 
 ```bash
 # Clone the repository
-git clone https://github.com/zhaofilms/CloudRoost.git
-cd CloudRoost
+git clone https://github.com/digwis/OpenVPS.git
+cd OpenVPS
 
 # Install dependencies
 npm install
@@ -145,8 +145,8 @@ npm run dist:mac
 
 ```bash
 # 克隆仓库
-git clone https://github.com/zhaofilms/CloudRoost.git
-cd CloudRoost
+git clone https://github.com/digwis/OpenVPS.git
+cd OpenVPS
 
 # 安装依赖
 npm install

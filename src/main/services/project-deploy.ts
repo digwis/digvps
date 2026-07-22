@@ -96,7 +96,7 @@ export async function resolveRemoteDeployPathForProject(
       )
     }
     const home = (homeResult.stdout.trim() || "/root").replace(/\\/g, "/")
-    parent = path.posix.join(home, "cloudroost-projects")
+    parent = path.posix.join(home, "openvps-projects")
   }
   assertSaneRemoteDeployPath(parent)
   const deploy = path.posix.join(parent, projectId).replace(/\\/g, "/")

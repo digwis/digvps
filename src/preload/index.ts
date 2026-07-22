@@ -28,6 +28,10 @@ import type {
 } from "../shared/projects"
 
 const api: DigwisApi = {
+  settings: {
+    getDefaultRemoteDirectory: () => ipcRenderer.invoke("settings:get-default-remote-directory"),
+    setDefaultRemoteDirectory: (value: string) => ipcRenderer.invoke("settings:set-default-remote-directory", value),
+  },
   projects: {
     listProjects: () => ipcRenderer.invoke("projects:list"),
     addProjectFromPath: (payload: LocalProjectInput) => ipcRenderer.invoke("projects:add", payload),

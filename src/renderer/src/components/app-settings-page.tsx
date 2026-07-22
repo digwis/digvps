@@ -1,29 +1,77 @@
 import { useEffect, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
-import { ArrowLeft, Check, DatabaseBackup, Globe, LoaderCircle, MonitorSmartphone, Moon, Palette, Sun } from "lucide-react"
+import { ArrowLeft, Check, DatabaseBackup, FolderOpen, Globe, LoaderCircle, MonitorSmartphone, Moon, Palette, Sun } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { toast } from "@/hooks/use-toast"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { cn } from "@/lib/utils"
 import { useThemeStore, type Theme } from "@/store/theme-store"
 import { useLocaleStore, SUPPORTED_LOCALES, type Locale } from "@/store/locale-store"
+import { useSettingsStore } from "@/store/settings-store"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
-type SettingsSection = "appearance" | "language"
+type SettingsSection = "appearance" | "language" | "remote"
 
-const SECTION_KEYS: Array<SettingsSection> = ["appearance", "language"]
+const SECTION_KEYS: Array<SettingsSection> = ["appearance", "language", "remote"]
 
 const SECTION_ICONS: Record<SettingsSection, typeof Palette> = {
   appearance: Palette,
   language: Globe,
+  remote: FolderOpen,
 }
 
 export function AppSettingsPage({ onExit }: { onExit: () => void }) {
   const { t } = useTranslation()
   const { theme, resolvedTheme, setTheme } = useThemeStore()
   const { locale, setLocale } = useLocaleStore()
+  const { defaultRemoteDirectory, setDefaultRemoteDirectory } = useSettingsStore()
   const [activeSection, setActiveSection] = useState<SettingsSection>("appearance")
+  const [remoteDirectoryDraft, setRemoteDirectoryDraft] = useState(defaultRemoteDirectory)
+  const [remoteDirectorySaving, setRemoteDirectorySaving] = useState(false)
   const [backupSaving, setBackupSaving] = useState(false)
   const [projectCount, setProjectCount] = useState(0)
+
+  useEffect(() => {
+    setRemoteDirectoryDraft(defaultRemoteDirectory)
+  }, [defaultRemoteDirectory])
+
+  const saveDefaultRemoteDirectory = async () => {
+    const value = remoteDirectoryDraft.trim()
+    if (!value) {
+      toast({
+        variant: "destructive",
+        title: t("settings.remote.emptyPathTitle"),
+        description: t("settings.remote.emptyPathDesc"),
+      })
+      return
+    }
+    if (!value.startsWith("/")) {
+      toast({
+        variant: "destructive",
+        title: t("settings.remote.relativePathTitle"),
+        description: t("settings.remote.relativePathDesc"),
+      })
+      return
+    }
+    setRemoteDirectorySaving(true)
+    try {
+      await setDefaultRemoteDirectory(value)
+      toast({
+        title: t("settings.remote.savedTitle"),
+        description: t("settings.remote.savedDesc", { path: value }),
+      })
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: t("settings.remote.saveFailedTitle"),
+        description: error instanceof Error ? error.message : t("settings.remote.saveFailedDesc"),
+      })
+    } finally {
+      setRemoteDirectorySaving(false)
+    }
+  }
 
   const themeOptions = useMemo<Array<{
     value: Theme
@@ -71,6 +119,7 @@ export function AppSettingsPage({ onExit }: { onExit: () => void }) {
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     {key === "appearance" && t("settings.appearance.themeMode")}
                     {key === "language" && t("settings.language.displayLanguage")}
+                    {key === "remote" && t("settings.remote.defaultDirectory")}
                   </div>
                 </div>
               </button>
@@ -147,7 +196,7 @@ export function AppSettingsPage({ onExit }: { onExit: () => void }) {
                 </div>
               </div>
             </>
-          ) : (
+          ) : activeSection === "language" ? (
             <>
               <div className="mb-8">
                 <h3 className="text-3xl font-semibold text-foreground">{t("settings.language.title")}</h3>
@@ -187,6 +236,52 @@ export function AppSettingsPage({ onExit }: { onExit: () => void }) {
                       </button>
                     )
                   })}
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="mb-8">
+                <h3 className="text-3xl font-semibold text-foreground">{t("settings.remote.title")}</h3>
+                <p className="mt-2 text-sm text-muted-foreground">{t("settings.remote.subtitle")}</p>
+              </div>
+
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <div>
+                    <Label htmlFor="default-remote-directory" className="text-sm font-medium text-foreground">
+                      {t("settings.remote.defaultDirectory")}
+                    </Label>
+                    <p className="mt-1 text-sm text-muted-foreground">{t("settings.remote.defaultDirectoryDesc")}</p>
+                  </div>
+
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <Input
+                      id="default-remote-directory"
+                      className="h-11 flex-1 rounded-xl font-mono text-sm"
+                      value={remoteDirectoryDraft}
+                      placeholder={t("settings.remote.defaultDirectoryPlaceholder")}
+                      onChange={(event) => setRemoteDirectoryDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault()
+                          void saveDefaultRemoteDirectory()
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      className="h-11 rounded-xl px-6"
+                      disabled={remoteDirectorySaving || remoteDirectoryDraft.trim() === defaultRemoteDirectory}
+                      onClick={() => void saveDefaultRemoteDirectory()}
+                    >
+                      {remoteDirectorySaving ? (
+                        <LoaderCircle className="size-4 animate-spin" />
+                      ) : (
+                        t("common.save")
+                      )}
+                    </Button>
+                  </div>
                 </div>
               </div>
             </>

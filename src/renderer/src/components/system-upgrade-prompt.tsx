@@ -18,9 +18,12 @@ type Props = {
   connection: VpsConnectionRecord | undefined
 }
 
-const MANUAL_UPGRADE_COMMANDS = `sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
-sudo apt-get autoremove -y`
+function getManualUpgradeCommands(isRoot: boolean) {
+  const prefix = isRoot ? "" : "sudo "
+  return `${prefix}apt-get update
+${prefix}DEBIAN_FRONTEND=noninteractive apt-get full-upgrade -y
+${prefix}apt-get autoremove -y`
+}
 
 export function SystemUpgradePrompt({
   connection,
@@ -46,10 +49,12 @@ export function SystemUpgradePrompt({
 
   const [reboot, setReboot] = useState(false)
   const [copied, setCopied] = useState(false)
+  const isRoot = connection?.username === "root"
+  const manualUpgradeCommands = getManualUpgradeCommands(isRoot)
 
   const copyManualCommands = async () => {
     try {
-      await navigator.clipboard.writeText(MANUAL_UPGRADE_COMMANDS)
+      await navigator.clipboard.writeText(manualUpgradeCommands)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 2000)
     } catch {
@@ -105,16 +110,18 @@ export function SystemUpgradePrompt({
             {!upgradePrompt?.indexRefreshed ? (
               <>
                 {" "}
-                {t("upgrade.aptUpdateHint")}
+                {t(isRoot ? "upgrade.rootAptUpdateHint" : "upgrade.aptUpdateHint")}
               </>
             ) : null}
           </p>
 
           <div className="rounded-lg border border-border bg-muted/30 p-3 text-foreground">
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("upgrade.terminalCmd")}</p>
-            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("upgrade.terminalCmdDesc")}</p>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {t(isRoot ? "upgrade.rootTerminalCmdDesc" : "upgrade.terminalCmdDesc")}
+            </p>
             <code className="mt-2 block whitespace-pre-wrap break-all rounded-md border border-border bg-background/80 px-2 py-2 text-xs text-foreground">
-              {MANUAL_UPGRADE_COMMANDS}
+              {manualUpgradeCommands}
             </code>
             <Button
               type="button"
@@ -128,7 +135,7 @@ export function SystemUpgradePrompt({
               {copied ? t("upgrade.copiedBtn") : t("upgrade.copyBtn")}
             </Button>
             <p className="mt-2 text-xs text-muted-foreground">
-              {t("upgrade.rebootHint")}
+              {t(isRoot ? "upgrade.rootRebootHint" : "upgrade.rebootHint")}
             </p>
           </div>
 
@@ -137,10 +144,14 @@ export function SystemUpgradePrompt({
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
               {t("upgrade.oneClickDesc")}
             </p>
-            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-              {t("upgrade.oneClickPwdHint")}
-            </p>
-            <p className="mt-2 text-xs text-destructive">{t("upgrade.needPwd")}</p>
+            {!isRoot ? (
+              <>
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                  {t("upgrade.oneClickPwdHint")}
+                </p>
+                <p className="mt-2 text-xs text-destructive">{t("upgrade.needPwd")}</p>
+              </>
+            ) : null}
             <label className="mt-3 flex cursor-pointer items-start gap-2 text-foreground">
               <input
                 type="checkbox"

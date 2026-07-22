@@ -269,6 +269,8 @@ export type SystemUpgradeCheckResult = {
 export type SystemUpgradeApplyResult = {
   ok: boolean
   likelyRebooting?: boolean
+  /** 远程连接在升级期间中断（非主动重启），升级结果未知，应触发重新检测而非判死失败 */
+  likelyInterrupted?: boolean
   stdout: string
   message: string
 }
@@ -313,6 +315,10 @@ export type TerminalErrorEvent = {
 }
 
 export type DigwisApi = {
+  settings: {
+    getDefaultRemoteDirectory: () => Promise<string>
+    setDefaultRemoteDirectory: (value: string) => Promise<string>
+  }
   projects: ManagedProjectsApi
   terminal: {
     createSession: (payload: TerminalCreateInput) => Promise<TerminalCreateResult>

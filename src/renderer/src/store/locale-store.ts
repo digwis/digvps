@@ -4,7 +4,7 @@ import { changeLocale, SUPPORTED_LOCALES, DEFAULT_LOCALE, type Locale } from "..
 export { SUPPORTED_LOCALES, DEFAULT_LOCALE }
 export type { Locale }
 
-const LOCALE_KEY = "cloudroost:locale"
+const LOCALE_KEY = "openvps:locale"
 
 function readLocale(): Locale {
   try {

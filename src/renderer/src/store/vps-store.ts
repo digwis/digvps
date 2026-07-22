@@ -21,9 +21,9 @@ type VpsOperationLogEntry = {
   detail: string
 }
 
-const LAST_SELECTED_CONNECTION_KEY = "cloudroost:last-selected-connection-id"
-const INSPECTION_CACHE_KEY = "cloudroost:inspection-cache"
-const DISMISSED_UPGRADE_PROMPTS_KEY = "cloudroost:dismissed-upgrade-prompts"
+const LAST_SELECTED_CONNECTION_KEY = "openvps:last-selected-connection-id"
+const INSPECTION_CACHE_KEY = "openvps:inspection-cache"
+const DISMISSED_UPGRADE_PROMPTS_KEY = "openvps:dismissed-upgrade-prompts"
 const INSPECTION_CACHE_TTL_MS = 30 * 60_000
 const UPGRADE_STATUS_TTL_MS = 24 * 60 * 60_000
 

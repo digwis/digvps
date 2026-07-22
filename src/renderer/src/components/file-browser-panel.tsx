@@ -60,6 +60,7 @@ import { toast } from "@/hooks/use-toast"
 import { cn, createDebouncedStorageWriter } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { Switch } from "@/components/ui/switch"
+import { useSettingsStore } from "@/store/settings-store"
 import type {
   RemoteFileBrowseResult,
   RemoteFileEntry,
@@ -77,12 +78,11 @@ export type FileBrowserPanelProps = {
   requestToken?: number
 }
 
-const DEFAULT_REMOTE_DIRECTORY = "/var/www"
-const BROWSE_CACHE_STORAGE_KEY = "cloudroost:file-browser-cache"
+const BROWSE_CACHE_STORAGE_KEY = "openvps:file-browser-cache"
 const BROWSE_CACHE_FRESH_TTL_MS = 10_000
 const BROWSE_CACHE_STORAGE_TTL_MS = 12 * 60 * 60 * 1000
-const SHOW_HIDDEN_STORAGE_KEY = "cloudroost:file-browser-show-hidden"
-const EXPANDED_PATHS_STORAGE_KEY = "cloudroost:file-browser-expanded"
+const SHOW_HIDDEN_STORAGE_KEY = "openvps:file-browser-show-hidden"
+const EXPANDED_PATHS_STORAGE_KEY = "openvps:file-browser-expanded"
 type PermissionPreset = {
   label: string
   mode: string
@@ -279,6 +279,7 @@ export function FileBrowserPanel({
   requestToken,
 }: FileBrowserPanelProps) {
   const { t } = useTranslation()
+  const { defaultRemoteDirectory } = useSettingsStore()
   const permissionPresets = useMemo(() => getPermissionPresets(t), [t])
   const [displayMode, setDisplayMode] = useState<"tree" | "cards">("tree")
   const [browser, setBrowser] = useState<RemoteFileBrowseResult | null>(null)
@@ -331,7 +332,7 @@ export function FileBrowserPanel({
     if (!connectionId) {
       return undefined
     }
-    const resolvedPath = pathValue?.trim() || browser?.currentPath || DEFAULT_REMOTE_DIRECTORY
+    const resolvedPath = pathValue?.trim() || browser?.currentPath || defaultRemoteDirectory
     return `${connectionId}:${resolvedPath}`
   }
 
@@ -625,7 +626,7 @@ export function FileBrowserPanel({
   useEffect(() => {
     setTrash(null)
     setTreeLoadingPaths(new Set<string>())
-    const targetPath = requestedPath?.trim() || DEFAULT_REMOTE_DIRECTORY
+    const targetPath = requestedPath?.trim() || defaultRemoteDirectory
     if (requestToken && lastHandledRequestTokenRef.current !== requestToken) {
       lastHandledRequestTokenRef.current = requestToken
     }
@@ -637,7 +638,7 @@ export function FileBrowserPanel({
       setSelectedPaths(new Set<string>())
     }
     void loadBrowser(targetPath)
-  }, [connectionId, requestedPath, requestToken])
+  }, [connectionId, requestedPath, requestToken, defaultRemoteDirectory])
 
   const loadTrash = async () => {
     if (!connectionId) {
@@ -751,7 +752,7 @@ export function FileBrowserPanel({
   }
 
   const openNewFolderDialog = (parentPath?: string) => {
-    setNewFolderParentPath(parentPath?.trim() || browser?.currentPath || DEFAULT_REMOTE_DIRECTORY)
+    setNewFolderParentPath(parentPath?.trim() || browser?.currentPath || defaultRemoteDirectory)
     setNewFolderName("")
     setNewFolderOpen(true)
   }

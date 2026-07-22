@@ -63,11 +63,15 @@ function decryptSecret(value: string | null) {
     return undefined
   }
 
-  return safeStorage.decryptString(Buffer.from(value.slice(4), "base64"))
+  try {
+    return safeStorage.decryptString(Buffer.from(value.slice(4), "base64"))
+  } catch {
+    return undefined
+  }
 }
 
 function getDbFile(userDataPath: string) {
-  return path.join(userDataPath, "cloudroost.sqlite")
+  return path.join(userDataPath, "openvps.sqlite")
 }
 
 function normalizeConnectionIdentity(value: string) {
@@ -187,6 +191,13 @@ function normalizeDuplicateConnections(database: Database.Database) {
   tx()
 }
 
+export function closeDatabase() {
+  if (db) {
+    db.close()
+    db = null
+  }
+}
+
 export function initializeDatabase(userDataPath: string) {
   if (db) {
     return db
@@ -265,7 +276,41 @@ export function initializeDatabase(userDataPath: string) {
 
   normalizeDuplicateConnections(db)
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `)
+
   return db
+}
+
+export function getAppSetting(key: string, defaultValue?: string): string | undefined {
+  if (!db) {
+    return defaultValue
+  }
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined
+  return row?.value ?? defaultValue
+}
+
+export function setAppSetting(key: string, value: string) {
+  if (!db) {
+    throw new Error("Database not initialized")
+  }
+  const now = new Date().toISOString()
+  db.prepare(
+    `
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (@key, @value, @updatedAt)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+    `,
+  ).run({ key, value, updatedAt: now })
 }
 
 function mapRecord(row: ConnectionRow): VpsConnectionRecord {

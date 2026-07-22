@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
-DEFAULT_ROOT = "/var/www"
+DEFAULT_ROOT = os.environ.get("DIGWIS_DEFAULT_ROOT", "/var/www")
 BROWSE_CACHE_TTL = 10.0
 PREFETCH_LIMIT = 6
 VERSION = "${REMOTE_FILE_HELPER_VERSION}"

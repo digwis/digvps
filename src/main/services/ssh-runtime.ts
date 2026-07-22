@@ -54,6 +54,12 @@ export async function execOnClient(
       let stdout = ""
       let stderr = ""
       stream
+        .on("error", (streamError: Error) => {
+          // 连接在命令执行期间被重置（如 apt 升级 openssh-server 触发 sshd 重启）
+          // 时，ssh2 会通过 stream 的 'error' 事件上报。不接的话会变成 Node 的
+          // unhandled error，最终以原始 code/message 漏到 IPC 层。
+          finish(() => reject(streamError))
+        })
         .on("close", (code?: number) => {
           finish(() => {
             resolve({

@@ -1,6 +1,6 @@
 {
-  "name": "cloud-roost",
-  "productName": "CloudRoost",
+  "name": "openvps",
+  "productName": "OpenVPS",
   "version": "1.0.0",
   "description": "云栖 — 轻量级 VPS 远程服务器管理面板",
   "author": "西山懒懒翁",
@@ -78,8 +78,8 @@
     "vitest": "^4.1.5"
   },
   "build": {
-    "appId": "com.cloudroost.app",
-    "productName": "CloudRoost",
+    "appId": "com.digwis.openvps",
+    "productName": "OpenVPS",
     "directories": {
       "buildResources": "resources",
       "output": "dist"
@@ -90,13 +90,13 @@
     ],
     "extraResources": [
       {
-        "from": "resources/cloud-roost.png",
-        "to": "cloud-roost.png"
+        "from": "resources/openvps.png",
+        "to": "openvps.png"
       }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "icon": "resources/cloud-roost.icns",
+      "icon": "resources/openvps.icns",
       "target": [
         {
           "target": "dmg",
@@ -119,7 +119,7 @@
       ]
     },
     "win": {
-      "icon": "resources/cloud-roost.ico",
+      "icon": "resources/openvps.ico",
       "target": [
         {
           "target": "nsis",

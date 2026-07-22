@@ -8,6 +8,7 @@ import type {
   VpsConnectionInput,
 } from "../../shared/vps"
 import { REMOTE_FILE_HELPER_SCRIPT, REMOTE_FILE_HELPER_VERSION } from "./remote-file-helper-script"
+import { getDefaultRemoteDirectory } from "./settings"
 import { connectSftpClient, connectSshClient, execOnClient } from "./ssh-runtime"
 
 const HELPER_DIR_NAME = ".digwis-panel"
@@ -208,9 +209,10 @@ async function createSession(connection: VpsConnectionInput) {
 
   try {
     const helper = await ensureHelperInstalled(client, connection)
+    const defaultRemoteDirectory = shellQuote(getDefaultRemoteDirectory())
     const channel = await new Promise<ClientChannel>((resolve, reject) => {
       client.exec(
-        `bash -lc ${shellQuote(`${shellQuote(helper.helperCommand)} -u ${shellQuote(helper.helperPath)}`)}`,
+        `DIGWIS_DEFAULT_ROOT=${defaultRemoteDirectory} bash -lc ${shellQuote(`${shellQuote(helper.helperCommand)} -u ${shellQuote(helper.helperPath)}`)}`,
         (error, stream) => {
           if (error) {
             reject(error)
@@ -303,7 +305,8 @@ export async function browseViaRemoteHelper(
   options?: { forceRefresh?: boolean },
 ): Promise<RemoteFileBrowseResult> {
   const session = await getOrCreateSession(connection)
-  const cacheKey = requestedPath?.trim() || "/var/www"
+  const defaultRemoteDirectory = getDefaultRemoteDirectory()
+  const cacheKey = requestedPath?.trim() || defaultRemoteDirectory
   const cached = session.browseCache.get(cacheKey)
   if (!options?.forceRefresh && cached && Date.now() - cached.cachedAt <= BROWSE_CACHE_TTL_MS) {
     return cached.result

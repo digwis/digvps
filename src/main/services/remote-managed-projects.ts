@@ -5,6 +5,7 @@ import type {
 } from "../../shared/projects"
 import type { VpsConnectionInput } from "../../shared/vps"
 import { runRemoteShellCommand } from "./remote-exec"
+import { getDefaultRemoteDirectory } from "./settings"
 
 const NGINX_CONFIG_PATHS = [
   "/etc/nginx/conf.d",
@@ -12,13 +13,23 @@ const NGINX_CONFIG_PATHS = [
   "/etc/nginx/sites-available",
 ] as const
 
-const HEURISTIC_PROBE_DIRS = [
-  "/var/www",
+const FALLBACK_PROBE_DIRS = [
   "/srv/www",
   "/opt",
 ] as const
 
 const HEURISTIC_PROBE_LIMIT = 6
+
+function getHeuristicProbeDirs(): string[] {
+  const defaultDir = getDefaultRemoteDirectory()
+  const dirs = [defaultDir]
+  for (const dir of FALLBACK_PROBE_DIRS) {
+    if (!dirs.includes(dir)) {
+      dirs.push(dir)
+    }
+  }
+  return dirs
+}
 
 const SHELL_QUOTE = (() => {
   const charsToEscape = new Set(["$", "`", "\\", "\"", "!", "\n"])
@@ -127,7 +138,7 @@ async function probeHeuristicPath(
   payload: VpsConnectionInput,
   project: RemoteManagedProject,
 ): Promise<string | undefined> {
-  for (const base of HEURISTIC_PROBE_DIRS) {
+  for (const base of getHeuristicProbeDirs()) {
     const result = await runRemoteShellCommand(
       payload,
       [

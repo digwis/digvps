@@ -43,6 +43,10 @@ let cachedApi: DigwisApi | null = null
 
 function createWrappedApi(api: DigwisApi): DigwisApi {
   return {
+    settings: {
+      getDefaultRemoteDirectory: () => wrapInvoke(() => api.settings.getDefaultRemoteDirectory()),
+      setDefaultRemoteDirectory: (value) => wrapInvoke(() => api.settings.setDefaultRemoteDirectory(value)),
+    },
     projects: {
       listProjects: () => wrapInvoke(() => api.projects.listProjects()),
       addProjectFromPath: (payload) => wrapInvoke(() => api.projects.addProjectFromPath(payload)),

@@ -123,7 +123,7 @@ export const vpsConnectionInputSchema = z
     username: nonEmptyString("username"),
     provider: z.string().trim().max(120).optional(),
     locationLabel: z.string().trim().max(120).optional(),
-    expiresAt: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "到期时间格式必须为 YYYY-MM-DD").optional(),
+    expiresAt: z.string().trim().refine((value) => !value || /^\d{4}-\d{2}-\d{2}$/.test(value), "到期时间格式必须为 YYYY-MM-DD").optional(),
     authType: z.enum(["password", "privateKey"]),
     password: z.string().optional(),
     privateKey: z.string().optional(),

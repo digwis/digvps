@@ -19,9 +19,9 @@ import type { BrowserWindow } from "electron"
 import { dialog } from "../electron-shim"
 import type { OpenDialogOptions, SaveDialogOptions } from "electron"
 import { connectSftpClient } from "./ssh-runtime"
+import { getDefaultRemoteDirectory } from "./settings"
 
 type SftpLike = any
-const DEFAULT_REMOTE_BROWSE_PATH = "/var/www"
 const TRASH_CONTAINER_DIR = ".digwis-panel/trash"
 const TRASH_FILES_DIRNAME = "files"
 const TRASH_META_DIRNAME = "meta"
@@ -144,7 +144,7 @@ async function withSftp<T>(connection: VpsConnectionInput, callback: (sftp: Sftp
 
 export async function resolveBrowsePath(sftp: SftpLike, requestedPath?: string) {
   if (!requestedPath?.trim()) {
-    return toRemotePath(DEFAULT_REMOTE_BROWSE_PATH)
+    return toRemotePath(getDefaultRemoteDirectory())
   }
   const next = requestedPath.trim()
   if (next.startsWith("/")) {

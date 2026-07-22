@@ -34,7 +34,8 @@
     "section": {
       "appearance": "Appearance",
       "backup": "Auto Backup",
-      "language": "Language"
+      "language": "Language",
+      "remote": "Remote"
     },
     "appearance": {
       "title": "Appearance",
@@ -63,6 +64,21 @@
         "zh-CN": "简体中文",
         "en-US": "English"
       }
+    },
+    "remote": {
+      "title": "Remote",
+      "subtitle": "Configure defaults for remote server operations.",
+      "defaultDirectory": "Default remote directory",
+      "defaultDirectoryDesc": "The fallback directory used by the file browser and project detection when no path is specified. Must be an absolute path.",
+      "defaultDirectoryPlaceholder": "e.g. /var/www",
+      "emptyPathTitle": "Path is required",
+      "emptyPathDesc": "Please enter a valid absolute path.",
+      "relativePathTitle": "Invalid path format",
+      "relativePathDesc": "Remote directories must be absolute paths starting with /.",
+      "savedTitle": "Saved",
+      "savedDesc": "Default remote directory updated to {{path}}.",
+      "saveFailedTitle": "Save failed",
+      "saveFailedDesc": "Could not save the default remote directory. Please check the path."
     }
   },
   "terminal": {
@@ -403,9 +419,12 @@
     "desc": "Updates are available. You can run the commands yourself in SSH, or apply them with one click in the panel.",
     "countDesc": "{{count}} upgradable item(s) detected.",
     "aptUpdateHint": "If you just changed apt sources, run sudo apt-get update first.",
+    "rootAptUpdateHint": "If you just changed apt sources, run apt-get update first.",
     "terminalCmd": "Terminal command",
     "terminalCmdDesc": "Run on the server after logging in; enter the sudo password when prompted.",
+    "rootTerminalCmdDesc": "You are logged in as root, so run the commands below directly.",
     "rebootHint": "If the kernel is updated, run sudo reboot afterwards.",
+    "rootRebootHint": "If the kernel is updated, run reboot afterwards.",
     "oneClickTitle": "One-click update",
     "oneClickDesc": "The button below runs the same upgrade commands over SSH.",
     "oneClickPwdHint": "If one-click update failed previously, it's usually because the account lacks passwordless sudo, not sudo itself.",

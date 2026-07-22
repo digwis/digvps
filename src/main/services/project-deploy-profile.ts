@@ -3,7 +3,12 @@ import path from "node:path"
 import type { ProjectDeployProfile, ProjectPanelDeployConfig } from "../../shared/projects"
 import { readPackageJsonScriptNames } from "./project-local-npm"
 
-const DEPLOY_CONFIG_FILENAMES = ["digwis-panel.deploy.json", ".digwis-panel.deploy.json"]
+const DEPLOY_CONFIG_FILENAMES = [
+  "openvps.deploy.json",
+  ".openvps.deploy.json",
+  "digwis-panel.deploy.json",
+  ".digwis-panel.deploy.json",
+]
 
 type ResolvedDeployConfig = {
   path?: string

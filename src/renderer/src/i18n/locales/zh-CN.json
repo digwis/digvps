@@ -34,7 +34,8 @@
     "section": {
       "appearance": "外观",
       "backup": "自动备份",
-      "language": "语言"
+      "language": "语言",
+      "remote": "远程"
     },
     "appearance": {
       "title": "外观",
@@ -63,6 +64,21 @@
         "zh-CN": "简体中文",
         "en-US": "English"
       }
+    },
+    "remote": {
+      "title": "远程",
+      "subtitle": "配置远程服务器相关默认行为。",
+      "defaultDirectory": "默认远程目录",
+      "defaultDirectoryDesc": "文件管理器与项目探测在没有指定路径时的默认目录。必须是绝对路径。",
+      "defaultDirectoryPlaceholder": "例如 /var/www",
+      "emptyPathTitle": "路径不能为空",
+      "emptyPathDesc": "请输入一个有效的绝对路径。",
+      "relativePathTitle": "路径格式错误",
+      "relativePathDesc": "远程目录必须以 / 开头的绝对路径。",
+      "savedTitle": "已保存",
+      "savedDesc": "默认远程目录已更新为 {{path}}。",
+      "saveFailedTitle": "保存失败",
+      "saveFailedDesc": "无法保存默认远程目录，请检查路径是否有效。"
     }
   },
   "terminal": {
@@ -403,9 +419,12 @@
     "desc": "这台服务器有可更新的软件包。你可以自己在 SSH 里执行命令，或在面板里一键更新。",
     "countDesc": "检测到 {{count}} 个可升级项。",
     "aptUpdateHint": "如果你刚改过软件源，先执行 sudo apt-get update 再更新。",
+    "rootAptUpdateHint": "如果你刚改过软件源，先执行 apt-get update 再更新。",
     "terminalCmd": "终端命令",
     "terminalCmdDesc": "登录服务器后直接执行，可按提示输入 sudo 密码。",
+    "rootTerminalCmdDesc": "当前以 root 登录，直接执行下面的命令即可。",
     "rebootHint": "若内核有更新，升级完成后可自行执行 sudo reboot。",
+    "rootRebootHint": "若内核有更新，升级完成后可自行执行 reboot。",
     "oneClickTitle": "一键更新说明",
     "oneClickDesc": "下方按钮会通过 SSH 在服务器上直接执行同样的升级命令。",
     "oneClickPwdHint": "如果之前一键更新失败，通常是因为账户没有配置免密 sudo，而不是没有 sudo 权限。",

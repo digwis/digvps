@@ -5,9 +5,6 @@ import "./i18n"
 import { useLocaleStore } from "./store/locale-store"
 import "./styles.css"
 
-const savedTheme = localStorage.getItem("cloudroost:theme") ?? "dark"
-document.documentElement.classList.toggle("dark", savedTheme === "dark")
-
 void useLocaleStore.getState()
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

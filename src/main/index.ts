@@ -3,8 +3,10 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import {
+  closeDatabase,
   getVpsConnectionInput,
   initializeDatabase,
+  listConnections,
   listLocalProjects,
 } from "./services/db"
 import { disposeAllRemoteFileSessions } from "./services/remote-files"
@@ -22,22 +24,23 @@ import {
 import { resolveStoredPayload } from "./ipc/helpers"
 
 import { registerProjectHandlers } from "./ipc/register-project-handlers"
+import { registerSettingsHandlers } from "./ipc/register-settings-handlers"
 import { registerVpsHandlers } from "./ipc/register-vps-handlers"
 
 
 const isDev = !!process.env.ELECTRON_RENDERER_URL
-const appDisplayName = "CloudRoost"
+const appDisplayName = "OpenVPS"
 const aboutPanelCopyright = "西山懒懒翁"
 const appDisplayVersion = "0.01"
-const userDataDirectoryName = "CloudRoost"
+const userDataDirectoryName = "OpenVPS"
 const currentDir = path.dirname(fileURLToPath(import.meta.url))
 
 function getAppIconPath() {
-  const appBundleResource = path.join(process.resourcesPath, "cloud-roost.png")
+  const appBundleResource = path.join(process.resourcesPath, "openvps.png")
   if (fs.existsSync(appBundleResource)) {
     return appBundleResource
   }
-  return path.join(app.getAppPath(), "resources", "cloud-roost.png")
+  return path.join(app.getAppPath(), "resources", "openvps.png")
 }
 
 function configureAppIdentity() {
@@ -54,6 +57,73 @@ function configureAppIdentity() {
 
   if (process.platform === "darwin" && app.dock && fs.existsSync(iconPath)) {
     app.dock.setIcon(iconPath)
+  }
+}
+
+function migrateFromLegacyAppData() {
+  const legacyDir = path.join(app.getPath("appData"), "digwis-panel")
+  if (!fs.existsSync(legacyDir)) {
+    return
+  }
+
+  const userDataPath = app.getPath("userData")
+  if (!fs.existsSync(userDataPath)) {
+    fs.mkdirSync(userDataPath, { recursive: true })
+  }
+
+  const fileMigrations: Array<{ legacyName: string; currentName: string }> = [
+    { legacyName: "project-action-state.json", currentName: "project-action-state.json" },
+    { legacyName: "project-operation-log.ndjson", currentName: "project-operation-log.ndjson" },
+  ]
+
+  for (const { legacyName, currentName } of fileMigrations) {
+    const legacyFile = path.join(legacyDir, legacyName)
+    const currentFile = path.join(userDataPath, currentName)
+
+    if (!fs.existsSync(legacyFile)) {
+      continue
+    }
+
+    const currentStats = fs.existsSync(currentFile) ? fs.statSync(currentFile) : null
+    if (currentStats && currentStats.size > 0) {
+      console.log(`Migration skipped: ${currentName} already exists with data`)
+      continue
+    }
+
+    try {
+      fs.copyFileSync(legacyFile, currentFile)
+      console.log(`Migrated legacy data: ${legacyName} -> ${currentName}`)
+    } catch (error) {
+      console.error(`Failed to migrate ${legacyName}:`, error)
+    }
+  }
+}
+
+function migrateLegacyDatabase(userDataPath: string) {
+  const currentDb = path.join(userDataPath, "openvps.sqlite")
+  const legacyDatabases = [
+    path.join(app.getPath("appData"), "CloudRoost", "cloudroost.sqlite"),
+    path.join(app.getPath("appData"), "digwis-panel", "digwis-panel.sqlite"),
+  ]
+  const legacyDb = legacyDatabases.find((candidate) => fs.existsSync(candidate))
+
+  if (!legacyDb) {
+    return
+  }
+
+  if (listConnections().length > 0) {
+    console.log("Migration skipped: current database already has VPS connections")
+    return
+  }
+
+  try {
+    closeDatabase()
+    fs.copyFileSync(legacyDb, currentDb)
+    initializeDatabase(userDataPath)
+    console.log(`Migrated legacy database: ${legacyDb} -> openvps.sqlite`)
+  } catch (error) {
+    console.error("Failed to migrate legacy database:", error)
+    initializeDatabase(userDataPath)
   }
 }
 
@@ -132,12 +202,15 @@ function createWindow() {
 
 app.whenReady().then(() => {
   configureAppIdentity()
+  migrateFromLegacyAppData()
   Menu.setApplicationMenu(null)
   const userDataPath = app.getPath("userData")
   initializeDatabase(userDataPath)
+  migrateLegacyDatabase(userDataPath)
   initializeProjectActionState(userDataPath)
   initializeProjectOperationLog(userDataPath)
   registerProjectHandlers()
+  registerSettingsHandlers()
   registerVpsHandlers()
 
   ipcMain.handle("bitcoin:get-price", async () => {

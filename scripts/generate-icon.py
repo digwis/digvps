@@ -7,9 +7,9 @@ from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCES = ROOT / "resources"
-MASTER_PATH = RESOURCES / "digwis-panel.png"
-ICONSET_PATH = RESOURCES / "digwis-panel.iconset"
-ICNS_PATH = RESOURCES / "digwis-panel.icns"
+MASTER_PATH = RESOURCES / "openvps.png"
+ICONSET_PATH = RESOURCES / "openvps.iconset"
+ICNS_PATH = RESOURCES / "openvps.icns"
 
 ICON_SIZES = [16, 32, 64, 128, 256, 512, 1024]
 

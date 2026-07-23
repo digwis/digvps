@@ -368,7 +368,7 @@ export type ProjectDeployInput = {
   strategy?: ProjectDeployStrategy
   /** strategy 为 local-npm-script 时必填，且须为 package.json scripts 中的键名 */
   npmScript?: string
-  /** 远端父目录，留空则使用登录用户主目录下的 digwis-panel-projects（仅 SFTP 模式） */
+  /** 远端父目录，留空则使用登录用户主目录下的 openvps-projects（仅 SFTP 模式） */
   remoteParentPath?: string
 }
 

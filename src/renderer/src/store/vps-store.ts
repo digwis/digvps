@@ -163,7 +163,7 @@ function writeInspectionCache(connectionId: string, inspection: VpsInspection) {
   }
 }
 
-function getCachedInspection(connectionId?: string) {
+export function getCachedInspection(connectionId?: string) {
   if (!connectionId) {
     return undefined
   }

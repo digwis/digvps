@@ -1,0 +1,11 @@
+  directus-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${input.slug}_directus
+      POSTGRES_USER: directus
+      POSTGRES_PASSWORD: directus
+    ports:
+      - "5433:5432"
+    volumes:
+      - directus_pg:/var/lib/postgresql/data

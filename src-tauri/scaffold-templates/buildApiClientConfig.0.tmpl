@@ -1,0 +1,5 @@
+export const DEFAULT_API_BASE_URL = "${buildLocalPreviewUrl(webPort)}"
+
+export function resolveApiBaseUrl(explicit?: string) {
+  return explicit?.trim() || DEFAULT_API_BASE_URL
+}

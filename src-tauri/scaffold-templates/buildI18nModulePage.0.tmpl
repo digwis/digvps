@@ -1,0 +1,33 @@
+import Link from "next/link"
+import { notFound } from "next/navigation"
+
+import { isRuntimeModuleEnabled } from "../../lib/digwis-runtime-modules"
+import { localeLabels, messages, resolveLocale } from "../../lib/digwis-i18n"
+
+type Args = {
+  params: Promise<{
+    locale: string
+  }>
+}
+
+export default async function LocalizedHomePage({ params }: Args) {
+  if (!isRuntimeModuleEnabled("i18n")) {
+    notFound()
+  }
+
+  const { locale } = await params
+  const resolved = resolveLocale(locale)
+  const content = messages[resolved]
+
+  return (
+    <main style={{ padding: 32 }}>
+      <p style={{ color: "#94a3b8" }}>{localeLabels[resolved]}</p>
+      <h1>{content.title}</h1>
+      <p style={{ color: "#64748b", maxWidth: 720 }}>{content.summary}</p>
+      <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
+        <Link href="/en">English</Link>
+        <Link href="/zh-CN">简体中文</Link>
+      </div>
+    </main>
+  )
+}

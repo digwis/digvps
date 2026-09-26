@@ -1,0 +1,41 @@
+package com.digwis.mobile.ui
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.digwis.mobile.MainViewModel
+
+@Composable
+fun DigwisApp(projectName: String, viewModel: MainViewModel) {
+  val appState by viewModel.appState.collectAsState()
+
+  Surface(modifier = Modifier.fillMaxSize()) {
+    Column(
+      modifier = Modifier.padding(24.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+      Text(text = projectName, style = MaterialTheme.typography.headlineMedium)
+      Text(text = "Native Android shell for a shared Digwis platform product.")
+      Text(text = "Wire backend APIs and shared domain contracts here.")
+      Text(
+        text = "API: " + appState.apiBaseUrl,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+      Text(
+        text = "Shared contract: packages/api-client",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+  }
+}

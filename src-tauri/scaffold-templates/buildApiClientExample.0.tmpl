@@ -1,0 +1,6 @@
+import { DigwisApiClient } from "./client"
+
+export async function runHealthcheckExample() {
+  const client = new DigwisApiClient()
+  return await client.getHealthcheck()
+}

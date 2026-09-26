@@ -105,6 +105,15 @@
     "loadingRemoteEnv": "正在拉取远程环境信息…",
     "monitorIncomplete": "服务器监控没有完成",
     "noSnapshot": "这台服务器还没有监控快照",
+    "health": "健康状态",
+    "systemUpdates": "系统更新",
+    "allGood": "运行良好",
+    "upToDate": "系统已是最新",
+    "upToDateDesc": "没有可升级的软件包。",
+    "unsupportedUpgrade": "这台服务器不支持自动升级（未检测到 apt 包管理器）。",
+    "notChecked": "尚未检测系统更新",
+    "checkingUpgrades": "正在检测系统更新…",
+    "justNow": "刚刚",
     "refresh": "刷新",
     "loading": "加载中",
     "coreMonitoring": "核心监控",
@@ -136,6 +145,11 @@
       "notInstalled": "未安装",
       "running": "运行中",
       "stopped": "已停止"
+    },
+    "status": {
+      "connected": "已连接",
+      "failed": "连接失败",
+      "idle": "未连接"
     }
   },
   "connection": {
@@ -471,5 +485,8 @@
     "requestFailed": "请求失败",
     "saveFailed": "保存失败",
     "loadFailed": "加载失败"
+  },
+  "sidebar": {
+    "resizeHint": "拖拽调整宽度，双击复位"
   }
 }

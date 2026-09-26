@@ -1,0 +1,50 @@
+[package]
+name = "digvps"
+version = "1.0.0"
+description = "DigVPS — lightweight VPS management panel"
+authors = ["西山懒懒翁"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "digvps_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+base64 = "0.22"
+regex = "1"
+walkdir = "2"
+url = "2"
+percent-encoding = "2"
+dirs = "6"
+keyring = { version = "3", features = ["apple-native"] }
+aes-gcm = "0.10"
+aes = "0.8"
+cbc = "0.1"
+pbkdf2 = "0.12"
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+ureq = { version = "3", features = ["rustls", "json"] }
+rand = "0.8"
+libc = "0.2"
+cipher = { version = "0.4", features = ["alloc", "block-padding"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true

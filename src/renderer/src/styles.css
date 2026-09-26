@@ -64,10 +64,6 @@
   --sidebar-foreground: 210 18% 95%;
 }
 
-* {
-  border-color: hsl(var(--border));
-}
-
 html,
 body,
 #root {

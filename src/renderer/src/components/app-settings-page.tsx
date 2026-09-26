@@ -86,7 +86,7 @@ export function AppSettingsPage({ onExit }: { onExit: () => void }) {
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden bg-background">
-      <aside className="flex w-[280px] shrink-0 flex-col border-r border-border/60 bg-sidebar/95 px-3 pb-6 pt-8 dark:border-white/10">
+      <aside data-tauri-drag-region className="flex w-[280px] shrink-0 flex-col border-r border-border/60 bg-sidebar/95 px-3 pb-6 pt-8 dark:border-white/10">
         <button
           type="button"
           onClick={onExit}
@@ -128,7 +128,7 @@ export function AppSettingsPage({ onExit }: { onExit: () => void }) {
         </nav>
       </aside>
 
-      <section className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+      <section data-tauri-drag-region className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex min-h-full w-full max-w-[1280px] flex-col px-8 py-10 lg:px-10">
           {activeSection === "appearance" ? (
             <>

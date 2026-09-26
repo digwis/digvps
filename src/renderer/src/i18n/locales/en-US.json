@@ -105,6 +105,15 @@
     "loadingRemoteEnv": "Fetching remote environment…",
     "monitorIncomplete": "Server monitoring incomplete",
     "noSnapshot": "This server has no monitoring snapshot yet",
+    "health": "Server health",
+    "systemUpdates": "System updates",
+    "allGood": "All good",
+    "upToDate": "System is up to date",
+    "upToDateDesc": "No upgradable packages.",
+    "unsupportedUpgrade": "Automatic upgrades are unsupported on this server (no apt package manager).",
+    "notChecked": "System updates not checked yet",
+    "checkingUpgrades": "Checking for system updates…",
+    "justNow": "Just now",
     "refresh": "Refresh",
     "loading": "Loading",
     "coreMonitoring": "Core monitoring",
@@ -136,6 +145,11 @@
       "notInstalled": "Not installed",
       "running": "Running",
       "stopped": "Stopped"
+    },
+    "status": {
+      "connected": "Connected",
+      "failed": "Connection failed",
+      "idle": "Not connected"
     }
   },
   "connection": {
@@ -471,5 +485,8 @@
     "requestFailed": "Request failed",
     "saveFailed": "Save failed",
     "loadFailed": "Load failed"
+  },
+  "sidebar": {
+    "resizeHint": "Drag to resize, double-click to reset"
   }
 }

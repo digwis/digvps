@@ -1,154 +1,125 @@
-from __future__ import annotations
-
-from pathlib import Path
-
+#!/usr/bin/env python3
+"""Generate OpenVPS app icon: dark squircle + glowing server rack."""
+import os
 from PIL import Image, ImageDraw, ImageFilter
 
+S = 4  # supersample
+SIZE = 1024
+W = SIZE * S
 
-ROOT = Path(__file__).resolve().parents[1]
-RESOURCES = ROOT / "resources"
-MASTER_PATH = RESOURCES / "openvps.png"
-ICONSET_PATH = RESOURCES / "openvps.iconset"
-ICNS_PATH = RESOURCES / "openvps.icns"
+def lerp(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(len(a)))
 
-ICON_SIZES = [16, 32, 64, 128, 256, 512, 1024]
+def rounded_rect(draw, box, radius, fill):
+    draw.rounded_rectangle(box, radius=radius, fill=fill)
 
+def make_icon():
+    img = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
 
-def hex_color(value: str) -> tuple[int, int, int, int]:
-    value = value.lstrip("#")
-    return tuple(int(value[i : i + 2], 16) for i in range(0, 6, 2)) + (255,)
+    # Squircle-ish background (macOS: icon body ~ 824/1024, margin ~100px)
+    m = int(W * 0.08)
+    box = (m, m, W - m, W - m)
+    r = int(W * 0.225)
 
+    # vertical gradient dark slate -> deep navy blue
+    grad = Image.new("RGBA", (W - 2 * m, W - 2 * m))
+    gd = ImageDraw.Draw(grad)
+    top = (16, 22, 34)
+    bot = (10, 14, 26)
+    h = W - 2 * m
+    for y in range(h):
+        gd.line([(0, y), (grad.width, y)], fill=lerp(top, bot, y / h) + (255,))
+    mask = Image.new("L", grad.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, grad.width, grad.height), radius=r, fill=255)
+    img.paste(grad, (m, m), mask)
+    d = ImageDraw.Draw(img)
 
-def lerp_channel(a: int, b: int, t: float) -> int:
-    return round(a + (b - a) * t)
+    # subtle top highlight
+    hi = Image.new("RGBA", grad.size, (0, 0, 0, 0))
+    ImageDraw.Draw(hi).rounded_rectangle((0, 0, grad.width, int(grad.height * 0.5)),
+                                         radius=r, fill=(255, 255, 255, 14))
+    hi = hi.filter(ImageFilter.GaussianBlur(30 * S))
+    img.paste(hi, (m, m), Image.new("L", grad.size, 0).point(lambda _: 0) if False else hi.split()[3].point(lambda a: a))
+    # simpler: paste with its own alpha
+    # (redo cleanly)
+    img.paste(hi, (m, m), hi.split()[3])
 
+    # inner border stroke
+    d.rounded_rectangle(box, radius=r, outline=(255, 255, 255, 30), width=3 * S)
 
-def blend(a: tuple[int, int, int, int], b: tuple[int, int, int, int], t: float) -> tuple[int, int, int, int]:
-    return tuple(lerp_channel(ca, cb, t) for ca, cb in zip(a, b))
+    # --- server rack: 3 rounded bars + LED dots ---
+    cx = W / 2
+    bar_w = int(W * 0.52)
+    bar_h = int(W * 0.115)
+    gap = int(W * 0.055)
+    total_h = bar_h * 3 + gap * 2
+    top_y = int((W - total_h) / 2) - int(W * 0.01)
 
+    bars_layer = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(bars_layer)
 
-def build_background(size: int) -> Image.Image:
-    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    square = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(square)
+    bar_top_c = (96, 165, 250)   # blue-400
+    bar_bot_c = (56, 130, 246)   # deeper blue
+    led_c = (52, 211, 153)       # emerald
+    for i in range(3):
+        y0 = top_y + i * (bar_h + gap)
+        x0 = int(cx - bar_w / 2)
+        x1 = int(cx + bar_w / 2)
+        y1 = y0 + bar_h
+        br = int(bar_h * 0.32)
+        # gradient bar
+        bar = Image.new("RGBA", (x1 - x0, y1 - y0))
+        bdraw = ImageDraw.Draw(bar)
+        for yy in range(bar.height):
+            bdraw.line([(0, yy), (bar.width, yy)],
+                       fill=lerp(bar_top_c, bar_bot_c, yy / bar.height) + (255,))
+        bmask = Image.new("L", bar.size, 0)
+        ImageDraw.Draw(bmask).rounded_rectangle((0, 0, bar.width, bar.height), radius=br, fill=255)
+        bars_layer.paste(bar, (x0, y0), bmask)
+        # LED dot
+        led_r = int(bar_h * 0.16)
+        lx = x0 + int(bar_w * 0.08)
+        ly = y0 + bar_h // 2
+        bd.ellipse((lx - led_r, ly - led_r, lx + led_r, ly + led_r), fill=led_c + (255,))
+        # small "drive" slot line on right
+        sx0 = x0 + int(bar_w * 0.72)
+        sx1 = x0 + int(bar_w * 0.92)
+        bd.rounded_rectangle((sx0, ly - int(bar_h*0.09), sx1, ly + int(bar_h*0.09)),
+                             radius=int(bar_h*0.09), fill=(255, 255, 255, 110))
 
-    inset = int(size * 0.08)
-    radius = int(size * 0.22)
-    rect = (inset, inset, size - inset, size - inset)
+    # glow behind bars
+    glow = bars_layer.filter(ImageFilter.GaussianBlur(28 * S))
+    img.alpha_composite(glow)
+    img.alpha_composite(bars_layer)
 
-    top = hex_color("#0f172a")
-    bottom = hex_color("#162033")
-    for y in range(size):
-        t = y / (size - 1)
-        color = blend(top, bottom, t)
-        draw.rounded_rectangle((0, y, size, y + 1), radius=radius, fill=color)
+    # downscale
+    return img.resize((SIZE, SIZE), Image.LANCZOS)
 
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(rect, radius=radius, fill=255)
-    square.putalpha(mask)
+def main():
+    out = "/tmp/openvps-icon"
+    os.makedirs(out, exist_ok=True)
+    icon = make_icon()
+    icon.save(f"{out}/icon.png")
 
-    glow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow)
-    glow_color = (59, 130, 246, 34)
-    glow_draw.rounded_rectangle(rect, radius=radius, outline=glow_color, width=max(4, size // 64))
-    glow = glow.filter(ImageFilter.GaussianBlur(size // 56))
+    dst = "/Volumes/SanDisk Extreme 1TB/开发应用/Electron/openvps/src-tauri/icons"
+    icon.save(f"{dst}/icon.png")
+    for name, size in [("32x32.png", 32), ("128x128.png", 128), ("128x128@2x.png", 256)]:
+        icon.resize((size, size), Image.LANCZOS).save(f"{dst}/{name}")
 
-    highlight = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    highlight_draw = ImageDraw.Draw(highlight)
-    highlight_draw.ellipse(
-        (
-            int(size * 0.22),
-            int(size * 0.12),
-            int(size * 0.78),
-            int(size * 0.40),
-        ),
-        fill=(148, 163, 184, 12),
-    )
-    highlight = highlight.filter(ImageFilter.GaussianBlur(size // 14))
-    highlight.putalpha(mask)
+    # iconset for icns
+    iset = f"{out}/icon.iconset"
+    os.makedirs(iset, exist_ok=True)
+    for base, px in [("icon_16x16.png", 16), ("icon_16x16@2x.png", 32),
+                     ("icon_32x32.png", 32), ("icon_32x32@2x.png", 64),
+                     ("icon_128x128.png", 128), ("icon_128x128@2x.png", 256),
+                     ("icon_256x256.png", 256), ("icon_256x256@2x.png", 512),
+                     ("icon_512x512.png", 512), ("icon_512x512@2x.png", 1024)]:
+        icon.resize((px, px), Image.LANCZOS).save(f"{iset}/{base}")
 
-    canvas.alpha_composite(glow)
-    canvas.alpha_composite(square)
-    canvas.alpha_composite(highlight)
-    return canvas
-
-
-def draw_server_glyph(image: Image.Image) -> None:
-    size = image.width
-    shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    shadow_draw = ImageDraw.Draw(shadow)
-    draw = ImageDraw.Draw(image)
-
-    width = int(size * 0.50)
-    height = int(size * 0.15)
-    gap = int(size * 0.07)
-    left = (size - width) // 2
-    top = (size - (height * 2 + gap)) // 2
-    radius = int(height * 0.30)
-    stroke = max(18, size // 42)
-
-    panels = [
-        (left, top, left + width, top + height),
-        (left, top + height + gap, left + width, top + height * 2 + gap),
-    ]
-
-    for panel in panels:
-        shadow_draw.rounded_rectangle(
-            (panel[0], panel[1] + size * 0.018, panel[2], panel[3] + size * 0.018),
-            radius=radius,
-            fill=(15, 23, 42, 125),
-        )
-    shadow = shadow.filter(ImageFilter.GaussianBlur(size // 28))
-    image.alpha_composite(shadow)
-
-    panel_fill = (255, 255, 255, 14)
-    panel_outline = (241, 245, 249, 255)
-    accent = (103, 232, 249, 255)
-
-    for panel in panels:
-        draw.rounded_rectangle(panel, radius=radius, fill=panel_fill, outline=panel_outline, width=stroke)
-
-        dot_x = panel[0] + int(width * 0.16)
-        dot_y = (panel[1] + panel[3]) // 2
-        dot_r = int(height * 0.10)
-        draw.ellipse((dot_x - dot_r, dot_y - dot_r, dot_x + dot_r, dot_y + dot_r), fill=accent)
-
-        line_left = panel[0] + int(width * 0.30)
-        line_right = panel[2] - int(width * 0.11)
-        line_y = dot_y
-        draw.line((line_left, line_y, line_right, line_y), fill=panel_outline, width=stroke, joint="curve")
-
-    connector_x = left + width // 2
-    connector_top = panels[0][3] + int(gap * 0.18)
-    connector_bottom = panels[1][1] - int(gap * 0.18)
-    draw.line(
-        (connector_x, connector_top, connector_x, connector_bottom),
-        fill=(148, 163, 184, 220),
-        width=max(10, stroke // 2),
-        joint="curve",
-    )
-
-
-def write_iconset(master: Image.Image) -> None:
-    ICONSET_PATH.mkdir(parents=True, exist_ok=True)
-    for base_size in (16, 32, 128, 256, 512):
-        for scale in (1, 2):
-            pixel_size = base_size * scale
-            resized = master.resize((pixel_size, pixel_size), Image.Resampling.LANCZOS)
-            suffix = "@2x" if scale == 2 else ""
-            resized.save(ICONSET_PATH / f"icon_{base_size}x{base_size}{suffix}.png")
-
-
-def main() -> None:
-    size = 1024
-    base = build_background(size)
-    draw_server_glyph(base)
-    base.save(MASTER_PATH)
-    write_iconset(base)
-
-    if ICNS_PATH.exists():
-        ICNS_PATH.unlink()
-
+    # ico (multi-size) via PIL
+    icon.save(f"{dst}/icon.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    print("done")
 
 if __name__ == "__main__":
     main()

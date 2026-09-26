@@ -1,0 +1,8 @@
+from fastapi import FastAPI
+
+app = FastAPI(title="${title}")
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "service": "${kind}"}

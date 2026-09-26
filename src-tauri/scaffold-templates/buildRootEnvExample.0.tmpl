@@ -1,0 +1,1 @@
+DATABASE_URL=${input.database === "postgresql" ? `postgresql://postgres:postgres@127.0.0.1:5432/${input.slug}` : "file:./apps/web/local.db"}

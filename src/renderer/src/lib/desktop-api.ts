@@ -1,4 +1,5 @@
 import type { DigwisApi, DigwisIpcError } from "../../../shared/vps"
+import { createTauriApi } from "./tauri-api"
 
 function requireMethod<T extends (...args: any[]) => any>(
   method: T | undefined,
@@ -147,12 +148,13 @@ checkSystemUpgrades: (payload) => wrapInvoke(() => api.vps.checkSystemUpgrades(p
 }
 
 export function getDesktopApi(): DigwisApi {
-  if (!window.digwis?.vps || !window.digwis?.projects || !window.digwis?.terminal) {
-    throw new Error("Desktop API not injected. Make sure you are running the Electron app.")
-  }
-
   if (!cachedApi) {
-    cachedApi = createWrappedApi(window.digwis)
+    if (window.digwis?.vps && window.digwis?.projects && window.digwis?.terminal) {
+      // Legacy Electron preload bridge (kept for compatibility during migration).
+      cachedApi = createWrappedApi(window.digwis)
+    } else {
+      cachedApi = createWrappedApi(createTauriApi())
+    }
   }
   return cachedApi
 }

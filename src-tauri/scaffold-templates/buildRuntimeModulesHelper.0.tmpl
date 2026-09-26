@@ -1,0 +1,5 @@
+export const enabledRuntimeModules = new Set(${JSON.stringify([...new Set(enabledModules)].sort())} as const)
+
+export function isRuntimeModuleEnabled(moduleId: string) {
+  return enabledRuntimeModules.has(moduleId as never)
+}

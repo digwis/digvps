@@ -1,0 +1,42 @@
+import { notFound } from "next/navigation"
+
+import { isRuntimeModuleEnabled } from "../../lib/digwis-runtime-modules"
+
+const sections = [
+  {
+    title: "Getting started",
+    body: "Document onboarding, environment conventions, and deployment checkpoints here.",
+  },
+  {
+    title: "Editor playbooks",
+    body: "Add content workflow guides, QA lists, and operational runbooks for the team.",
+  },
+  {
+    title: "Support FAQ",
+    body: "Turn repeated support answers into reusable internal or public documentation.",
+  },
+]
+
+export default function DocsPage() {
+  if (!isRuntimeModuleEnabled("docs")) {
+    notFound()
+  }
+
+  return (
+    <main style={{ padding: 32 }}>
+      <h1>Documentation Center</h1>
+      <p style={{ color: "#64748b", maxWidth: 720 }}>
+        This scaffold reserves a dedicated docs surface. You can later swap it to MDX, a CMS-driven help center, or a
+        search-backed knowledge base.
+      </p>
+      <div style={{ display: "grid", gap: 16, marginTop: 24 }}>
+        {sections.map((section) => (
+          <section key={section.title} style={{ border: "1px solid rgba(148, 163, 184, 0.18)", borderRadius: 8, padding: 20 }}>
+            <h2 style={{ marginTop: 0 }}>{section.title}</h2>
+            <p style={{ marginBottom: 0, color: "#94a3b8" }}>{section.body}</p>
+          </section>
+        ))}
+      </div>
+    </main>
+  )
+}

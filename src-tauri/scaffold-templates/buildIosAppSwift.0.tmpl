@@ -1,0 +1,13 @@
+import SwiftUI
+
+@main
+struct ${projectName.replace(/[^A-Za-z0-9]/g, "") || "Digwis"}App: App {
+    @StateObject private var appState = AppState()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .environmentObject(appState)
+        }
+    }
+}

@@ -1,0 +1,1 @@
+let sharp: typeof import('sharp').default | undefined\ntry {\n  sharp = (await import('sharp')).default\n} catch {\n  sharp = undefined\n}\n

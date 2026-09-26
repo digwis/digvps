@@ -1,0 +1,19 @@
+services:
+${dbService}  directus:
+    image: directus/directus:11.11.0
+    restart: unless-stopped
+    ports:
+      - "8055:8055"
+    env_file:
+      - .env
+    ${input.database === "postgresql" ? "depends_on:\n      - directus-db" : ""}
+    volumes:
+      - ./uploads:/directus/uploads
+      - ./extensions:/directus/extensions
+      - ./snapshots:/directus/snapshots
+${input.database === "sqlite" ? "      - ./database:/directus/database" : ""}
+
+volumes:
+${input.database === "postgresql" ? "  directus_pg:\n" : ""}
+# .env requires:
+# ${dbEnv}

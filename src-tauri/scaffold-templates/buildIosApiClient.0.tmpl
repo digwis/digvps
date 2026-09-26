@@ -1,0 +1,10 @@
+import Foundation
+
+struct APIClient {
+    let baseURL: URL
+
+    func makeRequest(path: String) -> URLRequest {
+        let url = baseURL.appending(path: path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+        return URLRequest(url: url)
+    }
+}

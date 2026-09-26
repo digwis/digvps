@@ -1,0 +1,16 @@
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+
+fn respond(mut stream: TcpStream) {
+    let mut buffer = [0; 512];
+    let _ = stream.read(&mut buffer);
+    let response = "HTTP/1.1 200 OK\\r\\ncontent-type: application/json\\r\\n\\r\\n{\\"ok\\":true,\\"service\\":\\"rust-worker\\"}";
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn main() {
+    let listener = TcpListener::bind("127.0.0.1:8300").expect("bind rust worker");
+    for stream in listener.incoming().flatten() {
+        respond(stream);
+    }
+}

@@ -1,0 +1,82 @@
+8	webPort
+8	projectName
+7	input.slug
+3	payloadVersion
+3	item
+3	buildLocalPreviewUrl(webPort)
+3	buildPayloadSeoFields()
+3	JSON.stringify(contract, null, 2)
+3	effectivePreviewUrl
+3	effectiveAdminUrl
+2	projectRoot.replace(/"/g, '\\"')
+2	JSON.stringify(parsed, null, 2)
+2	input.database === "postgresql" ? `postgresql://postgres:postgres@127.0.0.1:5432/${input.slug}` : "file:./local.db"
+2	previewUrl
+2	randomBytes(24).toString("hex")
+2	ctx.database === "postgresql" ? "PostgreSQL" : "SQLite"
+2	ctx.projectName
+2	schemeName
+2	fallbackUrl
+2	fallbackInstallCommand
+2	started.pid
+1	port
+1	buildLocalPreviewUrl(port)
+1	DEFAULT_WEB_PORT
+1	MAX_WEB_PORT
+1	command
+1	devCommand
+1	JSON.stringify(webPath)
+1	previewUrl.replace(/\/$/, "")
+1	targetPath.replace(/"/g, '\\"')
+1	replacedPackages.join(", ")
+1	secret
+1	nextConfigMatch[0]
+1	JSON.stringify(pkg, null, 2)
+1	dbService
+1	input.database === "postgresql" ? "depends_on:\n      - directus-db" : ""
+1	input.database === "sqlite" ? "      - ./database:/directus/database" : ""
+1	input.database === "postgresql" ? "  directus_pg:\n" : ""
+1	dbEnv
+1	dbSection
+1	Array.from(ctx.clientTargets).map(clientTargetLabel).join(", ")
+1	Array.from(ctx.runtimeModules).join(", ")
+1	Array.from(ctx.serviceModules).join(", ")
+1	buildFeatureList(ctx)
+1	JSON.stringify([...new Set(enabledModules)].sort())
+1	cmsText
+1	ctx.serviceModules.size ? Array.from(ctx.serviceModules).map((item) => `- ${item}`).join("\n") : "- none"
+1	ctx.clientTargets.size ? Array.from(ctx.clientTargets).map((item) => `- ${clientTargetLabel(item)}`).join("\n") : "- web only"
+1	buildLocalPreviewUrl(ctx.webPort)
+1	ctx.template === "next-payload" ? "4. Open `/admin` to finish the first Payload user bootstrap\n5. If you change Payload collection imports, run `pnpm payload:importmap` and `pnpm payload:types`" : ""
+1	ctx.template === "next-directus" ? "4. Run `pnpm directus:dev` to start Directus sidecar\n5. Open `http://127.0.0.1:8055/admin` for Directus admin" : ""
+1	clientTargetLabel(item)
+1	input.database === "postgresql" ? `postgresql://postgres:postgres@127.0.0.1:5432/${input.slug}` : "file:./apps/web/local.db"
+1	dbClient
+1	dbConnection
+1	adapterImport
+1	adapter
+1	title
+1	kind
+1	slug
+1	path.sep
+1	toPosixPath(path.relative(projectRoot, absolutePath))
+1	schemeName.toLowerCase()
+1	projectName.replace(/[^A-Za-z0-9]/g, "") || "Digwis"
+1	buildWorkspacePatterns().map((item) => `  - ${item}`).join("\n")
+1	ctx.slug
+1	LIGHT_RUNTIME_MODULES.join("、")
+1	unsupportedAdds.join("、")
+1	addedModules.join("、")
+1	disabledLightModules.join("、")
+1	pulled.output || "unknown error"
+1	normalized.database
+1	normalized.version
+1	createdFiles.length
+1	resolvedRoot
+1	install.output
+1	fallbackInstall.output
+1	repaired.repaired.join("\n")
+1	(installDetail || "install failed").slice(-600)
+1	contract.panel.previewUrl
+1	started.pid ? ` pid=${started.pid}` : ""
+1	(directusStart.output || "directus up failed").slice(-500)

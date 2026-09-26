@@ -1,0 +1,8 @@
+const root = document.querySelector(".shell")
+
+if (root && window.digwisDesktop) {
+  const chip = document.createElement("div")
+  chip.className = "chip"
+  chip.textContent = "Runtime: " + window.digwisDesktop.platform
+  root.appendChild(chip)
+}

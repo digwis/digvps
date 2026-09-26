@@ -1,0 +1,23 @@
+export const locales = ["en", "zh-CN"] as const
+
+export type SupportedLocale = (typeof locales)[number]
+
+export const localeLabels: Record<SupportedLocale, string> = {
+  en: "English",
+  "zh-CN": "简体中文",
+}
+
+export const messages: Record<SupportedLocale, { title: string; summary: string }> = {
+  en: {
+    title: "Localized entry",
+    summary: "Use this route to branch your app experience per locale.",
+  },
+  "zh-CN": {
+    title: "多语言入口",
+    summary: "这个路由用于放置按语言区分的站点入口与文案。",
+  },
+}
+
+export function resolveLocale(input: string): SupportedLocale {
+  return locales.includes(input as SupportedLocale) ? (input as SupportedLocale) : "en"
+}

@@ -3,8 +3,6 @@ import { useTranslation } from "react-i18next"
 import { useShallow } from "zustand/react/shallow"
 import {
   AlertTriangle,
-  ArrowLeft,
-  ArrowRight,
   CheckCircle2,
   Clock3,
   FolderOpen,
@@ -12,6 +10,7 @@ import {
   LoaderCircle,
   PanelLeft,
   Plus,
+  RefreshCw,
   Search,
   Server,
   Settings,
@@ -42,7 +41,7 @@ import {
 import { cn, createDebouncedStorageWriter } from "@/lib/utils"
 import { getDesktopApi } from "@/lib/desktop-api"
 import { useProjectStore } from "@/store/project-store"
-import { useVpsStore } from "@/store/vps-store"
+import { getCachedInspection, useVpsStore } from "@/store/vps-store"
 import { AppSettingsPage } from "@/components/app-settings-page"
 import { InspectionTelemetryCards } from "@/components/inspection-telemetry-cards"
 import { SystemUpgradePrompt } from "@/components/system-upgrade-prompt"
@@ -51,6 +50,7 @@ import { VpsConnectionDialog } from "@/components/vps-connection-dialog"
 import { FileBrowserPanel } from "@/components/file-browser-panel"
 import { Toaster } from "@/components/ui/toaster"
 import type {
+  ConnectionStatus,
   RemotePackageStatus,
   SystemUpgradeCheckResult,
   VpsConnectionInput,
@@ -71,10 +71,15 @@ type AppLocation = {
 
 const LAST_ACTIVE_NAV_KEY = "openvps:last-active-nav"
 const SIDEBAR_COLLAPSED_KEY = "openvps:sidebar-collapsed"
+const SIDEBAR_WIDTH_KEY = "openvps:sidebar-width"
+const SIDEBAR_DEFAULT_WIDTH = 288
+const SIDEBAR_MIN_WIDTH = 200
+const SIDEBAR_MAX_WIDTH = 560
 const TELEMETRY_FRESH_MS = 20_000
 
 const lastActiveNavWriter = createDebouncedStorageWriter(LAST_ACTIVE_NAV_KEY)
 const sidebarCollapsedWriter = createDebouncedStorageWriter(SIDEBAR_COLLAPSED_KEY)
+const sidebarWidthWriter = createDebouncedStorageWriter(SIDEBAR_WIDTH_KEY)
 
 const navItems: Array<{ key: NavKey; icon: typeof Server }> = [
   { key: "monitor", icon: Server },
@@ -111,6 +116,23 @@ function writeSidebarCollapsed(collapsed: boolean) {
   sidebarCollapsedWriter.schedule(collapsed ? "true" : "false")
 }
 
+function clampSidebarWidth(width: number) {
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width))
+}
+
+function readSidebarWidth() {
+  try {
+    const stored = Number(window.localStorage.getItem(SIDEBAR_WIDTH_KEY))
+    return Number.isFinite(stored) && stored > 0 ? clampSidebarWidth(stored) : SIDEBAR_DEFAULT_WIDTH
+  } catch {
+    return SIDEBAR_DEFAULT_WIDTH
+  }
+}
+
+function writeSidebarWidth(width: number) {
+  sidebarWidthWriter.schedule(String(clampSidebarWidth(width)))
+}
+
 function sidebarItemClass(active: boolean, collapsed: boolean) {
   return cn(
     "group flex w-full items-center overflow-hidden rounded-3xl text-left transition-all duration-300 ease-out",
@@ -134,14 +156,14 @@ function upgradeStatusPresentation(
   t: (key: string, options?: Record<string, unknown>) => string,
 ): { title: string; detail?: string; tone: "muted" | "ok" | "warn" | "danger" } {
   if (checking) {
-    return { title: t("monitor.loading"), tone: "muted" }
+    return { title: t("monitor.checkingUpgrades"), tone: "muted" }
   }
   if (!status) {
-    return { title: t("monitor.noSnapshot"), detail: t("monitor.loading"), tone: "muted" }
+    return { title: t("monitor.notChecked"), tone: "muted" }
   }
   if (!status.supported) {
     if (status.reason === "no_apt") {
-      return { title: t("monitor.noSnapshot"), detail: t("monitor.noSnapshot"), tone: "muted" }
+      return { title: t("monitor.unsupportedUpgrade"), tone: "muted" }
     }
     if (status.reason === "exec_error") {
       return {
@@ -155,15 +177,35 @@ function upgradeStatusPresentation(
   if (status.upgradableCount > 0) {
     return {
       title: t("upgrade.countDesc", { count: status.upgradableCount }),
-      detail: status.indexRefreshed ? t("upgrade.aptUpdateHint") : t("upgrade.aptUpdateHint"),
+      detail: status.indexRefreshed ? undefined : t("upgrade.aptUpdateHint"),
       tone: "warn",
     }
   }
   return {
-    title: t("monitor.noSnapshot"),
-    detail: status.indexRefreshed ? t("monitor.noSnapshot") : t("monitor.noSnapshot"),
+    title: t("monitor.upToDate"),
+    detail: t("monitor.upToDateDesc"),
     tone: "ok",
   }
+}
+
+function connectionStatusDotClass(status: ConnectionStatus | undefined) {
+  if (status === "connected") {
+    return "bg-emerald-500"
+  }
+  if (status === "failed") {
+    return "bg-red-500"
+  }
+  return "bg-muted-foreground/40"
+}
+
+function connectionStatusLabel(status: ConnectionStatus | undefined, t: (key: string) => string) {
+  if (status === "connected") {
+    return t("monitor.status.connected")
+  }
+  if (status === "failed") {
+    return t("monitor.status.failed")
+  }
+  return t("monitor.status.idle")
 }
 
 function daemonPackages(packages: RemotePackageStatus[]) {
@@ -205,7 +247,7 @@ function buildMonitorAlerts(
     }
   }
   if (alerts.length === 0) {
-    alerts.push({ key: "ok", label: t("monitor.noSnapshot"), tone: "ok" })
+    alerts.push({ key: "ok", label: t("monitor.allGood"), tone: "ok" })
   }
   return alerts.slice(0, 4)
 }
@@ -216,7 +258,7 @@ function inspectionFreshness(checkedAt: string, now: number, t: (key: string, op
   const deltaMinutes = Math.round(deltaMs / 60_000)
   if (deltaMs <= TELEMETRY_FRESH_MS) {
     return {
-      label: t("monitor.loading"),
+      label: t("monitor.justNow"),
       className: "bg-emerald-500/8 text-emerald-300",
       stale: false,
     }
@@ -422,6 +464,8 @@ export default function App() {
   const [dialogPreset, setDialogPreset] = useState<Partial<VpsConnectionInput> | null>(null)
   const [activeNav, setActiveNav] = useState<NavKey>(() => readLastActiveNav())
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readSidebarCollapsed())
+  const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth())
+  const [sidebarResizing, setSidebarResizing] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [highlightedProjectId, setHighlightedProjectId] = useState<string>()
@@ -460,6 +504,33 @@ export default function App() {
   }, [sidebarCollapsed])
 
   useEffect(() => {
+    writeSidebarWidth(sidebarWidth)
+  }, [sidebarWidth])
+
+  const startSidebarResize = (event: React.MouseEvent) => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = sidebarWidth
+    setSidebarResizing(true)
+    const previousCursor = document.body.style.cursor
+    const previousSelect = document.body.style.userSelect
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+    const onMove = (e: MouseEvent) => {
+      setSidebarWidth(clampSidebarWidth(startWidth + e.clientX - startX))
+    }
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousSelect
+      setSidebarResizing(false)
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+  }
+
+  useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       const active = document.activeElement
       if (active instanceof HTMLButtonElement) {
@@ -481,9 +552,16 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!selectedConnectionId) {
+      void prewarmInspectionCache()
+    }
+  }, [selectedConnectionId, prewarmInspectionCache])
+
+  useEffect(() => {
     const flushWriters = () => {
       lastActiveNavWriter.flush()
       sidebarCollapsedWriter.flush()
+      sidebarWidthWriter.flush()
     }
     window.addEventListener("beforeunload", flushWriters)
     window.addEventListener("pagehide", flushWriters)
@@ -789,41 +867,32 @@ export default function App() {
               )}
             />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="pointer-events-auto size-10 rounded-xl text-muted-foreground/85 transition-all duration-300 hover:bg-background/45 hover:text-foreground disabled:pointer-events-none disabled:text-muted-foreground/35 dark:hover:bg-white/5"
-            type="button"
-            title={t("common.back")}
-            disabled={!canGoBack}
-            onClick={() => moveHistory("back")}
-          >
-            <ArrowLeft className="size-5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="pointer-events-auto size-10 rounded-xl text-muted-foreground/85 transition-all duration-300 hover:bg-background/45 hover:text-foreground disabled:pointer-events-none disabled:text-muted-foreground/35 dark:hover:bg-white/5"
-            type="button"
-            title={t("common.back")}
-            disabled={!canGoForward}
-            onClick={() => moveHistory("forward")}
-          >
-            <ArrowRight className="size-5" />
-          </Button>
         </div>
         )}
 
         {/* Sidebar */}
         {activeNav === "settings" ? null : (
         <aside
+          data-tauri-drag-region
           className={cn(
-            "hidden h-screen min-h-0 shrink-0 flex-col border-r border-border/60 bg-sidebar/95 pb-5 pt-16 transition-[width,padding,opacity] duration-300 ease-out dark:border-white/10 lg:flex",
+            "relative hidden h-screen min-h-0 shrink-0 flex-col border-r border-border/60 bg-sidebar/95 pb-5 pt-16 duration-300 ease-out dark:border-white/10 lg:flex",
+            sidebarResizing ? "transition-none" : "transition-[width,padding,opacity]",
             sidebarCollapsed
               ? "w-0 overflow-hidden px-0 opacity-0"
-              : "w-[288px] px-4 opacity-100",
+              : "px-4 opacity-100",
           )}
+          style={sidebarCollapsed ? undefined : { width: sidebarWidth }}
         >
+          {!sidebarCollapsed ? (
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              title={t("sidebar.resizeHint")}
+              onMouseDown={startSidebarResize}
+              onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
+              className="absolute inset-y-0 -right-0.5 z-20 w-1.5 cursor-col-resize transition-colors hover:bg-primary/25 active:bg-primary/40"
+            />
+          ) : null}
           <div className="mt-7 flex shrink-0 flex-col gap-1 px-1 transition-all duration-300">
             <button
               type="button"
@@ -887,9 +956,9 @@ export default function App() {
         </aside>
         )}
 
-        <main className="flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-tl-[28px] border-l border-t border-border/60 bg-background shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:border-white/10 dark:shadow-none">
+        <main className="flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-l border-border/60 bg-background dark:border-white/10">
           {activeNav === "settings" ? null : (
-          <header className="flex h-14 shrink-0 items-center justify-between bg-background px-5 lg:px-7 dark:bg-background">
+          <header data-tauri-drag-region className="flex h-14 shrink-0 items-center justify-between bg-background px-5 lg:px-7 dark:bg-background">
             <div className="flex min-w-0 items-center gap-3">
               <div className="w-[172px] shrink-0" aria-hidden="true" />
             </div>
@@ -920,7 +989,16 @@ export default function App() {
                       ) : (
                         connections.map((connection: VpsConnectionRecord) => (
                           <SelectItem key={connection.id} value={connection.id}>
-                            {connection.name}
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span
+                                className={cn(
+                                  "size-2 shrink-0 rounded-full",
+                                  connectionStatusDotClass(connection.status),
+                                )}
+                              />
+                              <span className="truncate">{connection.name}</span>
+                              <span className="truncate text-xs text-muted-foreground">{connection.host}</span>
+                            </span>
                           </SelectItem>
                         ))
                       )}
@@ -1001,6 +1079,82 @@ export default function App() {
                     requestToken={fileBrowserRequest?.token}
                   />
                 ) : !selectedConnection ? (
+                  connections.length > 0 ? (
+                    <div className="flex flex-1 flex-col gap-5">
+                      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                        {connections.map((conn: VpsConnectionRecord) => {
+                          const cached = getCachedInspection(conn.id)
+                          const telemetry = cached?.telemetry
+                          return (
+                            <button
+                              key={conn.id}
+                              type="button"
+                              onClick={() => selectConnection(conn.id)}
+                              className="group flex flex-col gap-3 rounded-3xl border border-[#e5e7eb] bg-[#fbfcfe] px-6 py-5 text-left shadow-[0_8px_24px_rgba(15,23,42,0.04)] transition hover:-translate-y-0.5 hover:border-[#cfd8e3] hover:shadow-[0_12px_32px_rgba(15,23,42,0.08)] dark:border-white/10 dark:bg-[#242424] dark:hover:border-white/20"
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <span
+                                  className={cn(
+                                    "size-2.5 shrink-0 rounded-full",
+                                    connectionStatusDotClass(conn.status),
+                                  )}
+                                />
+                                <span className="truncate text-[16px] font-semibold text-foreground">
+                                  {conn.name}
+                                </span>
+                                <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                                  {connectionStatusLabel(conn.status, t)}
+                                </span>
+                              </div>
+                              <p className="truncate text-[13px] text-muted-foreground">
+                                {conn.username}@{conn.host}:{conn.port}
+                              </p>
+                              {conn.lastError && conn.status === "failed" ? (
+                                <p className="line-clamp-2 text-[12px] leading-5 text-red-600 dark:text-red-300">
+                                  {conn.lastError}
+                                </p>
+                              ) : null}
+                              {telemetry ? (
+                                <div className="mt-1 space-y-2">
+                                  {[
+                                    { label: "CPU", value: telemetry.cpuPercent },
+                                    { label: t("monitor.metric.memory"), value: telemetry.memoryPercent },
+                                    { label: t("monitor.metric.disk"), value: telemetry.diskPercent },
+                                  ].map((metric) => (
+                                    <div key={metric.label} className="flex items-center gap-2">
+                                      <span className="w-10 shrink-0 text-[11px] text-muted-foreground">
+                                        {metric.label}
+                                      </span>
+                                      <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[#e5e7eb] dark:bg-white/[0.08]">
+                                        <div
+                                          className={cn(
+                                            "h-full rounded-full",
+                                            metric.value >= 85 ? "bg-red-400" : "bg-emerald-400",
+                                          )}
+                                          style={{ width: `${Math.min(100, Math.max(0, metric.value))}%` }}
+                                        />
+                                      </div>
+                                      <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">
+                                        {metric.value.toFixed(0)}%
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </button>
+                          )
+                        })}
+                        <button
+                          type="button"
+                          onClick={() => openCreateDialog()}
+                          className="flex min-h-24 flex-col items-center justify-center gap-2 rounded-3xl border border-dashed border-border/70 bg-muted/15 px-6 py-5 text-muted-foreground transition hover:border-border hover:text-foreground dark:border-white/15 dark:bg-white/[0.02]"
+                        >
+                          <Plus className="size-5" />
+                          <span className="text-sm">{t("monitor.newConnection")}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
                   <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/20 px-8 py-16 text-center dark:border-white/10 dark:bg-white/[0.03]">
                     <p className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
                       {t("monitor.selectServer")}
@@ -1017,6 +1171,7 @@ export default function App() {
                       {t("monitor.newConnection")}
                     </Button>
                   </div>
+                  )
                 ) : isInspecting && !inspection ? (
                   <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border/80 bg-muted/15 px-6 py-16 text-center dark:border-white/10 dark:bg-white/[0.03]">
                     <LoaderCircle className="size-8 animate-spin text-muted-foreground" />
@@ -1047,6 +1202,20 @@ export default function App() {
                                     {osLabel}
                                   </p>
                                   <div className="mt-8 flex flex-wrap gap-3 text-[14px] text-muted-foreground">
+                                    <span
+                                      className="inline-flex items-center gap-2 rounded-full border border-[#e5e7eb] bg-[#f3f6fa] px-4 py-2 dark:border-transparent dark:bg-white/[0.04]"
+                                      title={selectedConnection?.lastError ?? undefined}
+                                    >
+                                      <span
+                                        className={cn(
+                                          "size-2 rounded-full",
+                                          connectionStatusDotClass(selectedConnection?.status),
+                                        )}
+                                      />
+                                      <span className="text-foreground">
+                                        {connectionStatusLabel(selectedConnection?.status, t)}
+                                      </span>
+                                    </span>
                                     <span className="inline-flex items-center gap-2 rounded-full border border-[#e5e7eb] bg-[#f3f6fa] px-4 py-2 dark:border-transparent dark:bg-white/[0.04]">
                                       <Clock3 className="size-4" />
                                       <span className="text-muted-foreground">{t("monitor.metric.uptime")}</span>
@@ -1072,6 +1241,24 @@ export default function App() {
                                         <span>{expirationStatus.label}</span>
                                       </span>
                                     ) : null}
+                                    <button
+                                      type="button"
+                                      className="inline-flex items-center gap-2 rounded-full border border-[#e5e7eb] bg-[#f3f6fa] px-4 py-2 transition hover:bg-[#e9eef5] hover:text-foreground disabled:opacity-50 dark:border-transparent dark:bg-white/[0.04] dark:hover:bg-white/[0.08]"
+                                      disabled={isInspecting}
+                                      title={t("monitor.refresh")}
+                                      onClick={() => {
+                                        if (!selectedConnection) {
+                                          return
+                                        }
+                                        void inspectConnection(
+                                          selectedConnection as VpsConnectionInput,
+                                          { forceRefresh: true },
+                                        )
+                                      }}
+                                    >
+                                      <RefreshCw className={cn("size-4", isInspecting && "animate-spin")} />
+                                      {t("monitor.refresh")}
+                                    </button>
                                   </div>
                                 </div>
                               </div>
@@ -1086,9 +1273,9 @@ export default function App() {
                             >
                               <div className="flex items-start justify-between gap-4">
                                 <div>
-                                  <p className="text-sm font-medium text-muted-foreground">{t("monitor.monitorIncomplete")}</p>
+                                  <p className="text-sm font-medium text-muted-foreground">{t("monitor.health")}</p>
                                   <p className="mt-3 text-3xl font-semibold text-foreground">
-                                    {monitorAlerts[0]?.tone === "ok" ? t("monitor.noSnapshot") : t("monitor.alertTitle")}
+                                    {monitorAlerts[0]?.tone === "ok" ? t("monitor.allGood") : t("monitor.alertTitle")}
                                   </p>
                                 </div>
                                 {monitorAlerts[0]?.tone === "ok" ? (
@@ -1116,7 +1303,7 @@ export default function App() {
 
                               <div className="mt-10">
                                 <div className="flex items-center justify-between gap-3">
-                                  <p className="text-sm font-medium text-muted-foreground">{t("monitor.monitorIncomplete")}</p>
+                                  <p className="text-sm font-medium text-muted-foreground">{t("monitor.systemUpdates")}</p>
                                   {upgradeStatus?.supported && upgradeStatus.upgradableCount > 0 ? (
                                     <Button
                                       type="button"
@@ -1169,6 +1356,24 @@ export default function App() {
                       <p className="text-base font-medium text-foreground">{t("monitor.monitorIncomplete")}</p>
                       <p className="text-sm leading-6 text-amber-600 dark:text-amber-300">{error}</p>
                     </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-2 rounded-full px-6"
+                      disabled={isInspecting || !selectedConnection}
+                      onClick={() => {
+                        if (!selectedConnection) {
+                          return
+                        }
+                        void inspectConnection(
+                          selectedConnection as VpsConnectionInput,
+                          { forceRefresh: true },
+                        )
+                      }}
+                    >
+                      <RefreshCw className={cn("size-4", isInspecting && "animate-spin")} />
+                      {t("common.retry")}
+                    </Button>
                   </div>
                 ) : (
                   <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-border/80 bg-muted/15 px-6 py-16 text-center text-sm text-muted-foreground dark:border-white/10 dark:bg-white/[0.03]">

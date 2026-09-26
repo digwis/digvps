@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${projectName} Desktop</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Desktop shell</p>
+        <h1>${projectName}</h1>
+        <p class="summary">Electron workspace for desktop flows that share the same backend, auth, and domain model as the web app.</p>
+        <ul class="list">
+          <li>Connect shared domain logic from <code>packages/core</code></li>
+          <li>Connect shared API client code from <code>packages/api-client</code></li>
+          <li>Use <code>packages/api-client/src/client.ts</code> as the default HTTP contract</li>
+          <li>Use this shell for desktop-only navigation, local file access, and native menu flows</li>
+        </ul>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

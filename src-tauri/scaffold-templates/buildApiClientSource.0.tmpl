@@ -1,0 +1,43 @@
+import { resolveApiBaseUrl } from "./config"
+import type { HealthcheckResponse, SessionResponse } from "./contracts"
+
+export type DigwisApiClientOptions = {
+  baseUrl?: string
+  headers?: HeadersInit
+  fetcher?: typeof fetch
+}
+
+export class DigwisApiClient {
+  private readonly baseUrl: string
+  private readonly headers: HeadersInit
+  private readonly fetcher: typeof fetch
+
+  constructor(options: DigwisApiClientOptions = {}) {
+    this.baseUrl = resolveApiBaseUrl(options.baseUrl)
+    this.headers = options.headers ?? {}
+    this.fetcher = options.fetcher ?? fetch
+  }
+
+  async getHealthcheck() {
+    return this.request<HealthcheckResponse>("/api/health")
+  }
+
+  async getSession() {
+    return this.request<SessionResponse>("/api/session")
+  }
+
+  async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await this.fetcher(this.baseUrl.replace(/\\/$/, "") + path, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...this.headers,
+        ...(init?.headers ?? {}),
+      },
+    })
+    if (!response.ok) {
+      throw new Error("API request failed: " + response.status)
+    }
+    return (await response.json()) as T
+  }
+}

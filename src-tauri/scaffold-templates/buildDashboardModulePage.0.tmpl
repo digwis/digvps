@@ -1,0 +1,37 @@
+import Link from "next/link"
+import { notFound } from "next/navigation"
+
+import { isRuntimeModuleEnabled } from "../../lib/digwis-runtime-modules"
+
+export default function DashboardPage() {
+  if (!isRuntimeModuleEnabled("dashboard")) {
+    notFound()
+  }
+
+  return (
+    <main style={{ padding: 32 }}>
+      <h1>Operations Dashboard</h1>
+      <p style={{ color: "#64748b", maxWidth: 720 }}>
+        This route is enabled by Digwis Panel as the first dashboard shell. Replace the static summary cards with your
+        own operator metrics, workflow queues, and CMS shortcuts.
+      </p>
+      <div style={{ display: "grid", gap: 16, marginTop: 24, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+        {[
+          ["Content backlog", "12 drafts need review"],
+          ["Support inbox", "4 unresolved help requests"],
+          ["Publishing queue", "2 scheduled releases today"],
+        ].map(([label, value]) => (
+          <section key={label} style={{ border: "1px solid rgba(148, 163, 184, 0.18)", borderRadius: 8, padding: 20 }}>
+            <p style={{ margin: 0, color: "#94a3b8", fontSize: 14 }}>{label}</p>
+            <p style={{ margin: "12px 0 0", fontSize: 24, fontWeight: 600 }}>{value}</p>
+          </section>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 12, marginTop: 28 }}>
+        <Link href="/admin">Open CMS</Link>
+        <Link href="/docs">Docs</Link>
+        <Link href="/blog">Blog</Link>
+      </div>
+    </main>
+  )
+}

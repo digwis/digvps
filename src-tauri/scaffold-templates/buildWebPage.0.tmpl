@@ -1,0 +1,43 @@
+import { buildWebApiClient } from "../lib/api-client"
+
+export default function HomePage() {
+  const client = buildWebApiClient()
+
+  return (
+    <main className="shell">
+      <section className="hero">
+        <p className="eyebrow">Digwis Platform Scaffold</p>
+        <h1>${ctx.projectName}</h1>
+        <p className="summary">
+          This project was generated from Digwis Panel as a reusable Next-centered platform workspace.
+        </p>
+      </section>
+      <section className="panel">
+        <h2>Included in this scaffold</h2>
+        <ul>
+${buildFeatureList(ctx)}
+        </ul>
+      </section>
+      <section className="panel">
+        <h2>Shared API Contract</h2>
+        <p className="summary">
+          Web, Electron, iOS, and Android can point to the same API surface through <code>@digwis/api-client</code>.
+        </p>
+        <div className="api-grid">
+          <div className="api-card">
+            <p className="api-label">Base URL</p>
+            <p className="api-value">{client.baseUrl}</p>
+          </div>
+          <div className="api-card">
+            <p className="api-label">Healthcheck</p>
+            <p className="api-value">GET /api/health</p>
+          </div>
+          <div className="api-card">
+            <p className="api-label">Session</p>
+            <p className="api-value">GET /api/session</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  )
+}

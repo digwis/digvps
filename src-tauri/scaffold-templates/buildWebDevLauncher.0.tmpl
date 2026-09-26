@@ -1,0 +1,25 @@
+const path = require("node:path")
+const { spawn } = require("node:child_process")
+
+const wasmDir = path.dirname(require.resolve("@next/swc-wasm-nodejs/wasm.js"))
+const nextBin = require.resolve("next/dist/bin/next")
+
+const child = spawn(
+  process.execPath,
+  [nextBin, "dev", "--webpack", "--hostname", "127.0.0.1", "--port", "${webPort}"],
+  {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      NEXT_TEST_WASM_DIR: wasmDir,
+    },
+  },
+)
+
+child.on("exit", (code, signal) => {
+  if (signal) {
+    process.kill(process.pid, signal)
+    return
+  }
+  process.exit(code ?? 0)
+})

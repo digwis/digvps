@@ -1,0 +1,27 @@
+import { notFound } from "next/navigation"
+
+import { isRuntimeModuleEnabled } from "../../../lib/digwis-runtime-modules"
+
+type Args = {
+  params: Promise<{
+    slug: string
+  }>
+}
+
+export default async function BlogPostPage({ params }: Args) {
+  if (!isRuntimeModuleEnabled("blog")) {
+    notFound()
+  }
+
+  const { slug } = await params
+
+  return (
+    <main style={{ padding: 32 }}>
+      <p style={{ color: "#94a3b8" }}>Blog article</p>
+      <h1 style={{ textTransform: "capitalize" }}>{slug.replace(/-/g, " ")}</h1>
+      <p style={{ color: "#64748b", maxWidth: 720 }}>
+        Replace this placeholder with a CMS query or static generation strategy once your content model is ready.
+      </p>
+    </main>
+  )
+}

@@ -1,0 +1,21 @@
+package com.digwis.mobile.ui.theme
+
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+
+private val DigwisDarkColors = darkColorScheme(
+  primary = DigwisPrimary,
+  background = DigwisBackground,
+  surface = DigwisSurface,
+  onSurface = DigwisOnSurface,
+  onSurfaceVariant = DigwisOnSurfaceVariant,
+)
+
+@Composable
+fun DigwisMobileTheme(content: @Composable () -> Unit) {
+  MaterialTheme(
+    colorScheme = DigwisDarkColors,
+    content = content,
+  )
+}

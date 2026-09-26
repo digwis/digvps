@@ -1,0 +1,14 @@
+import Foundation
+
+@MainActor
+final class AppState: ObservableObject {
+    let apiBaseURL: URL
+    let apiClient: APIClient
+
+    init() {
+        let baseURLString = Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
+            ?? "${fallbackUrl}"
+        self.apiBaseURL = URL(string: baseURLString) ?? URL(string: "${fallbackUrl}")!
+        self.apiClient = APIClient(baseURL: apiBaseURL)
+    }
+}

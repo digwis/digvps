@@ -1,0 +1,1076 @@
+{
+  "buildLocalPreviewUrl": [
+    {
+      "file": "buildLocalPreviewUrl.0.tmpl",
+      "placeholders": [
+        "port"
+      ]
+    }
+  ],
+  "buildLocalAdminUrl": [
+    {
+      "file": "buildLocalAdminUrl.0.tmpl",
+      "placeholders": [
+        "buildLocalPreviewUrl(port)"
+      ]
+    }
+  ],
+  "allocateWebPort": [
+    {
+      "file": "allocateWebPort.0.tmpl",
+      "placeholders": [
+        "DEFAULT_WEB_PORT",
+        "MAX_WEB_PORT"
+      ]
+    }
+  ],
+  "runCommand": [
+    {
+      "file": "runCommand.0.tmpl",
+      "placeholders": [
+        "projectRoot.replace(/\"/g, '\\\\\"')",
+        "command"
+      ]
+    }
+  ],
+  "startDevServerDetached": [
+    {
+      "file": "startDevServerDetached.0.tmpl",
+      "placeholders": [
+        "projectRoot.replace(/\"/g, '\\\\\"')",
+        "devCommand"
+      ]
+    }
+  ],
+  "buildNpmFallbackInstallCommand": [
+    {
+      "file": "buildNpmFallbackInstallCommand.0.tmpl",
+      "placeholders": [
+        "JSON.stringify(webPath)"
+      ]
+    }
+  ],
+  "resolveAdminUrlFromPreview": [
+    {
+      "file": "resolveAdminUrlFromPreview.0.tmpl",
+      "placeholders": [
+        "previewUrl.replace(/\\/$/, \"\")"
+      ]
+    }
+  ],
+  "pullPayloadFullTemplate": [
+    {
+      "file": "pullPayloadFullTemplate.0.tmpl",
+      "placeholders": [
+        "payloadVersion"
+      ]
+    },
+    {
+      "file": "pullPayloadFullTemplate.1.tmpl",
+      "placeholders": [
+        "targetPath.replace(/\"/g, '\\\\\"')",
+        "payloadVersion"
+      ]
+    }
+  ],
+  "normalizePayloadTemplatePackageJson": [
+    {
+      "file": "normalizePayloadTemplatePackageJson.0.tmpl",
+      "placeholders": [
+        "JSON.stringify(parsed, null, 2)"
+      ]
+    },
+    {
+      "file": "normalizePayloadTemplatePackageJson.1.tmpl",
+      "placeholders": [
+        "payloadVersion",
+        "replacedPackages.join(\", \")"
+      ]
+    }
+  ],
+  "buildFullPayloadEnv": [
+    {
+      "file": "buildFullPayloadEnv.0.tmpl",
+      "placeholders": [
+        "input.database === \"postgresql\" ? `postgresql://postgres:postgres@127.0.0.1:5432/${input.slug}` : \"file:./local.db\""
+      ]
+    },
+    {
+      "file": "buildFullPayloadEnv.1.tmpl",
+      "placeholders": [
+        "input.slug"
+      ]
+    },
+    {
+      "file": "buildFullPayloadEnv.2.tmpl",
+      "placeholders": [
+        "secret"
+      ]
+    },
+    {
+      "file": "buildFullPayloadEnv.3.tmpl",
+      "placeholders": [
+        "previewUrl"
+      ]
+    },
+    {
+      "file": "buildFullPayloadEnv.4.tmpl",
+      "placeholders": [
+        "previewUrl"
+      ]
+    },
+    {
+      "file": "buildFullPayloadEnv.5.tmpl",
+      "placeholders": [
+        "randomBytes(24).toString(\"hex\")"
+      ]
+    },
+    {
+      "file": "buildFullPayloadEnv.6.tmpl",
+      "placeholders": [
+        "randomBytes(24).toString(\"hex\")"
+      ]
+    }
+  ],
+  "ensurePayloadTsconfigBaseUrl": [
+    {
+      "file": "ensurePayloadTsconfigBaseUrl.0.tmpl",
+      "placeholders": [
+        "JSON.stringify(parsed, null, 2)"
+      ]
+    }
+  ],
+  "ensureNextConfigAllowsLoopback": [
+    {
+      "file": "ensureNextConfigAllowsLoopback.0.tmpl",
+      "placeholders": [
+        "nextConfigMatch[0]"
+      ]
+    }
+  ],
+  "patchFullPayloadTemplate": [
+    {
+      "file": "patchFullPayloadTemplate.0.tmpl",
+      "placeholders": [
+        "webPort"
+      ]
+    },
+    {
+      "file": "patchFullPayloadTemplate.1.tmpl",
+      "placeholders": [
+        "webPort"
+      ]
+    },
+    {
+      "file": "patchFullPayloadTemplate.2.tmpl",
+      "placeholders": [
+        "JSON.stringify(pkg, null, 2)"
+      ]
+    },
+    {
+      "file": "patchFullPayloadTemplate.3.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "patchFullPayloadTemplate.4.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "patchFullPayloadTemplate.5.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "patchFullPayloadTemplate.6.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "patchFullPayloadTemplate.7.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildContractForFullPayload": [
+    {
+      "file": "buildContractForFullPayload.0.tmpl",
+      "placeholders": [
+        "webPort"
+      ]
+    },
+    {
+      "file": "buildContractForFullPayload.1.tmpl",
+      "placeholders": [
+        "webPort"
+      ]
+    }
+  ],
+  "buildDirectusFullDockerCompose": [
+    {
+      "file": "buildDirectusFullDockerCompose.0.tmpl",
+      "placeholders": [
+        "input.slug"
+      ]
+    },
+    {
+      "file": "buildDirectusFullDockerCompose.1.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "buildDirectusFullDockerCompose.2.tmpl",
+      "placeholders": [
+        "input.slug"
+      ]
+    },
+    {
+      "file": "buildDirectusFullDockerCompose.3.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "buildDirectusFullDockerCompose.4.tmpl",
+      "placeholders": [
+        "dbService",
+        "input.database === \"postgresql\" ? \"depends_on:\\n      - directus-db\" : \"\"",
+        "input.database === \"sqlite\" ? \"      - ./database:/directus/database\" : \"\"",
+        "input.database === \"postgresql\" ? \"  directus_pg:\\n\" : \"\"",
+        "dbEnv"
+      ]
+    }
+  ],
+  "buildDirectusFullEnv": [
+    {
+      "file": "buildDirectusFullEnv.0.tmpl",
+      "placeholders": [
+        "input.slug"
+      ]
+    },
+    {
+      "file": "buildDirectusFullEnv.1.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "buildDirectusFullEnv.2.tmpl",
+      "placeholders": [
+        "dbSection"
+      ]
+    }
+  ],
+  "buildWebPackageJson": [
+    {
+      "file": "buildWebPackageJson.0.tmpl",
+      "placeholders": [
+        "webPort"
+      ]
+    }
+  ],
+  "buildWebDevLauncher": [
+    {
+      "file": "buildWebDevLauncher.0.tmpl",
+      "placeholders": [
+        "webPort"
+      ]
+    }
+  ],
+  "buildWebLayout": [
+    {
+      "file": "buildWebLayout.0.tmpl",
+      "placeholders": [
+        "projectName"
+      ]
+    }
+  ],
+  "buildFeatureList": [
+    {
+      "file": "buildFeatureList.0.tmpl",
+      "placeholders": [
+        "ctx.database === \"postgresql\" ? \"PostgreSQL\" : \"SQLite\""
+      ]
+    },
+    {
+      "file": "buildFeatureList.1.tmpl",
+      "placeholders": [
+        "Array.from(ctx.clientTargets).map(clientTargetLabel).join(\", \")"
+      ]
+    },
+    {
+      "file": "buildFeatureList.2.tmpl",
+      "placeholders": [
+        "Array.from(ctx.runtimeModules).join(\", \")"
+      ]
+    },
+    {
+      "file": "buildFeatureList.3.tmpl",
+      "placeholders": [
+        "Array.from(ctx.serviceModules).join(\", \")"
+      ]
+    },
+    {
+      "file": "buildFeatureList.4.tmpl",
+      "placeholders": [
+        "item"
+      ]
+    }
+  ],
+  "buildWebPage": [
+    {
+      "file": "buildWebPage.0.tmpl",
+      "placeholders": [
+        "ctx.projectName",
+        "buildFeatureList(ctx)"
+      ]
+    }
+  ],
+  "buildWebCss": [
+    {
+      "file": "buildWebCss.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildNextConfig": [
+    {
+      "file": "buildNextConfig.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildWebApiClientHelper": [
+    {
+      "file": "buildWebApiClientHelper.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildRuntimeModulesHelper": [
+    {
+      "file": "buildRuntimeModulesHelper.0.tmpl",
+      "placeholders": [
+        "JSON.stringify([...new Set(enabledModules)].sort())"
+      ]
+    }
+  ],
+  "buildDashboardModulePage": [
+    {
+      "file": "buildDashboardModulePage.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildDocsModulePage": [
+    {
+      "file": "buildDocsModulePage.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildBlogIndexModulePage": [
+    {
+      "file": "buildBlogIndexModulePage.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildBlogPostModulePage": [
+    {
+      "file": "buildBlogPostModulePage.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildI18nMessages": [
+    {
+      "file": "buildI18nMessages.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildI18nModulePage": [
+    {
+      "file": "buildI18nModulePage.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildReadme": [
+    {
+      "file": "buildReadme.0.tmpl",
+      "placeholders": [
+        "ctx.projectName",
+        "ctx.database === \"postgresql\" ? \"PostgreSQL\" : \"SQLite\"",
+        "cmsText",
+        "ctx.serviceModules.size ? Array.from(ctx.serviceModules).map((item) => `- ${item}`).join(\"\\n\") : \"- none\"",
+        "ctx.clientTargets.size ? Array.from(ctx.clientTargets).map((item) => `- ${clientTargetLabel(item)}`).join(\"\\n\") : \"- web only\"",
+        "buildLocalPreviewUrl(ctx.webPort)",
+        "ctx.template === \"next-payload\" ? \"4. Open `/admin` to finish the first Payload user bootstrap\\n5. If you change Payload collection imports, run `pnpm payload:importmap` and `pnpm payload:types`\" : \"\"",
+        "ctx.template === \"next-directus\" ? \"4. Run `pnpm directus:dev` to start Directus sidecar\\n5. Open `http://127.0.0.1:8055/admin` for Directus admin\" : \"\""
+      ]
+    },
+    {
+      "file": "buildReadme.1.tmpl",
+      "placeholders": [
+        "item"
+      ]
+    },
+    {
+      "file": "buildReadme.2.tmpl",
+      "placeholders": [
+        "clientTargetLabel(item)"
+      ]
+    }
+  ],
+  "buildRootEnvExample": [
+    {
+      "file": "buildRootEnvExample.0.tmpl",
+      "placeholders": [
+        "input.database === \"postgresql\" ? `postgresql://postgres:postgres@127.0.0.1:5432/${input.slug}` : \"file:./apps/web/local.db\""
+      ]
+    },
+    {
+      "file": "buildRootEnvExample.1.tmpl",
+      "placeholders": [
+        "input.slug"
+      ]
+    },
+    {
+      "file": "buildRootEnvExample.2.tmpl",
+      "placeholders": [
+        "buildLocalPreviewUrl(webPort)"
+      ]
+    }
+  ],
+  "buildWebEnvExample": [
+    {
+      "file": "buildWebEnvExample.0.tmpl",
+      "placeholders": [
+        "input.database === \"postgresql\" ? `postgresql://postgres:postgres@127.0.0.1:5432/${input.slug}` : \"file:./local.db\""
+      ]
+    },
+    {
+      "file": "buildWebEnvExample.1.tmpl",
+      "placeholders": [
+        "input.slug"
+      ]
+    }
+  ],
+  "buildDirectusServiceEnvExample": [
+    {
+      "file": "buildDirectusServiceEnvExample.0.tmpl",
+      "placeholders": [
+        "input.slug"
+      ]
+    },
+    {
+      "file": "buildDirectusServiceEnvExample.1.tmpl",
+      "placeholders": [
+        "dbClient"
+      ]
+    },
+    {
+      "file": "buildDirectusServiceEnvExample.2.tmpl",
+      "placeholders": [
+        "dbConnection"
+      ]
+    }
+  ],
+  "buildDirectusReadme": [
+    {
+      "file": "buildDirectusReadme.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadConfig": [
+    {
+      "file": "buildPayloadConfig.0.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "buildPayloadConfig.1.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "buildPayloadConfig.2.tmpl",
+      "placeholders": [
+        "adapterImport",
+        "adapter"
+      ]
+    }
+  ],
+  "buildPayloadUsersCollection": [
+    {
+      "file": "buildPayloadUsersCollection.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadCategoriesCollection": [
+    {
+      "file": "buildPayloadCategoriesCollection.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadTagsCollection": [
+    {
+      "file": "buildPayloadTagsCollection.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadSeoFields": [
+    {
+      "file": "buildPayloadSeoFields.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadPagesCollection": [
+    {
+      "file": "buildPayloadPagesCollection.0.tmpl",
+      "placeholders": [
+        "buildPayloadSeoFields()"
+      ]
+    }
+  ],
+  "buildPayloadPostsCollection": [
+    {
+      "file": "buildPayloadPostsCollection.0.tmpl",
+      "placeholders": [
+        "buildPayloadSeoFields()"
+      ]
+    }
+  ],
+  "buildPayloadMediaCollection": [
+    {
+      "file": "buildPayloadMediaCollection.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadSiteSettingsGlobal": [
+    {
+      "file": "buildPayloadSiteSettingsGlobal.0.tmpl",
+      "placeholders": [
+        "buildPayloadSeoFields()"
+      ]
+    }
+  ],
+  "buildPayloadMainNavigationGlobal": [
+    {
+      "file": "buildPayloadMainNavigationGlobal.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadImportMap": [
+    {
+      "file": "buildPayloadImportMap.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadLayout": [
+    {
+      "file": "buildPayloadLayout.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadAdminPage": [
+    {
+      "file": "buildPayloadAdminPage.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadApiRoute": [
+    {
+      "file": "buildPayloadApiRoute.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPayloadCustomCss": [
+    {
+      "file": "buildPayloadCustomCss.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildPythonMain": [
+    {
+      "file": "buildPythonMain.0.tmpl",
+      "placeholders": [
+        "title",
+        "kind"
+      ]
+    }
+  ],
+  "buildGoMain": [
+    {
+      "file": "buildGoMain.0.tmpl",
+      "placeholders": [
+        "slug"
+      ]
+    }
+  ],
+  "buildRustMain": [
+    {
+      "file": "buildRustMain.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "resolveNextLibDir": [
+    {
+      "file": "resolveNextLibDir.0.tmpl",
+      "placeholders": [
+        "path.sep"
+      ]
+    }
+  ],
+  "writeFileIfMissing": [
+    {
+      "file": "writeFileIfMissing.0.tmpl",
+      "placeholders": [
+        "toPosixPath(path.relative(projectRoot, absolutePath))"
+      ]
+    }
+  ],
+  "buildSharedCoreReadme": [
+    {
+      "file": "buildSharedCoreReadme.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildSharedCoreIndex": [
+    {
+      "file": "buildSharedCoreIndex.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildApiClientReadme": [
+    {
+      "file": "buildApiClientReadme.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildApiClientConfig": [
+    {
+      "file": "buildApiClientConfig.0.tmpl",
+      "placeholders": [
+        "buildLocalPreviewUrl(webPort)"
+      ]
+    }
+  ],
+  "buildApiClientContracts": [
+    {
+      "file": "buildApiClientContracts.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildApiClientSource": [
+    {
+      "file": "buildApiClientSource.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildApiClientIndex": [
+    {
+      "file": "buildApiClientIndex.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildApiClientExample": [
+    {
+      "file": "buildApiClientExample.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildElectronMain": [
+    {
+      "file": "buildElectronMain.0.tmpl",
+      "placeholders": [
+        "projectName"
+      ]
+    }
+  ],
+  "buildElectronPreload": [
+    {
+      "file": "buildElectronPreload.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildElectronHtml": [
+    {
+      "file": "buildElectronHtml.0.tmpl",
+      "placeholders": [
+        "projectName",
+        "projectName"
+      ]
+    }
+  ],
+  "buildElectronRendererJs": [
+    {
+      "file": "buildElectronRendererJs.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildElectronCss": [
+    {
+      "file": "buildElectronCss.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildElectronReadme": [
+    {
+      "file": "buildElectronReadme.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildIosReadme": [
+    {
+      "file": "buildIosReadme.0.tmpl",
+      "placeholders": [
+        "projectName"
+      ]
+    }
+  ],
+  "buildIosProjectYml": [
+    {
+      "file": "buildIosProjectYml.0.tmpl",
+      "placeholders": [
+        "schemeName",
+        "schemeName",
+        "schemeName.toLowerCase()"
+      ]
+    }
+  ],
+  "buildIosAppSwift": [
+    {
+      "file": "buildIosAppSwift.0.tmpl",
+      "placeholders": [
+        "projectName.replace(/[^A-Za-z0-9]/g, \"\") || \"Digwis\""
+      ]
+    }
+  ],
+  "buildIosContentView": [
+    {
+      "file": "buildIosContentView.0.tmpl",
+      "placeholders": [
+        "projectName"
+      ]
+    }
+  ],
+  "buildIosInfoPlist": [
+    {
+      "file": "buildIosInfoPlist.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildIosApiConfig": [
+    {
+      "file": "buildIosApiConfig.0.tmpl",
+      "placeholders": [
+        "buildLocalPreviewUrl(webPort)"
+      ]
+    }
+  ],
+  "buildIosAppState": [
+    {
+      "file": "buildIosAppState.0.tmpl",
+      "placeholders": [
+        "fallbackUrl",
+        "fallbackUrl"
+      ]
+    }
+  ],
+  "buildIosApiClient": [
+    {
+      "file": "buildIosApiClient.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAppleAssetsContents": [
+    {
+      "file": "buildAppleAssetsContents.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildIosAppIconContents": [
+    {
+      "file": "buildIosAppIconContents.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildIosAccentColorContents": [
+    {
+      "file": "buildIosAccentColorContents.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidReadme": [
+    {
+      "file": "buildAndroidReadme.0.tmpl",
+      "placeholders": [
+        "projectName"
+      ]
+    }
+  ],
+  "buildAndroidSettingsGradle": [
+    {
+      "file": "buildAndroidSettingsGradle.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidRootGradle": [
+    {
+      "file": "buildAndroidRootGradle.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidAppGradle": [
+    {
+      "file": "buildAndroidAppGradle.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidGradleProperties": [
+    {
+      "file": "buildAndroidGradleProperties.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidProguardRules": [
+    {
+      "file": "buildAndroidProguardRules.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidManifest": [
+    {
+      "file": "buildAndroidManifest.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidMainActivity": [
+    {
+      "file": "buildAndroidMainActivity.0.tmpl",
+      "placeholders": [
+        "projectName"
+      ]
+    }
+  ],
+  "buildAndroidStrings": [
+    {
+      "file": "buildAndroidStrings.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidThemes": [
+    {
+      "file": "buildAndroidThemes.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidApiConfig": [
+    {
+      "file": "buildAndroidApiConfig.0.tmpl",
+      "placeholders": [
+        "webPort"
+      ]
+    }
+  ],
+  "buildAndroidAppState": [
+    {
+      "file": "buildAndroidAppState.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidMainViewModel": [
+    {
+      "file": "buildAndroidMainViewModel.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidAppComposable": [
+    {
+      "file": "buildAndroidAppComposable.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidColorScheme": [
+    {
+      "file": "buildAndroidColorScheme.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "buildAndroidThemeKt": [
+    {
+      "file": "buildAndroidThemeKt.0.tmpl",
+      "placeholders": []
+    }
+  ],
+  "generateProjectScaffoldFiles": [
+    {
+      "file": "generateProjectScaffoldFiles.0.tmpl",
+      "placeholders": [
+        "buildWorkspacePatterns().map((item) => `  - ${item}`).join(\"\\n\")"
+      ]
+    },
+    {
+      "file": "generateProjectScaffoldFiles.1.tmpl",
+      "placeholders": [
+        "item"
+      ]
+    },
+    {
+      "file": "generateProjectScaffoldFiles.2.tmpl",
+      "placeholders": [
+        "ctx.slug"
+      ]
+    },
+    {
+      "file": "generateProjectScaffoldFiles.3.tmpl",
+      "placeholders": []
+    }
+  ],
+  "setProjectRuntimeModules": [
+    {
+      "file": "setProjectRuntimeModules.0.tmpl",
+      "placeholders": [
+        "LIGHT_RUNTIME_MODULES.join(\"、\")",
+        "unsupportedAdds.join(\"、\")"
+      ]
+    },
+    {
+      "file": "setProjectRuntimeModules.1.tmpl",
+      "placeholders": [
+        "JSON.stringify(contract, null, 2)"
+      ]
+    },
+    {
+      "file": "setProjectRuntimeModules.2.tmpl",
+      "placeholders": [
+        "addedModules.join(\"、\")"
+      ]
+    },
+    {
+      "file": "setProjectRuntimeModules.3.tmpl",
+      "placeholders": [
+        "disabledLightModules.join(\"、\")"
+      ]
+    }
+  ],
+  "createProjectScaffold": [
+    {
+      "file": "createProjectScaffold.0.tmpl",
+      "placeholders": [
+        "webPort"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.1.tmpl",
+      "placeholders": [
+        "pulled.output || \"unknown error\""
+      ]
+    },
+    {
+      "file": "createProjectScaffold.2.tmpl",
+      "placeholders": [
+        "normalized.database",
+        "normalized.version"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.3.tmpl",
+      "placeholders": [
+        "JSON.stringify(contract, null, 2)"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.4.tmpl",
+      "placeholders": []
+    },
+    {
+      "file": "createProjectScaffold.5.tmpl",
+      "placeholders": [
+        "JSON.stringify(contract, null, 2)"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.6.tmpl",
+      "placeholders": [
+        "createdFiles.length"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.7.tmpl",
+      "placeholders": [
+        "resolvedRoot"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.8.tmpl",
+      "placeholders": [
+        "install.output",
+        "fallbackInstallCommand",
+        "fallbackInstall.output"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.9.tmpl",
+      "placeholders": [
+        "repaired.repaired.join(\"\\n\")"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.10.tmpl",
+      "placeholders": [
+        "(installDetail || \"install failed\").slice(-600)"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.11.tmpl",
+      "placeholders": [
+        "fallbackInstallCommand"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.12.tmpl",
+      "placeholders": [
+        "contract.panel.previewUrl"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.13.tmpl",
+      "placeholders": [
+        "effectivePreviewUrl"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.14.tmpl",
+      "placeholders": [
+        "started.pid"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.15.tmpl",
+      "placeholders": [
+        "effectivePreviewUrl",
+        "started.pid ? ` pid=${started.pid}` : \"\""
+      ]
+    },
+    {
+      "file": "createProjectScaffold.16.tmpl",
+      "placeholders": [
+        "started.pid"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.17.tmpl",
+      "placeholders": [
+        "effectivePreviewUrl"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.18.tmpl",
+      "placeholders": [
+        "(directusStart.output || \"directus up failed\").slice(-500)"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.19.tmpl",
+      "placeholders": [
+        "effectiveAdminUrl"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.20.tmpl",
+      "placeholders": [
+        "effectiveAdminUrl"
+      ]
+    },
+    {
+      "file": "createProjectScaffold.21.tmpl",
+      "placeholders": [
+        "effectiveAdminUrl"
+      ]
+    }
+  ]
+}

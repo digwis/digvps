@@ -1,0 +1,10 @@
+import { DigwisApiClient, resolveApiBaseUrl } from "@digwis/api-client"
+
+export function buildWebApiClient() {
+  const baseUrl = resolveApiBaseUrl(process.env.NEXT_PUBLIC_APP_URL)
+  const client = new DigwisApiClient({ baseUrl })
+  return {
+    baseUrl,
+    client,
+  }
+}

@@ -1,0 +1,36 @@
+import path from "node:path"
+import tailwindcss from "@tailwindcss/vite"
+import react from "@vitejs/plugin-react"
+import { defineConfig } from "vite"
+
+const host = process.env.TAURI_DEV_HOST
+
+export default defineConfig({
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      "@": path.resolve(import.meta.dirname, "./src/renderer/src"),
+    },
+  },
+  // Vite expects index.html at root; Tauri looks here in dev and dist/ in build.
+  server: {
+    port: Number(process.env.PORT) || 5173,
+    strictPort: !process.env.PORT,
+    host: host || "127.0.0.1",
+    hmr: host
+      ? {
+          protocol: "ws",
+          host,
+          port: 1421,
+        }
+      : undefined,
+    watch: {
+      ignored: ["**/src-tauri/**"],
+    },
+  },
+  build: {
+    target: process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari16",
+    minify: process.env.TAURI_ENV_DEBUG ? false : "oxc",
+    sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+  },
+})
